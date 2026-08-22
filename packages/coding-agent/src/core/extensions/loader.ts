@@ -40,10 +40,15 @@ import type {
 	ExtensionRuntime,
 	LoadExtensionsResult,
 	MarkdownTransformer,
+	MessageRenderBoundaryDecoratorV1,
+	MessageRenderBoundarySelectorV2,
+	MessageRenderBoundarySelectorV3,
 	MessageRenderer,
+	MessageRenderProjectionObserverV1,
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
+	ToolPresentationOverrideV1,
 } from "./types.ts";
 
 /** Modules available to extensions via virtualModules (for compiled binaries) */
@@ -343,6 +348,31 @@ function createExtensionAPI(
 		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
 			assertActive();
 			extension.markdownTransformer = transformer;
+		},
+
+		registerMessageRenderBoundaryDecoratorV1(decorator: MessageRenderBoundaryDecoratorV1): void {
+			runtime.assertActive();
+			extension.messageRenderBoundaryDecoratorV1 = decorator;
+		},
+
+		registerMessageRenderBoundarySelectorV2(selector: MessageRenderBoundarySelectorV2): void {
+			runtime.assertActive();
+			extension.messageRenderBoundarySelectorV2 = selector;
+		},
+
+		registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void {
+			runtime.assertActive();
+			extension.messageRenderBoundarySelectorV3 = selector;
+		},
+
+		registerToolPresentationOverrideV1(override: ToolPresentationOverrideV1): void {
+			runtime.assertActive();
+			extension.toolPresentationOverrideV1 = override;
+		},
+
+		registerMessageRenderProjectionObserverV1(observer: MessageRenderProjectionObserverV1): void {
+			runtime.assertActive();
+			extension.messageRenderProjectionObserverV1 = observer;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {

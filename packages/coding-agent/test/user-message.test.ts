@@ -24,6 +24,40 @@ describe("UserMessageComponent", () => {
 		expect(lines[2].endsWith(BG_RESET)).toBe(true);
 	});
 
+	test("decorates one user render with its persisted entry identity", () => {
+		initTheme("dark");
+		const contexts: unknown[] = [];
+		const component = Reflect.construct(UserMessageComponent, [
+			"hello",
+			undefined,
+			1,
+			[],
+			{
+				entryId: "user-entry-1",
+				decorators: [
+					(context: unknown) => {
+						contexts.push(context);
+						return { prefix: "\x1b[31m", suffix: "\x1b[0m" };
+					},
+				],
+			},
+		]) as UserMessageComponent;
+
+		const lines = component.render(20);
+
+		expect(contexts).toEqual([
+			{
+				entryId: "user-entry-1",
+				role: "user",
+				state: "final",
+				allocatedColumns: { start: 0, end: 20 },
+				stockRows: { start: 0, end: 3 },
+			},
+		]);
+		expect(lines[0].startsWith("\x1b[31m")).toBe(true);
+		expect(lines[lines.length - 1].endsWith("\x1b[0m")).toBe(true);
+	});
+
 	test("chains Markdown transformers with user message context", () => {
 		initTheme("dark");
 		const calls: string[] = [];

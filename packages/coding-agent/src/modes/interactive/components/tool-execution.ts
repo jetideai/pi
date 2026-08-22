@@ -1,29 +1,77 @@
 import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
+import type {
+	MessageRenderBoundaryDecoratorV1,
+	MessageRenderBoundaryDecoratorV2,
+	MessageRenderBoundarySelectorV2,
+	MessageRenderBoundarySelectorV3,
+	ToolDefinition,
+	ToolPresentationOverrideV1,
+	ToolPresentationV1,
+	ToolRenderContext,
+} from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { stripAnsi } from "../../../utils/ansi.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import {
+	decorateMessageRender,
+	decorateMessageRenderV2,
+	selectMessageRenderBoundaryDecoratorsV2,
+	selectMessageRenderBoundaryDecoratorsV3,
+} from "./message-render-boundaries.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
+	ownerEntryId?: string;
+	semanticDecorators?: readonly MessageRenderBoundaryDecoratorV1[];
+	semanticSelectorsV2?: readonly MessageRenderBoundarySelectorV2[];
+	semanticSelectorsV3?: readonly MessageRenderBoundarySelectorV3[];
+	producerSessionId?: string;
+	renderScopeId?: string;
+	presentationOverrides?: readonly ToolPresentationOverrideV1[];
+}
+
+class RetainedToolSection extends Container {
+	private renderedRows = 0;
+
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		this.renderedRows = lines.length;
+		return lines;
+	}
+
+	get rowCount(): number {
+		return this.renderedRows;
+	}
 }
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
 	private contentText: Text;
 	private selfRenderContainer: Container;
+	private headerSection = new RetainedToolSection();
+	private bodySection = new RetainedToolSection();
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: any = {};
 	private imageComponents: Image[] = [];
 	private imageSpacers: Spacer[] = [];
+	private normalizedBodyRow?: number;
+	private normalizedHeaderRow?: number;
+	private normalizedSectionsAccepted = false;
 	private toolName: string;
 	private toolCallId: string;
+	private ownerEntryId?: string;
+	private semanticDecorators: readonly MessageRenderBoundaryDecoratorV1[];
+	private semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[];
+	private usesV3Sections = false;
+	private presentationOverrides: readonly ToolPresentationOverrideV1[];
+	private presentation?: ToolPresentationV1;
 	private args: any;
 	private expanded = false;
 	private showImages: boolean;
@@ -55,6 +103,31 @@ export class ToolExecutionComponent extends Container {
 		super();
 		this.toolName = toolName;
 		this.toolCallId = toolCallId;
+		this.ownerEntryId = options.ownerEntryId;
+		this.semanticDecorators = options.semanticDecorators ?? [];
+		this.semanticDecoratorsV2 =
+			options.producerSessionId && options.renderScopeId
+				? selectMessageRenderBoundaryDecoratorsV3(
+						{
+							producerSessionId: options.producerSessionId,
+							renderScopeId: options.renderScopeId,
+							entryId: toolCallId,
+							blockId: toolCallId,
+							role: "tool",
+							state: "expanded",
+							...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
+						},
+						options.semanticSelectorsV3 ?? [],
+					)
+				: selectMessageRenderBoundaryDecoratorsV2("tool", "expanded", {
+						entryId: toolCallId,
+						...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
+						selectors: options.semanticSelectorsV2 ?? [],
+					});
+		this.usesV3Sections = Boolean(
+			options.producerSessionId && options.renderScopeId && this.semanticDecoratorsV2.length > 0,
+		);
+		this.presentationOverrides = options.presentationOverrides ?? [];
 		this.args = args;
 		this.toolDefinition = toolDefinition;
 		this.builtInToolDefinition = createAllToolDefinitions(cwd)[toolName as ToolName];
@@ -71,8 +144,13 @@ export class ToolExecutionComponent extends Container {
 		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
 		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
 		this.selfRenderContainer = new Container();
+		if (this.isSectioned()) {
+			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
+			renderContainer.addChild(this.headerSection);
+			renderContainer.addChild(this.bodySection);
+		}
 
-		if (this.hasRendererDefinition()) {
+		if (this.hasRendererDefinition() || this.isSectioned()) {
 			this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
 		} else {
 			this.addChild(this.contentText);
@@ -89,6 +167,24 @@ export class ToolExecutionComponent extends Container {
 			return this.builtInToolDefinition.renderCall;
 		}
 		return this.toolDefinition.renderCall ?? this.builtInToolDefinition.renderCall;
+	}
+
+	private getCallBodyRowLocator(): ToolDefinition<any, any>["getRenderCallBodyRow"] | undefined {
+		if (this.getRenderShell() !== "self") return undefined;
+		if (!this.builtInToolDefinition) return this.toolDefinition?.getRenderCallBodyRow;
+		if (!this.toolDefinition) return this.builtInToolDefinition.getRenderCallBodyRow;
+		return this.toolDefinition.renderCall
+			? this.toolDefinition.getRenderCallBodyRow
+			: this.builtInToolDefinition.getRenderCallBodyRow;
+	}
+
+	private getCallHeaderRowLocator(): ToolDefinition<any, any>["getRenderCallHeaderRow"] | undefined {
+		if (this.getRenderShell() !== "self") return undefined;
+		if (!this.builtInToolDefinition) return this.toolDefinition?.getRenderCallHeaderRow;
+		if (!this.toolDefinition) return this.builtInToolDefinition.getRenderCallHeaderRow;
+		return this.toolDefinition.renderCall
+			? this.toolDefinition.getRenderCallHeaderRow
+			: this.builtInToolDefinition.getRenderCallHeaderRow;
 	}
 
 	private getResultRenderer(): ToolDefinition<any, any>["renderResult"] | undefined {
@@ -115,7 +211,23 @@ export class ToolExecutionComponent extends Container {
 		return this.toolDefinition.renderShell ?? this.builtInToolDefinition.renderShell ?? "default";
 	}
 
-	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
+	private isExpanded(): boolean {
+		return this.presentation?.state === "expanded" || this.expanded;
+	}
+
+	private isSectioned(): boolean {
+		return this.semanticDecoratorsV2.length > 0;
+	}
+
+	private isNormalizedSectioned(): boolean {
+		return this.usesV3Sections;
+	}
+
+	hasSelectedNormalizedSections(): boolean {
+		return this.isNormalizedSectioned() && this.normalizedSectionsAccepted;
+	}
+
+	private getRenderContext(lastComponent: Component | undefined, expanded = this.isExpanded()): ToolRenderContext {
 		return {
 			args: this.args,
 			toolCallId: this.toolCallId,
@@ -129,9 +241,10 @@ export class ToolExecutionComponent extends Container {
 			executionStarted: this.executionStarted,
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
-			expanded: this.expanded,
+			expanded,
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
+			sectioned: this.isNormalizedSectioned(),
 		};
 	}
 
@@ -233,35 +346,191 @@ export class ToolExecutionComponent extends Container {
 		if (this.hideComponent) {
 			return [];
 		}
+		this.normalizedSectionsAccepted = false;
 
-		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
-			const contentLines = this.selfRenderContainer.render(width);
-			if (contentLines.length === 0 && this.imageComponents.length === 0) {
-				return [];
+		let lines: string[];
+		if (this.presentation?.state === "collapsed") {
+			lines = this.presentation.component.render(width);
+		} else if (this.isNormalizedSectioned()) {
+			this.normalizedBodyRow = undefined;
+			this.normalizedHeaderRow = undefined;
+			this.normalizedSectionsAccepted = false;
+			lines = this.renderNormalizedSections(width);
+		} else if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
+			lines = this.renderSelfShell(width);
+		} else {
+			lines = super.render(width);
+		}
+
+		if (!this.ownerEntryId) return lines;
+		if (this.isSectioned()) {
+			lines = decorateMessageRenderV2(lines, this.getBodyRow(), width, "tool", "expanded", {
+				entryId: this.toolCallId,
+				ownerEntryId: this.ownerEntryId,
+				beginRow: this.getHeaderRow(),
+				decorators: this.semanticDecoratorsV2,
+			});
+		}
+		return decorateMessageRender(
+			lines,
+			width,
+			"tool",
+			this.presentation?.state ?? (this.expanded ? "expanded" : "collapsed"),
+			{
+				entryId: this.toolCallId,
+				ownerEntryId: this.ownerEntryId,
+				decorators: this.semanticDecorators,
+			},
+		);
+	}
+
+	private renderNormalizedSections(width: number): string[] {
+		const shellLines =
+			this.getRenderShell() === "self" ? this.selfRenderContainer.render(width) : this.contentBox.render(width);
+		const shellPaddingRows = this.getRenderShell() === "self" ? 0 : 1;
+		const headerStart = shellPaddingRows;
+		const headerEnd = headerStart + this.headerSection.rowCount;
+		const headerRows = shellLines.slice(headerStart, headerEnd);
+		const shellContentEnd = Math.max(headerEnd, shellLines.length - shellPaddingRows);
+		const bodyRows = shellLines.slice(headerEnd, shellContentEnd);
+		const trailingShellRows = shellLines.slice(shellContentEnd);
+		const callHeaderRow = this.callRendererComponent
+			? this.getCallHeaderRowLocator()?.(this.callRendererComponent)
+			: undefined;
+		const callBodyLocator = this.callRendererComponent ? this.getCallBodyRowLocator() : undefined;
+		const callBodyRow = this.callRendererComponent ? callBodyLocator?.(this.callRendererComponent) : undefined;
+		const hasExactCallHeader = callHeaderRow !== undefined && callHeaderRow >= 0 && callHeaderRow < headerRows.length;
+		const hasExactCallSeam =
+			hasExactCallHeader &&
+			callBodyRow !== undefined &&
+			callBodyRow > callHeaderRow &&
+			callBodyRow <= headerRows.length;
+
+		if (this.getRenderShell() === "self" && hasExactCallHeader && callBodyLocator && !hasExactCallSeam) {
+			const hasOtherNonBlankCallRows = headerRows.some(
+				(row, index) => index !== callHeaderRow && stripAnsi(row).trim() !== "",
+			);
+			if (hasOtherNonBlankCallRows) {
+				const lines = this.renderSelfShell(width);
+				this.normalizedHeaderRow = this.headerSection.rowCount > 0 ? 1 : 0;
+				const bodyStart = this.bodySection.rowCount > 0 ? 1 + this.headerSection.rowCount : undefined;
+				this.normalizedBodyRow = bodyStart !== undefined && bodyStart < lines.length ? bodyStart : undefined;
+				return lines;
 			}
 
-			const lines: string[] = [];
-			if (contentLines.length > 0) {
-				lines.push("");
-				lines.push(...contentLines);
+			const resultBodyRows = bodyRows;
+			const hasBody = resultBodyRows.length > 0 || this.imageComponents.length > 0;
+			this.normalizedSectionsAccepted = true;
+			this.normalizedHeaderRow = 0;
+			if (!hasBody) {
+				return [headerRows[callHeaderRow]!];
 			}
-			for (let i = 0; i < this.imageComponents.length; i++) {
-				const spacer = this.imageSpacers[i];
-				if (spacer) {
-					lines.push(...spacer.render(width));
-				}
-				const imageComponent = this.imageComponents[i];
-				if (imageComponent) {
-					lines.push(...imageComponent.render(width));
-				}
-			}
+			this.normalizedBodyRow = 1;
+			const lines = [headerRows[callHeaderRow]!, ...resultBodyRows];
+			this.appendImages(lines, width);
 			return lines;
 		}
 
-		return super.render(width);
+		if (this.getRenderShell() === "self" && !hasExactCallSeam) {
+			const lines = this.renderSelfShell(width);
+			this.normalizedHeaderRow = this.headerSection.rowCount > 0 ? 1 : 0;
+			const bodyStart = this.bodySection.rowCount > 0 ? 1 + this.headerSection.rowCount : undefined;
+			this.normalizedBodyRow = bodyStart !== undefined && bodyStart < lines.length ? bodyStart : undefined;
+			return lines;
+		}
+
+		const defaultBodyRows = this.getRenderShell() === "self" ? [] : bodyRows;
+		const selfHeaderRows = hasExactCallSeam ? headerRows.slice(callHeaderRow! + 1, callBodyRow!) : [];
+		const selfBodyRows = hasExactCallSeam
+			? this.removeLocatorOwnedLeadingSeparator(headerRows.slice(callBodyRow!))
+			: [];
+		const selfResultBodyRows = hasExactCallSeam ? bodyRows : [];
+		const bodyContentRows = [...selfBodyRows, ...selfResultBodyRows, ...defaultBodyRows];
+		const hasBody = bodyContentRows.length > 0 || this.imageComponents.length > 0;
+		this.normalizedSectionsAccepted = true;
+
+		let lines: string[];
+		if (!hasBody) {
+			if (hasExactCallSeam) {
+				this.normalizedHeaderRow = 0;
+				lines = headerRows.slice(callHeaderRow!, callBodyRow!);
+			} else {
+				this.normalizedHeaderRow = 0;
+				lines = headerRows;
+			}
+		} else if (headerRows.length === 0) {
+			this.normalizedHeaderRow = 0;
+			this.normalizedBodyRow = 0;
+			lines = [...bodyContentRows, ...trailingShellRows];
+		} else {
+			const compactHeaderRow = this.getRenderShell() === "self" ? callHeaderRow! : 0;
+			const retainedHeaderRows = hasExactCallSeam
+				? selfHeaderRows
+				: headerRows.filter((_, index) => index !== compactHeaderRow);
+			this.normalizedHeaderRow = 0;
+			this.normalizedBodyRow = 1;
+			// Keep only the selected header row before BODY. Other rendered rows stay
+			// searchable and selectable after BODY.
+			lines = [headerRows[compactHeaderRow]!, ...retainedHeaderRows, ...bodyContentRows, ...trailingShellRows];
+		}
+		this.appendImages(lines, width);
+		return lines;
+	}
+
+	private removeLocatorOwnedLeadingSeparator(rows: string[]): string[] {
+		const firstRow = rows[0];
+		if (firstRow === undefined || stripAnsi(firstRow).trim() !== "") return rows;
+		return rows.slice(1);
+	}
+
+	private renderSelfShell(width: number): string[] {
+		const contentLines = this.selfRenderContainer.render(width);
+		if (contentLines.length === 0 && this.imageComponents.length === 0) {
+			return [];
+		}
+
+		const lines: string[] = [];
+		if (contentLines.length > 0) {
+			lines.push("");
+			lines.push(...contentLines);
+		}
+		this.appendImages(lines, width);
+		return lines;
+	}
+
+	private appendImages(lines: string[], width: number): void {
+		for (let i = 0; i < this.imageComponents.length; i++) {
+			const spacer = this.imageSpacers[i];
+			if (spacer) lines.push(...spacer.render(width));
+			const imageComponent = this.imageComponents[i];
+			if (imageComponent) lines.push(...imageComponent.render(width));
+		}
+	}
+
+	private getBodyRow(): number | undefined {
+		if (this.isNormalizedSectioned()) {
+			return this.normalizedBodyRow;
+		}
+		const callBodyRow = this.callRendererComponent
+			? this.getCallBodyRowLocator()?.(this.callRendererComponent)
+			: undefined;
+		if (callBodyRow !== undefined) return this.getHeaderRow() + callBodyRow;
+		if (!this.isSectioned() || (this.bodySection.children.length === 0 && this.imageComponents.length === 0))
+			return undefined;
+		return this.getHeaderRow() + this.headerSection.rowCount;
+	}
+
+	private getHeaderRow(): number {
+		if (this.isNormalizedSectioned()) return this.normalizedHeaderRow ?? 0;
+		return this.getRenderShell() === "self" ? 1 : 2;
 	}
 
 	private updateDisplay(): void {
+		this.presentation = this.isSectioned() ? undefined : this.resolvePresentation();
+		if (this.presentation?.state === "collapsed") {
+			this.hideComponent = false;
+			return;
+		}
 		const bgFn = this.isPartial
 			? (text: string) => theme.bg("toolPendingBg", text)
 			: this.result?.isError
@@ -270,26 +539,41 @@ export class ToolExecutionComponent extends Container {
 
 		let hasContent = false;
 		this.hideComponent = false;
-		if (this.hasRendererDefinition()) {
+		if (this.hasRendererDefinition() || this.isSectioned()) {
 			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
 			if (renderContainer instanceof Box) {
 				renderContainer.setBgFn(bgFn);
 			}
-			renderContainer.clear();
+			const sectioned = this.isSectioned();
+			if (sectioned) {
+				this.headerSection.clear();
+				this.bodySection.clear();
+			} else {
+				renderContainer.clear();
+			}
+			const callSection = sectioned ? this.headerSection : renderContainer;
+			const bodySection = sectioned ? this.bodySection : renderContainer;
 
 			const callRenderer = this.getCallRenderer();
 			if (!callRenderer) {
-				renderContainer.addChild(this.createCallFallback());
+				callSection.addChild(this.createCallFallback());
 				hasContent = true;
 			} else {
 				try {
 					const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
 					this.callRendererComponent = component;
-					renderContainer.addChild(component);
+					callSection.addChild(component);
 					hasContent = true;
 				} catch {
 					this.callRendererComponent = undefined;
-					renderContainer.addChild(this.createCallFallback());
+					callSection.addChild(this.createCallFallback());
+					hasContent = true;
+				}
+			}
+			if (sectioned && !this.hasRendererDefinition()) {
+				const args = JSON.stringify(this.args, null, 2);
+				if (args) {
+					bodySection.addChild(new Text(args, 0, 0));
 					hasContent = true;
 				}
 			}
@@ -299,25 +583,25 @@ export class ToolExecutionComponent extends Container {
 				if (!resultRenderer) {
 					const component = this.createResultFallback();
 					if (component) {
-						renderContainer.addChild(component);
+						bodySection.addChild(component);
 						hasContent = true;
 					}
 				} else {
 					try {
 						const component = resultRenderer(
 							{ content: this.result.content as any, details: this.result.details },
-							{ expanded: this.expanded, isPartial: this.isPartial },
+							{ expanded: sectioned || this.isExpanded(), isPartial: this.isPartial },
 							theme,
-							this.getRenderContext(this.resultRendererComponent),
+							this.getRenderContext(this.resultRendererComponent, sectioned || this.isExpanded()),
 						);
 						this.resultRendererComponent = component;
-						renderContainer.addChild(component);
+						bodySection.addChild(component);
 						hasContent = true;
 					} catch {
 						this.resultRendererComponent = undefined;
 						const component = this.createResultFallback();
 						if (component) {
-							renderContainer.addChild(component);
+							bodySection.addChild(component);
 							hasContent = true;
 						}
 					}
@@ -367,6 +651,29 @@ export class ToolExecutionComponent extends Container {
 		if (this.hasRendererDefinition() && !hasContent && this.imageComponents.length === 0) {
 			this.hideComponent = true;
 		}
+	}
+
+	private resolvePresentation(): ToolPresentationV1 | undefined {
+		for (const override of this.presentationOverrides) {
+			try {
+				const presentation = override({
+					toolName: this.toolName,
+					toolCallId: this.toolCallId,
+					...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
+					args: this.args,
+					isPartial: this.isPartial,
+					...(this.result ? { result: this.result } : {}),
+					theme,
+					cwd: this.cwd,
+					invalidate: () => {
+						this.invalidate();
+						this.ui.requestRender();
+					},
+				});
+				if (presentation) return presentation;
+			} catch {}
+		}
+		return undefined;
 	}
 
 	private getTextOutput(): string {

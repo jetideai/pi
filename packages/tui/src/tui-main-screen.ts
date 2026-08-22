@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
-import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
+import { SEGMENT_RESET, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
@@ -200,7 +200,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		let reservedRows = 1;
 		while (reservedRows < maxRows) {
 			const line = lines[index + reservedRows] ?? "";
-			if (isImageLine(line) || visibleWidth(line) > 0) break;
+			if (line !== SEGMENT_RESET) break;
 			reservedRows++;
 		}
 		return reservedRows;
@@ -555,12 +555,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				output.append(`\x1b[${moveDown}B`);
 				finalCursorRow = newLines.length - 1;
 			}
-			const extraLines = this.previousLines.length - newLines.length;
-			for (let i = newLines.length; i < this.previousLines.length; i++) {
-				output.append("\r\n\x1b[2K");
-			}
-			// Move cursor back to end of new content
-			output.append(`\x1b[${extraLines}A`);
+			output.append("\x1b[1B\r\x1b[J\x1b[1A");
 		}
 
 		output.append("\x1b[?2026l"); // End synchronized output

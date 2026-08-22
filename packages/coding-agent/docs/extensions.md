@@ -618,20 +618,24 @@ Fired for message lifecycle updates.
 
 - `message_start` and `message_end` fire for user, assistant, and toolResult messages.
 - `message_update` fires for assistant streaming updates.
+- `entryId` is the reserved session entry ID. It stays the same for the complete message
+  lifecycle and becomes the persisted entry ID when the message completes.
 - `message_end` handlers can return `{ message }` to replace the finalized message. The replacement must keep the same `role`.
 
 ```typescript
 pi.on("message_start", async (event, ctx) => {
-  // event.message
+  // event.message, event.entryId
 });
 
 pi.on("message_update", async (event, ctx) => {
-  // event.message
+  // event.message, event.entryId
   // event.assistantMessageEvent (token-by-token stream event)
 });
 
 pi.on("message_end", async (event, ctx) => {
   if (event.message.role !== "assistant") return;
+
+  // event.entryId is also the ID of the persisted replacement.
 
   return {
     message: {
@@ -1615,6 +1619,55 @@ pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
 
 If a transformer throws, Pi keeps the Markdown produced so far and continues with the next transformer. The hook is display-only: the original message remains unchanged in the session and model context. It runs for new user messages, assistant streaming updates, restored session messages, and terminal width changes, so transformers should remain synchronous and inexpensive.
 
+### pi.registerAssistantRenderBoundaryDecoratorV1(decorator)
+
+Register synchronous terminal controls around the completed built-in assistant render. This
+hook observes stock rendering. It cannot replace text, add rows, or change the session.
+
+The context contains:
+
+- `entryId` — the persisted message entry ID;
+- `state` — `"streaming"` or `"final"`;
+- `allocatedColumns` — the half-open range `[0, width)` passed to the stock component;
+- `stockRows` — the half-open range `[0, rowCount)` returned by the stock component.
+
+Return optional `prefix` and `suffix` strings. Each string must contain only supported ANSI
+OSC or CSI controls. Pi rejects text, line breaks, combining characters, and unsupported
+controls. It adds the prefix to the first stock row and the suffix to the last stock row.
+Empty assistant output is not decorated.
+
+```typescript
+pi.registerAssistantRenderBoundaryDecoratorV1(({ entryId, state, allocatedColumns, stockRows }) => {
+  const metadata = JSON.stringify({ entryId, state, allocatedColumns, stockRows });
+  return {
+    prefix: `\u001b]7799;begin;${metadata}\u0007`,
+    suffix: `\u001b]7799;end;${metadata}\u0007`,
+  };
+});
+```
+
+Decorators run in extension load order. Suffixes close in reverse order. If one decorator
+throws or returns invalid controls, Pi ignores that result and preserves the stock render.
+The hook runs during streaming, resize, repaint, and restored-session rendering. Keep it
+fast and do not perform blocking work.
+
+### pi.registerAssistantRenderProjectionObserverV1(observer)
+
+Register a synchronous observer for the complete assistant membership selected by one
+interactive transcript render. The observer receives the persisted `entryIds` in render
+order after Pi has built the complete active set. Pi does not infer this set from terminal
+controls or from session history.
+
+```typescript
+pi.registerAssistantRenderProjectionObserverV1(({ entryIds }) => {
+  publishProjection(entryIds);
+});
+```
+
+Observers run in extension load order. Pi isolates observer failures and preserves stock
+transcript rendering. Keep the observer synchronous and non-blocking. Use the assistant
+boundary decorator to correlate terminal controls with a published entry ID.
+
 ### pi.registerEntryRenderer(customType, renderer)
 
 Register a custom TUI renderer for custom entries with your `customType`. Custom entries are created with `pi.appendEntry()` and do not participate in LLM context.
@@ -2267,6 +2320,23 @@ pi.registerTool({
 - `toolCallId`, `cwd`, `executionStarted`, `argsComplete`, `isPartial`, `expanded`, `showImages`, `isError`
 
 Use `context.state` for cross-slot shared state. Keep slot-local caches on the returned component instance when you want to reuse and mutate the same component across renders.
+
+A self-rendered call that combines its header and body must expose exact row seams when a host uses
+sectioned Tool Call presentation. Implement both `getRenderCallHeaderRow` and
+`getRenderCallBodyRow`. Each locator returns a zero-based row in the rendered call component. Pi can
+then keep one logical header row before the body boundary and retain every other rendered row after
+that boundary. Return `undefined` when the component cannot provide an exact seam. Do not infer a
+seam from rendered text or blank rows.
+
+The self-renderer must also make the compact header informative and keep it to one terminal row. The
+host does not derive a summary from the tool name, rendered text, or another renderer's output. Any
+blank separator between this call and adjacent transcript blocks belongs outside the
+`begin`/`body`/`end` range, so an expanded header stays adjacent to its first body row.
+
+This is an extension contract, not a bundled-renderer workaround. Third-party renderers, including
+`mitsuhiko/agent-stuff`, must publish the same exact locators and informative summary when they want
+sectioned folding. Their unified-edit folding behavior is outside the control of the bundled JetPi
+integration and is not claimed as fixed by it.
 
 #### renderCall
 

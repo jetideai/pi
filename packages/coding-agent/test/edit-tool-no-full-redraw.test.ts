@@ -77,6 +77,7 @@ describe("edit tool TUI rendering", () => {
 	});
 
 	it("renders the large diff in the call preview and does not full-redraw when the result settles", async () => {
+		const controls = { begin: "\x1b]777;begin\x07", body: "\x1b]777;body\x07", end: "\x1b]777;end\x07" };
 		const dir = await mkdtemp(join(tmpdir(), "pi-edit-redraw-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "large-edit.txt");
@@ -104,7 +105,7 @@ describe("edit tool TUI rendering", () => {
 			"edit",
 			"tool-call-1",
 			{ path: filePath, edits },
-			{},
+			{ ownerEntryId: "assistant-entry-1", semanticSelectorsV2: [() => () => controls] },
 			createEditToolDefinition(process.cwd()),
 			tui,
 			process.cwd(),
@@ -126,6 +127,11 @@ describe("edit tool TUI rendering", () => {
 		);
 		expect(callOnlyRender).toContain("edit");
 		expect(callOnlyRender).toContain("line 950 changed");
+		const positions = [controls.begin, "edit", controls.body, "line 50 changed", controls.end].map((value) =>
+			callOnlyRender.indexOf(value),
+		);
+		expect(positions.every((position) => position >= 0)).toBe(true);
+		expect(positions).toEqual([...positions].sort((a, b) => a - b));
 
 		const redrawsBeforeResult = tui.fullRedraws;
 		const clearsBeforeResult = terminal.fullClearCount;

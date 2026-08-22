@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
@@ -22,7 +22,14 @@ import {
 } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import { renderToolPath, str } from "./render-utils.ts";
+import {
+	invalidArgText,
+	linkPath,
+	renderToolPath,
+	SectionedToolCallHeader,
+	shortenPathForWidth,
+	str,
+} from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 type EditPreview = EditDiffResult | EditDiffError;
@@ -166,20 +173,61 @@ type EditToolResultLike = {
 	details?: EditToolDetails;
 };
 
-type EditCallRenderComponent = Box & {
+class EditRenderSection extends Container {
+	private renderedRows = 0;
+
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		this.renderedRows = lines.length;
+		return lines;
+	}
+
+	get rowCount(): number {
+		return this.renderedRows;
+	}
+}
+
+class EditCallRenderComponent extends Box {
 	preview?: EditPreview;
 	previewArgsKey?: string;
 	previewPending?: boolean;
 	settledError?: boolean;
-};
+	sectionedSummaryRenderer?: (width: number) => string;
+	private headerSection = new EditRenderSection();
+	private bodySection = new Container();
+	private hasBody = false;
+
+	constructor() {
+		super(1, 1, (text: string) => text);
+		this.addChild(this.headerSection);
+		this.addChild(this.bodySection);
+	}
+
+	setContent(header: string, body?: string): void {
+		this.headerSection.clear();
+		if (this.sectionedSummaryRenderer) {
+			const sectionedHeader = new SectionedToolCallHeader("", 0, 0);
+			sectionedHeader.setSectionedContent(this.sectionedSummaryRenderer, header);
+			this.headerSection.addChild(sectionedHeader);
+		} else {
+			this.headerSection.addChild(new Text(header, 0, 0));
+		}
+		this.bodySection.clear();
+		this.hasBody = body !== undefined;
+		if (body !== undefined) {
+			this.bodySection.addChild(new Spacer(1));
+			this.bodySection.addChild(new Text(body, 0, 0));
+		}
+	}
+
+	get bodyRow(): number | undefined {
+		if (!this.hasBody) return undefined;
+		return 1 + this.headerSection.rowCount;
+	}
+}
 
 function createEditCallRenderComponent(): EditCallRenderComponent {
-	return Object.assign(new Box(1, 1, (text: string) => text), {
-		preview: undefined as EditPreview | undefined,
-		previewArgsKey: undefined as string | undefined,
-		previewPending: false,
-		settledError: false,
-	});
+	return new EditCallRenderComponent();
 }
 
 function getEditCallRenderComponent(state: EditRenderState, lastComponent: unknown): EditCallRenderComponent {
@@ -224,6 +272,26 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 function formatEditCall(args: RenderableEditArgs | undefined, theme: Theme, cwd: string): string {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
 	return `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
+}
+
+function formatSectionedEditCall(
+	args: RenderableEditArgs | undefined,
+	theme: Theme,
+	cwd: string,
+	width: number,
+): string {
+	const action = theme.fg("toolTitle", theme.bold("edit"));
+	const actionWidth = visibleWidth(action);
+	const rawPath = str(args?.file_path ?? args?.path);
+	const pathWidth = Math.max(0, width - actionWidth - 1);
+	let pathDisplay: string;
+	if (rawPath === null) {
+		pathDisplay = invalidArgText(theme);
+	} else {
+		const shortened = shortenPathForWidth(rawPath || "...", pathWidth);
+		pathDisplay = rawPath ? linkPath(theme.fg("accent", shortened), rawPath, cwd) : theme.fg("toolOutput", shortened);
+	}
+	return truncateToWidth(`${action} ${pathDisplay}`, width, "");
 }
 
 function formatEditResult(
@@ -279,17 +347,12 @@ function buildEditCallComponent(
 	cwd: string,
 ): EditCallRenderComponent {
 	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
-	component.clear();
-	component.addChild(new Text(formatEditCall(args, theme, cwd), 0, 0));
-
-	if (!component.preview) {
-		return component;
-	}
-
-	const body =
-		"error" in component.preview ? theme.fg("error", component.preview.error) : renderDiff(component.preview.diff);
-	component.addChild(new Spacer(1));
-	component.addChild(new Text(body, 0, 0));
+	const body = component.preview
+		? "error" in component.preview
+			? theme.fg("error", component.preview.error)
+			: renderDiff(component.preview.diff)
+		: undefined;
+	component.setContent(formatEditCall(args, theme, cwd), body);
 	return component;
 }
 
@@ -328,6 +391,9 @@ export function createEditToolDefinition(
 		parameters: editSchema,
 		constrainedSampling: getExperimentalToolSampling(),
 		renderShell: "self",
+		getRenderCallHeaderRow: (component) => (component instanceof EditCallRenderComponent ? 1 : undefined),
+		getRenderCallBodyRow: (component) =>
+			component instanceof EditCallRenderComponent ? component.bodyRow : undefined,
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
 			const { path, edits } = validateEditInput(input);
@@ -386,6 +452,10 @@ export function createEditToolDefinition(
 		},
 		renderCall(args, theme, context) {
 			const component = getEditCallRenderComponent(context.state, context.lastComponent);
+			component.sectionedSummaryRenderer =
+				context.sectioned && !context.expanded
+					? (width) => formatSectionedEditCall(args as RenderableEditArgs | undefined, theme, context.cwd, width)
+					: undefined;
 			const previewInput = getRenderablePreviewInput(args as RenderableEditArgs | undefined);
 			const argsKey = previewInput
 				? JSON.stringify({ path: previewInput.path, edits: previewInput.edits })

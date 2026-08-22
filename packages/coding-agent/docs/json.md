@@ -23,6 +23,7 @@ type JsonAgentSessionEvent =
   | Exclude<AgentSessionEvent, { type: "message_update" }>
   | {
       type: "message_update";
+      entryId: string;
       usage: Usage;
       assistantMessageEvent: JsonAssistantMessageEvent<AssistantMessageEvent>;
     };
@@ -42,9 +43,9 @@ type AgentEvent =
   | { type: "turn_start" }
   | { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }
   // Message lifecycle
-  | { type: "message_start"; message: AgentMessage }
-  | { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent }
-  | { type: "message_end"; message: AgentMessage }
+  | { type: "message_start"; message: AgentMessage; entryId: string }
+  | { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent; entryId: string }
+  | { type: "message_end"; message: AgentMessage; entryId: string }
   // Tool execution
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
@@ -77,9 +78,9 @@ Followed by events as they occur:
 ```json
 {"type":"agent_start"}
 {"type":"turn_start"}
-{"type":"message_start","message":{"role":"assistant","content":[],...}}
-{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
-{"type":"message_end","message":{...}}
+{"type":"message_start","entryId":"abc12345","message":{"role":"assistant","content":[],...}}
+{"type":"message_update","entryId":"abc12345","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+{"type":"message_end","entryId":"abc12345","message":{...}}
 {"type":"turn_end","message":{...},"toolResults":[]}
 {"type":"agent_end","messages":[...]}
 ```
@@ -88,8 +89,9 @@ Followed by events as they occur:
 `assistantMessageEvent.partial` to keep stream size linear. The top-level `usage` field contains
 the latest cumulative provider-reported usage and may remain zero when a provider only reports
 usage at completion. Use `contentIndex` and `delta` to assemble live text, thinking, or tool-call
-arguments if needed. A `toolcall_start` event also includes the constant-sized `id` and `toolName`
-fields. `message_end` contains the final authoritative message.
+arguments if needed. `entryId` correlates the complete lifecycle and becomes the persisted session
+entry ID. A `toolcall_start` event also includes the constant-sized `id` and `toolName` fields.
+`message_end` contains the final authoritative message.
 
 ## Example
 

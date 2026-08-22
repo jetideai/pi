@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
@@ -9,7 +9,16 @@ import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "./render-utils.ts";
+import {
+	invalidArgText,
+	linkPath,
+	normalizeDisplayText,
+	renderToolPath,
+	replaceTabs,
+	SectionedToolCallHeader,
+	shortenPathForWidth,
+	str,
+} from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const writeSchema = Type.Object({
@@ -53,7 +62,7 @@ type WriteHighlightCache = {
 	highlightedLines: string[];
 };
 
-class WriteCallRenderComponent extends Text {
+class WriteCallRenderComponent extends SectionedToolCallHeader {
 	cache?: WriteHighlightCache;
 
 	constructor() {
@@ -167,9 +176,30 @@ function formatWriteCall(
 	return text;
 }
 
+function formatSectionedWriteCall(
+	args: { path?: string; file_path?: string } | undefined,
+	theme: Theme,
+	cwd: string,
+	width: number,
+): string {
+	const action = theme.fg("toolTitle", theme.bold("write"));
+	const actionWidth = visibleWidth(action);
+	const rawPath = str(args?.file_path ?? args?.path);
+	const pathWidth = Math.max(0, width - actionWidth - 1);
+	let pathDisplay: string;
+	if (rawPath === null) {
+		pathDisplay = invalidArgText(theme);
+	} else {
+		const shortened = shortenPathForWidth(rawPath || "...", pathWidth);
+		pathDisplay = rawPath ? linkPath(theme.fg("accent", shortened), rawPath, cwd) : theme.fg("toolOutput", shortened);
+	}
+	return truncateToWidth(`${action} ${pathDisplay}`, width, "");
+}
+
 function formatWriteResult(
 	result: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean },
 	theme: Theme,
+	sectioned: boolean,
 ): string | undefined {
 	if (!result.isError) {
 		return undefined;
@@ -181,7 +211,7 @@ function formatWriteResult(
 	if (!output) {
 		return undefined;
 	}
-	return `\n${theme.fg("error", output)}`;
+	return `${sectioned ? "" : "\n"}${theme.fg("error", output)}`;
 }
 
 export function createWriteToolDefinition(
@@ -244,19 +274,26 @@ export function createWriteToolDefinition(
 			} else {
 				component.cache = undefined;
 			}
-			component.setText(
-				formatWriteCall(
-					renderArgs,
-					{ expanded: context.expanded, isPartial: context.isPartial },
-					theme,
-					component.cache,
-					context.cwd,
-				),
+			const canonicalText = formatWriteCall(
+				renderArgs,
+				{ expanded: context.expanded, isPartial: context.isPartial },
+				theme,
+				component.cache,
+				context.cwd,
 			);
+			if (context.sectioned && !context.expanded) {
+				component.setSectionedContent(
+					(width) => formatSectionedWriteCall(renderArgs, theme, context.cwd, width),
+					canonicalText,
+				);
+			} else {
+				component.clearSectionedContent();
+				component.setText(canonicalText);
+			}
 			return component;
 		},
 		renderResult(result, _options, theme, context) {
-			const output = formatWriteResult({ ...result, isError: context.isError }, theme);
+			const output = formatWriteResult({ ...result, isError: context.isError }, theme, context.sectioned === true);
 			if (!output) {
 				const component = (context.lastComponent as Container | undefined) ?? new Container();
 				component.clear();

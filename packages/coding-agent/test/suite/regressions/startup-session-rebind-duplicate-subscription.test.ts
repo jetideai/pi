@@ -14,7 +14,7 @@ type RebindContext = {
 };
 
 type InteractiveModePrototype = {
-	rebindCurrentSession(this: RebindContext, options?: { renderBeforeBind?: boolean }): Promise<void>;
+	rebindCurrentSession(this: RebindContext, options?: { renderReplacementState?: boolean }): Promise<void>;
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
@@ -56,7 +56,7 @@ describe("overlapping startup and replacement session rebinds", () => {
 
 		context.session = replacementSession;
 		const replacementRebind = interactiveModePrototype.rebindCurrentSession.call(context, {
-			renderBeforeBind: true,
+			renderReplacementState: true,
 		});
 
 		expect(bindCount).toBe(2);

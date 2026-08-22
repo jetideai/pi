@@ -864,6 +864,8 @@ export class SessionManager {
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
+	private issuedEntryIds: Set<string> = new Set();
+	private reservedEntryIds: Set<string> = new Set();
 	private leafId: string | null = null;
 
 	private constructor(
@@ -1013,6 +1015,29 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
+	/** Reserve a unique entry ID for a lifecycle that starts before persistence. */
+	reserveEntryId(): string {
+		const id = generateId({ has: (candidate) => this.byId.has(candidate) || this.issuedEntryIds.has(candidate) });
+		this.issuedEntryIds.add(id);
+		this.reservedEntryIds.add(id);
+		return id;
+	}
+
+	/** Retire an unfinished reservation without making it reusable. */
+	discardReservedEntryId(entryId: string): void {
+		this.reservedEntryIds.delete(entryId);
+	}
+
+	private _consumeReservedEntryId(entryId: string | undefined): string {
+		if (entryId === undefined) {
+			return generateId({ has: (candidate) => this.byId.has(candidate) || this.issuedEntryIds.has(candidate) });
+		}
+		if (!this.reservedEntryIds.delete(entryId)) {
+			throw new Error(`Entry ID ${entryId} is not reserved`);
+		}
+		return entryId;
+	}
+
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 
@@ -1055,10 +1080,10 @@ export class SessionManager {
 	 * so it is easier to find them.
 	 * These need to be appended via appendCompaction() and appendBranchSummary() methods.
 	 */
-	appendMessage(message: Message | CustomMessage | BashExecutionMessage): string {
+	appendMessage(message: Message | CustomMessage | BashExecutionMessage, entryId?: string): string {
 		const entry: SessionMessageEntry = {
 			type: "message",
-			id: generateId(this.byId),
+			id: this._consumeReservedEntryId(entryId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			message,
@@ -1174,6 +1199,7 @@ export class SessionManager {
 		content: string | (TextContent | ImageContent)[],
 		display: boolean,
 		details?: T,
+		entryId?: string,
 	): string {
 		const entry: CustomMessageEntry<T> = {
 			type: "custom_message",
@@ -1181,7 +1207,7 @@ export class SessionManager {
 			content,
 			display,
 			details,
-			id: generateId(this.byId),
+			id: this._consumeReservedEntryId(entryId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 		};

@@ -139,6 +139,7 @@ usage notices for compaction and branch summaries when cache miss notices are en
 
 - Added fullscreen transcript search with `Ctrl+Shift+F`, incremental match highlighting, configurable search match theme colors, and next/previous navigation with `Enter`/`Ctrl+G` and `Shift+Enter`/`Ctrl+Shift+G`.
 - Added experimental strict JSON-schema constrained sampling for the default `read`, `bash`, `edit`, and `write` tools under `PI_EXPERIMENTAL=1`.
+- Added persisted `entryId` values to message lifecycle events, complete message and Tool Call render projection observation, and synchronous zero-column controls around built-in user, assistant, collapsed Tool Call, and expanded Tool Call rendering.
 - Added a fullscreen exit output setting to choose between printing the final transcript and only a session resume hint.
 - Added the `defaultTools` setting for configuring the initial built-in tool selection globally or per project.
 - Added `--use-theme <name[/name]>` to choose an initial per-run interactive theme without changing saved settings ([#7722](https://github.com/earendil-works/pi/pull/7722) by [@rwachtler](https://github.com/rwachtler)).
@@ -184,6 +185,10 @@ usage notices for compaction and branch summaries when cache miss notices are en
 - Fixed split `Alt+Enter` input over SSH being misread as Escape, added `PI_TUI_ESC_TIMEOUT` for high-latency terminals, and limited that timeout to lone Escape input ([#7899](https://github.com/earendil-works/pi/pull/7899) by [@powerfooI](https://github.com/powerfooI)).
 - Fixed inherited idle fullscreen sessions repainting and clearing text selection when the terminal loses focus ([#7892](https://github.com/earendil-works/pi/pull/7892) by [@terrorobe](https://github.com/terrorobe)).
 - Fixed fullscreen selection copy to use the host clipboard and report failure instead of claiming success when OSC 52 is unsupported ([#8110](https://github.com/earendil-works/pi/pull/8110) by [@Panoplos](https://github.com/Panoplos)).
+
+### Fixed
+
+- Fixed restored Tool Call rendering during extension reload so session bindings start before transcript reconstruction.
 
 ## [0.84.1] - 2026-08-07
 

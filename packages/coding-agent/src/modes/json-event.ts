@@ -10,6 +10,7 @@ type ToJsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partia
 type MessageUpdateEvent = Extract<AgentSessionEvent, { type: "message_update" }>;
 type JsonMessageUpdateEvent = {
 	type: "message_update";
+	entryId: string;
 	usage: Usage;
 	assistantMessageEvent: ToJsonAssistantMessageEvent<MessageUpdateEvent["assistantMessageEvent"]>;
 };
@@ -55,6 +56,7 @@ export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent {
 
 	return {
 		type: "message_update",
+		entryId: event.entryId,
 		usage: event.message.usage,
 		assistantMessageEvent: toJsonAssistantMessageEvent(event.assistantMessageEvent),
 	};

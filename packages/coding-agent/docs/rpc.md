@@ -929,10 +929,11 @@ A turn consists of one assistant response plus any resulting tool calls and resu
 ### message_start / message_end
 
 Emitted when a message begins and completes. The `message` field contains an `AgentMessage`.
+The same `entryId` identifies the complete lifecycle and the persisted session entry.
 
 ```json
-{"type": "message_start", "message": {...}}
-{"type": "message_end", "message": {...}}
+{"type": "message_start", "entryId": "abc12345", "message": {...}}
+{"type": "message_end", "entryId": "abc12345", "message": {...}}
 ```
 
 ### message_update (Streaming)
@@ -942,6 +943,7 @@ Emitted during streaming of assistant messages. Contains a delta event without a
 ```json
 {
   "type": "message_update",
+  "entryId": "abc12345",
   "usage": {
     "input": 100,
     "output": 1,
@@ -974,10 +976,10 @@ The `assistantMessageEvent` field contains one of these delta types:
 
 Example streaming a text response:
 ```json
-{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}
-{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
-{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}
-{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world"}}
+{"type":"message_update","entryId":"abc12345","usage":{...},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","entryId":"abc12345","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+{"type":"message_update","entryId":"abc12345","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}
+{"type":"message_update","entryId":"abc12345","usage":{...},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world"}}
 ```
 
 The top-level `usage` field contains the latest cumulative provider-reported usage. It may remain
@@ -985,15 +987,15 @@ zero until completion when a provider does not report usage during streaming.
 
 Example starting a tool call:
 ```json
-{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"toolcall_start","contentIndex":1,"id":"call_abc123","toolName":"write"}}
+{"type":"message_update","entryId":"abc12345","usage":{...},"assistantMessageEvent":{"type":"toolcall_start","contentIndex":1,"id":"call_abc123","toolName":"write"}}
 ```
 
 `message_update` intentionally omits the former cumulative `message` field and
 `assistantMessageEvent.partial`. Clients that need a live partial message must assemble it
-from `message_start` and subsequent events using `contentIndex`. Treat `message_end.message`
-as authoritative. For tool calls, `toolcall_start` provides the call `id` and `toolName`;
-buffer `toolcall_delta.delta` for arguments. `toolcall_end.toolCall` contains the completed
-call.
+from `message_start` and subsequent events using `contentIndex`. Use `entryId` to correlate
+those events. Treat `message_end.message` as authoritative. For tool calls, `toolcall_start`
+provides the call `id` and `toolName`; buffer `toolcall_delta.delta` for arguments.
+`toolcall_end.toolCall` contains the completed call.
 
 ### bash_execution_update
 

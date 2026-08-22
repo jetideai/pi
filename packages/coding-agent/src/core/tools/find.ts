@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
@@ -9,7 +9,14 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
-import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
+import {
+	getTextOutput,
+	invalidArgText,
+	SectionedToolCallHeader,
+	shortenPath,
+	shortenPathForWidth,
+	str,
+} from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -87,6 +94,44 @@ function formatFindCall(args: { pattern: string; path?: string; limit?: number }
 	return text;
 }
 
+function formatSectionedFindCall(
+	args: { pattern: string; path?: string; limit?: number } | undefined,
+	theme: Theme,
+	width: number,
+): string {
+	const action = theme.fg("toolTitle", theme.bold("find"));
+	const pattern = str(args?.pattern);
+	const invalidArg = invalidArgText(theme);
+	const rawPattern = pattern === null ? undefined : pattern || "...";
+	const patternDisplay = rawPattern === undefined ? invalidArg : rawPattern;
+	const patternWidth = Math.max(0, width - visibleWidth(action) - 1);
+	const fittedPattern =
+		rawPattern === undefined ? patternDisplay : theme.fg("accent", truncateToWidth(rawPattern, patternWidth, ""));
+	let text = `${action} ${fittedPattern}`;
+
+	const rawPath = str(args?.path);
+	const pathValue = rawPath === null ? undefined : rawPath || ".";
+	if (pathValue !== undefined) {
+		const pathPrefix = theme.fg("toolOutput", " in ");
+		const pathWidth = Math.max(0, width - visibleWidth(text) - visibleWidth(pathPrefix));
+		if (pathWidth > 0) {
+			const shortened = shortenPathForWidth(pathValue, pathWidth);
+			text += `${pathPrefix}${theme.fg("toolOutput", shortened)}`;
+		}
+	} else {
+		const pathPrefix = theme.fg("toolOutput", " in ");
+		if (visibleWidth(text) + visibleWidth(pathPrefix) + visibleWidth(invalidArg) <= width) {
+			text += `${pathPrefix}${invalidArg}`;
+		}
+	}
+
+	if (args?.limit !== undefined) {
+		const suffix = theme.fg("toolOutput", ` (limit ${args.limit})`);
+		if (visibleWidth(text) + visibleWidth(suffix) <= width) text += suffix;
+	}
+	return truncateToWidth(text, width, "");
+}
+
 function formatFindResult(
 	result: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
@@ -95,6 +140,7 @@ function formatFindResult(
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	showImages: boolean,
+	sectioned: boolean,
 ): string {
 	const output = getTextOutput(result, showImages).trim();
 	let text = "";
@@ -103,7 +149,7 @@ function formatFindResult(
 		const maxLines = options.expanded ? lines.length : 20;
 		const displayLines = lines.slice(0, maxLines);
 		const remaining = lines.length - maxLines;
-		text += `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
+		text += `${sectioned ? "" : "\n"}${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 		if (remaining > 0) {
 			text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
 		}
@@ -115,7 +161,7 @@ function formatFindResult(
 		const warnings: string[] = [];
 		if (resultLimit) warnings.push(`${resultLimit} results limit`);
 		if (truncation?.truncated) warnings.push(`${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit`);
-		text += `\n${theme.fg("warning", `[Truncated: ${warnings.join(", ")}]`)}`;
+		text += `${text ? "\n" : sectioned ? "" : "\n"}${theme.fg("warning", `[Truncated: ${warnings.join(", ")}]`)}`;
 	}
 	return text;
 }
@@ -363,13 +409,27 @@ export function createFindToolDefinition(
 			});
 		},
 		renderCall(args, theme, context) {
+			if (context.sectioned && !context.expanded) {
+				const component =
+					context.lastComponent instanceof SectionedToolCallHeader
+						? context.lastComponent
+						: new SectionedToolCallHeader("", 0, 0);
+				component.setSectionedContent(
+					(width) => formatSectionedFindCall(args, theme, width),
+					formatFindCall(args, theme),
+				);
+				return component;
+			}
+			if (context.lastComponent instanceof SectionedToolCallHeader) {
+				context.lastComponent.clearSectionedContent();
+			}
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(formatFindCall(args, theme));
 			return text;
 		},
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatFindResult(result as any, options, theme, context.showImages));
+			text.setText(formatFindResult(result as any, options, theme, context.showImages, context.sectioned === true));
 			return text;
 		},
 	};

@@ -1,7 +1,7 @@
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
@@ -10,7 +10,14 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
+import {
+	getTextOutput,
+	invalidArgText,
+	SectionedToolCallHeader,
+	shortenPath,
+	shortenPathForWidth,
+	str,
+} from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import {
 	DEFAULT_MAX_BYTES,
@@ -90,6 +97,46 @@ function formatGrepCall(
 	return text;
 }
 
+function formatSectionedGrepCall(
+	args: { pattern: string; path?: string; glob?: string; limit?: number } | undefined,
+	theme: Theme,
+	width: number,
+): string {
+	const action = theme.fg("toolTitle", theme.bold("grep"));
+	const pattern = str(args?.pattern);
+	const invalidArg = invalidArgText(theme);
+	const rawPattern = pattern === null ? undefined : pattern || "...";
+	const patternText = rawPattern === undefined ? invalidArg : `/${rawPattern}/`;
+	const patternWidth = Math.max(0, width - visibleWidth(action) - 1);
+	const fittedPattern =
+		rawPattern === undefined ? patternText : `/${truncateToWidth(rawPattern, Math.max(0, patternWidth - 2), "")}/`;
+	let text = `${action} ${theme.fg("accent", fittedPattern)}`;
+
+	const rawPath = str(args?.path);
+	const pathPrefix = theme.fg("toolOutput", " in ");
+	if (rawPath === null) {
+		if (visibleWidth(text) + visibleWidth(pathPrefix) + visibleWidth(invalidArg) <= width) {
+			text += `${pathPrefix}${invalidArg}`;
+		}
+	} else {
+		const shortened = shortenPathForWidth(
+			rawPath || ".",
+			Math.max(0, width - visibleWidth(text) - visibleWidth(pathPrefix)),
+		);
+		if (shortened) text += `${pathPrefix}${theme.fg("toolOutput", shortened)}`;
+	}
+
+	if (args?.glob) {
+		const suffix = theme.fg("toolOutput", ` (${args.glob})`);
+		if (visibleWidth(text) + visibleWidth(suffix) <= width) text += suffix;
+	}
+	if (args?.limit !== undefined) {
+		const suffix = theme.fg("toolOutput", ` limit ${args.limit}`);
+		if (visibleWidth(text) + visibleWidth(suffix) <= width) text += suffix;
+	}
+	return truncateToWidth(text, width, "");
+}
+
 function formatGrepResult(
 	result: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
@@ -98,6 +145,7 @@ function formatGrepResult(
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	showImages: boolean,
+	sectioned: boolean,
 ): string {
 	const output = getTextOutput(result, showImages).trim();
 	let text = "";
@@ -106,7 +154,7 @@ function formatGrepResult(
 		const maxLines = options.expanded ? lines.length : 15;
 		const displayLines = lines.slice(0, maxLines);
 		const remaining = lines.length - maxLines;
-		text += `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
+		text += `${sectioned ? "" : "\n"}${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 		if (remaining > 0) {
 			text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
 		}
@@ -120,7 +168,7 @@ function formatGrepResult(
 		if (matchLimit) warnings.push(`${matchLimit} matches limit`);
 		if (truncation?.truncated) warnings.push(`${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit`);
 		if (linesTruncated) warnings.push("some lines truncated");
-		text += `\n${theme.fg("warning", `[Truncated: ${warnings.join(", ")}]`)}`;
+		text += `${text ? "\n" : sectioned ? "" : "\n"}${theme.fg("warning", `[Truncated: ${warnings.join(", ")}]`)}`;
 	}
 	return text;
 }
@@ -373,13 +421,27 @@ export function createGrepToolDefinition(
 			});
 		},
 		renderCall(args, theme, context) {
+			if (context.sectioned && !context.expanded) {
+				const component =
+					context.lastComponent instanceof SectionedToolCallHeader
+						? context.lastComponent
+						: new SectionedToolCallHeader("", 0, 0);
+				component.setSectionedContent(
+					(width) => formatSectionedGrepCall(args, theme, width),
+					formatGrepCall(args, theme),
+				);
+				return component;
+			}
+			if (context.lastComponent instanceof SectionedToolCallHeader) {
+				context.lastComponent.clearSectionedContent();
+			}
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(formatGrepCall(args, theme));
 			return text;
 		},
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatGrepResult(result as any, options, theme, context.showImages));
+			text.setText(formatGrepResult(result as any, options, theme, context.showImages, context.sectioned === true));
 			return text;
 		},
 	};

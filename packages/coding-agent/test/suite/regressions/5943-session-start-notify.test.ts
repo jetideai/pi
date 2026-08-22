@@ -1,6 +1,6 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { ExtensionUIContext } from "../../../src/core/extensions/index.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
@@ -78,7 +78,7 @@ type LoadedResourcesContext = {
 type RebindContext = {
 	unsubscribe?: () => void;
 	applyRuntimeSettings: () => void;
-	renderCurrentSessionState: () => void;
+	renderCurrentSessionState: () => void | Promise<void>;
 	bindCurrentSessionExtensions: () => Promise<void>;
 	subscribeToAgent: () => void;
 	updateAvailableProviderCount: () => Promise<void>;
@@ -91,7 +91,7 @@ type ReloadCommandContext = {
 	session: {
 		isStreaming: boolean;
 		isCompacting: boolean;
-		reload: (options?: { beforeSessionStart?: () => void | Promise<void> }) => Promise<void>;
+		reload: () => Promise<void>;
 		resourceLoader: { getThemes: () => { themes: [] } };
 		extensionRunner: unknown;
 		modelRegistry: { getError: () => string | undefined };
@@ -119,7 +119,7 @@ type ReloadCommandContext = {
 	defaultEditor: { setPaddingX: (padding: number) => void; setAutocompleteMaxVisible: (maxVisible: number) => void };
 	themeController: { applyFromSettings: () => Promise<void> };
 	resetExtensionUI: () => void;
-	rebuildChatFromMessages: () => void;
+	rebuildChatFromMessages: (options?: { freshTranscriptRender?: boolean }) => void;
 	setupAutocompleteProvider: () => void;
 	setupExtensionShortcuts: (runner: unknown) => void;
 	showLoadedResources: (options: unknown) => void;
@@ -134,7 +134,7 @@ type InteractiveModePrototype = {
 		this: LoadedResourcesContext,
 		options?: { extensions?: Array<{ path: string }>; force?: boolean; showDiagnosticsWhenQuiet?: boolean },
 	): void;
-	rebindCurrentSession(this: RebindContext, options?: { renderBeforeBind?: boolean }): Promise<void>;
+	rebindCurrentSession(this: RebindContext, options?: { renderReplacementState?: boolean }): Promise<void>;
 	handleReloadCommand(this: ReloadCommandContext): Promise<void>;
 };
 
@@ -160,9 +160,7 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 		session: {
 			isStreaming: false,
 			isCompacting: false,
-			reload: async (options) => {
-				await options?.beforeSessionStart?.();
-			},
+			reload: async () => {},
 			resourceLoader: { getThemes: () => ({ themes: [] }) },
 			extensionRunner: {},
 			modelRegistry: { getError: () => undefined },
@@ -273,7 +271,7 @@ describe("regression #5943: session_start transient UI", () => {
 		expect(rendered.indexOf("[Context]")).toBeLessThan(rendered.indexOf("restored message"));
 	});
 
-	it("renders replacement session state before session_start handlers can notify", async () => {
+	it("starts replacement extensions before rendering restored semantic content", async () => {
 		const events: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
@@ -288,7 +286,9 @@ describe("regression #5943: session_start transient UI", () => {
 		try {
 			const context: RebindContext = {
 				applyRuntimeSettings: () => events.push("apply"),
-				renderCurrentSessionState: () => events.push("render"),
+				renderCurrentSessionState: () => {
+					events.push("render");
+				},
 				bindCurrentSessionExtensions: async () => {
 					events.push("bind");
 					await harness.session.bindExtensions({
@@ -302,9 +302,9 @@ describe("regression #5943: session_start transient UI", () => {
 				updateTerminalTitle: () => {},
 			};
 
-			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
+			await interactiveModePrototype.rebindCurrentSession.call(context, { renderReplacementState: true });
 
-			expect(events).toEqual(["apply", "render", "subscribe", "bind", "notify:Hello Error"]);
+			expect(events).toEqual(["apply", "subscribe", "bind", "notify:Hello Error", "render"]);
 		} finally {
 			harness.cleanup();
 		}
@@ -329,7 +329,9 @@ describe("regression #5943: session_start transient UI", () => {
 		try {
 			const context: RebindContext = {
 				applyRuntimeSettings: () => {},
-				renderCurrentSessionState: () => events.push("render"),
+				renderCurrentSessionState: () => {
+					events.push("render");
+				},
 				bindCurrentSessionExtensions: async () => {
 					events.push("bind");
 					await harness.session.bindExtensions({
@@ -351,14 +353,14 @@ describe("regression #5943: session_start transient UI", () => {
 				updateTerminalTitle: () => {},
 			};
 
-			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
+			await interactiveModePrototype.rebindCurrentSession.call(context, { renderReplacementState: true });
 
 			expect(events).toEqual([
-				"render",
 				"subscribe",
 				"bind",
 				"message_start:custom:custom from start",
 				"message_end:custom:custom from start",
+				"render",
 			]);
 		} finally {
 			harness.cleanup();
@@ -381,7 +383,9 @@ describe("regression #5943: session_start transient UI", () => {
 		try {
 			const context: RebindContext = {
 				applyRuntimeSettings: () => {},
-				renderCurrentSessionState: () => events.push("render"),
+				renderCurrentSessionState: () => {
+					events.push("render");
+				},
 				bindCurrentSessionExtensions: async () => {
 					events.push("bind");
 					await harness.session.bindExtensions({
@@ -403,10 +407,10 @@ describe("regression #5943: session_start transient UI", () => {
 				updateTerminalTitle: () => {},
 			};
 
-			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
+			await interactiveModePrototype.rebindCurrentSession.call(context, { renderReplacementState: true });
 			await harness.session.agent.waitForIdle();
 
-			expect(events.slice(0, 3)).toEqual(["render", "subscribe", "bind"]);
+			expect(events.slice(0, 3)).toEqual(["subscribe", "bind", "render"]);
 			expect(events).toContain("message_start:user:user from start");
 			expect(events).toContain("message_end:user:user from start");
 			expect(events).toContain("message_end:assistant:assistant from start");
@@ -415,11 +419,8 @@ describe("regression #5943: session_start transient UI", () => {
 		}
 	});
 
-	it("runs the reload render hook before reload session_start handlers can notify", async () => {
+	it("starts reloaded extensions before rendering restored semantic content", async () => {
 		const events: string[] = [];
-		const beforeSessionStart = vi.fn(() => {
-			events.push("render");
-		});
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
@@ -439,37 +440,36 @@ describe("regression #5943: session_start transient UI", () => {
 			expect(events).toEqual(["start:startup", "notify:startup"]);
 
 			events.length = 0;
-			await harness.session.reload({ beforeSessionStart });
+			await harness.session.reload();
+			events.push("render");
 
-			expect(beforeSessionStart).toHaveBeenCalledTimes(1);
-			expect(events).toEqual(["render", "start:reload", "notify:reload"]);
+			expect(events).toEqual(["start:reload", "notify:reload", "render"]);
 		} finally {
 			harness.cleanup();
 		}
 	});
 
-	it("refreshes hideThinkingBlock before rebuilding chat during reload", async () => {
+	it("starts a fresh message render scope when reload rebuilds chat", async () => {
 		initTheme("dark", false);
 		const events: string[] = [];
 		let context: ReloadCommandContext;
 		context = createReloadCommandContext({
 			settingsManager: { getHideThinkingBlock: () => true },
 			session: {
-				reload: async (options) => {
+				reload: async () => {
 					events.push("reload");
-					await options?.beforeSessionStart?.();
 					events.push(`start:${context.hideThinkingBlock}`);
 				},
 			},
-			rebuildChatFromMessages: () => {
-				events.push(`rebuild:${context.hideThinkingBlock}`);
+			rebuildChatFromMessages: (options) => {
+				events.push(`rebuild:${context.hideThinkingBlock}:${options?.freshTranscriptRender}`);
 			},
 		});
 
 		await interactiveModePrototype.handleReloadCommand.call(context);
 
 		expect(context.hideThinkingBlock).toBe(true);
-		expect(events).toEqual(["reload", "rebuild:true", "start:true"]);
+		expect(events).toEqual(["reload", "start:true", "rebuild:true:true"]);
 	});
 
 	it("keeps the reload blocker focused until async reload completes", async () => {
@@ -489,8 +489,7 @@ describe("regression #5943: session_start transient UI", () => {
 		const context = createReloadCommandContext({
 			editor,
 			session: {
-				reload: async (options) => {
-					await options?.beforeSessionStart?.();
+				reload: async () => {
 					markReloadWaiting();
 					await reloadFinished;
 				},
@@ -508,12 +507,13 @@ describe("regression #5943: session_start transient UI", () => {
 		const reloadPromise = interactiveModePrototype.handleReloadCommand.call(context);
 		await reloadWaiting;
 
-		expect(chatRestored).toBe(true);
+		expect(chatRestored).toBe(false);
 		expect(focused).not.toBe(editor);
 
 		finishReload();
 		await reloadPromise;
 
+		expect(chatRestored).toBe(true);
 		expect(focused).toBe(editor);
 	});
 });

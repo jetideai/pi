@@ -1,0 +1,151 @@
+import type {
+	MessageRenderBoundariesV1,
+	MessageRenderBoundariesV2,
+	MessageRenderBoundaryCandidateV3,
+	MessageRenderBoundaryDecoratorV1,
+	MessageRenderBoundaryDecoratorV2,
+	MessageRenderBoundarySelectorV2,
+	MessageRenderBoundarySelectorV3,
+	MessageRenderRoleV1,
+} from "../../../core/extensions/types.ts";
+import { stripAnsi } from "../../../utils/ansi.ts";
+
+export interface MessageRenderBoundaryOptionsV1 {
+	entryId: string;
+	ownerEntryId?: string;
+	decorators: readonly MessageRenderBoundaryDecoratorV1[];
+}
+
+export function selectMessageRenderBoundaryDecoratorsV2(
+	role: MessageRenderRoleV1,
+	state: "streaming" | "final" | "collapsed" | "expanded",
+	options: { entryId: string; ownerEntryId?: string; selectors: readonly MessageRenderBoundarySelectorV2[] },
+): MessageRenderBoundaryDecoratorV2[] {
+	const context = Object.freeze({
+		entryId: options.entryId,
+		...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
+		role,
+		state,
+	});
+	return options.selectors.flatMap((select) => {
+		try {
+			const decorate = select(context);
+			return typeof decorate === "function" ? [decorate] : [];
+		} catch {
+			return [];
+		}
+	});
+}
+
+export function selectMessageRenderBoundaryDecoratorsV3(
+	candidate: MessageRenderBoundaryCandidateV3,
+	selectors: readonly MessageRenderBoundarySelectorV3[],
+): MessageRenderBoundaryDecoratorV2[] {
+	const frozen = Object.freeze({ ...candidate });
+	return selectors.flatMap((selector) => {
+		try {
+			const decorator = selector(frozen);
+			return typeof decorator === "function" ? [decorator] : [];
+		} catch {
+			return [];
+		}
+	});
+}
+
+export function decorateMessageRenderV2(
+	lines: string[],
+	bodyRow: number | undefined,
+	width: number,
+	role: MessageRenderRoleV1,
+	state: "streaming" | "final" | "collapsed" | "expanded",
+	options?: {
+		entryId: string;
+		ownerEntryId?: string;
+		beginRow?: number;
+		decorators: readonly MessageRenderBoundaryDecoratorV2[];
+	},
+): string[] {
+	if (!options || options.decorators.length === 0 || lines.length === 0) return lines;
+	const context = Object.freeze({
+		entryId: options.entryId,
+		...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
+		role,
+		state,
+		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
+		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
+	});
+	const begins: string[] = [];
+	const bodies: string[] = [];
+	const ends: string[] = [];
+	for (const decorate of options.decorators) {
+		try {
+			const boundaries = decorate(context);
+			if (!hasValidBoundariesV2(boundaries)) {
+				continue;
+			}
+			if (boundaries.begin) begins.push(boundaries.begin);
+			if (boundaries.body) bodies.push(boundaries.body);
+			if (boundaries.end) ends.unshift(boundaries.end);
+		} catch {}
+	}
+	const beginRow = options.beginRow ?? 0;
+	if (beginRow >= 0 && beginRow < lines.length) {
+		lines[beginRow] = begins.join("") + lines[beginRow];
+	}
+	if (bodyRow !== undefined && bodyRow >= 0 && bodyRow < lines.length) {
+		lines[bodyRow] = bodies.join("") + lines[bodyRow];
+	}
+	lines[lines.length - 1] += ends.join("");
+	return lines;
+}
+
+export function decorateMessageRender(
+	lines: string[],
+	width: number,
+	role: MessageRenderRoleV1,
+	state: "streaming" | "final" | "collapsed" | "expanded",
+	options?: MessageRenderBoundaryOptionsV1,
+): string[] {
+	if (!options || options.decorators.length === 0 || lines.length === 0) return lines;
+
+	const context = Object.freeze({
+		entryId: options.entryId,
+		...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
+		role,
+		state,
+		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
+		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
+	});
+	const prefixes: string[] = [];
+	const suffixes: string[] = [];
+	for (const decorate of options.decorators) {
+		try {
+			const boundaries = decorate(context);
+			if (!hasValidBoundaries(boundaries)) continue;
+			if (boundaries.prefix) prefixes.push(boundaries.prefix);
+			if (boundaries.suffix) suffixes.unshift(boundaries.suffix);
+		} catch {
+			// A decorator cannot change or block a built-in message render.
+		}
+	}
+
+	lines[0] = prefixes.join("") + lines[0];
+	lines[lines.length - 1] += suffixes.join("");
+	return lines;
+}
+
+function hasValidControl(control: unknown): control is string | undefined {
+	return control === undefined || (typeof control === "string" && stripAnsi(control).length === 0);
+}
+
+function hasValidBoundariesV2(boundaries: unknown): boundaries is MessageRenderBoundariesV2 {
+	if (boundaries === undefined || typeof boundaries !== "object" || boundaries === null) return false;
+	const candidate = boundaries as { begin?: unknown; body?: unknown; end?: unknown };
+	return hasValidControl(candidate.begin) && hasValidControl(candidate.body) && hasValidControl(candidate.end);
+}
+
+function hasValidBoundaries(boundaries: unknown): boundaries is MessageRenderBoundariesV1 {
+	if (boundaries === undefined || typeof boundaries !== "object" || boundaries === null) return false;
+	const candidate = boundaries as MessageRenderBoundariesV1;
+	return hasValidControl(candidate.prefix) && hasValidControl(candidate.suffix);
+}

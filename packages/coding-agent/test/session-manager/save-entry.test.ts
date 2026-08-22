@@ -2,6 +2,57 @@ import { describe, expect, it } from "vitest";
 import { type CustomEntry, SessionManager } from "../../src/core/session-manager.ts";
 
 describe("SessionManager.saveCustomEntry", () => {
+	it("reserves distinct non-empty entry IDs before persistence", () => {
+		const session = SessionManager.inMemory();
+		const reserveEntryId = (session as SessionManager & { reserveEntryId?: () => string }).reserveEntryId;
+
+		expect(reserveEntryId).toBeTypeOf("function");
+		const firstId = reserveEntryId?.call(session);
+		const secondId = reserveEntryId?.call(session);
+		expect(firstId).not.toBe("");
+		expect(secondId).not.toBe(firstId);
+	});
+
+	it("consumes each reserved entry ID exactly once", () => {
+		const session = SessionManager.inMemory();
+		const firstId = session.reserveEntryId();
+		const appendReserved = session.appendMessage as unknown as (
+			message: { role: "user"; content: string; timestamp: number },
+			entryId: string,
+		) => string;
+
+		expect(appendReserved.call(session, { role: "user", content: "hello", timestamp: 1 }, firstId)).toBe(firstId);
+		expect(() => appendReserved.call(session, { role: "user", content: "again", timestamp: 2 }, firstId)).toThrow(
+			/reserved/i,
+		);
+	});
+
+	it("consumes reserved IDs for persisted custom message lifecycles", () => {
+		const session = SessionManager.inMemory();
+		const entryId = session.reserveEntryId();
+		const appendReserved = session.appendCustomMessageEntry as unknown as (
+			customType: string,
+			content: string,
+			display: boolean,
+			details: unknown,
+			entryId: string,
+		) => string;
+
+		expect(appendReserved.call(session, "status", "ready", true, undefined, entryId)).toBe(entryId);
+	});
+
+	it("retires unfinished reservations without reusing them", () => {
+		const session = SessionManager.inMemory();
+		const unfinishedId = session.reserveEntryId();
+
+		session.discardReservedEntryId(unfinishedId);
+
+		expect(() => session.appendMessage({ role: "user", content: "late", timestamp: 1 }, unfinishedId)).toThrow(
+			/reserved/i,
+		);
+		expect(session.reserveEntryId()).not.toBe(unfinishedId);
+	});
+
 	it("saves custom entries and includes them in tree traversal", () => {
 		const session = SessionManager.inMemory();
 

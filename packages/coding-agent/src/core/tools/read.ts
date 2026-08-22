@@ -1,7 +1,7 @@
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
@@ -14,7 +14,16 @@ import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
-import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
+import {
+	getTextOutput,
+	invalidArgText,
+	linkPath,
+	renderToolPath,
+	replaceTabs,
+	SectionedToolCallHeader,
+	shortenPathForWidth,
+	str,
+} from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -80,6 +89,29 @@ function formatReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): st
 function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme, cwd: string): string {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
 	return `${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}${formatReadLineRange(args, theme)}`;
+}
+
+function formatSectionedReadCall(args: ReadRenderArgs | undefined, theme: Theme, cwd: string, width: number): string {
+	const classification = getCompactReadClassification(args, cwd);
+	if (classification) return formatCompactReadCall(classification, args, theme);
+
+	const action = theme.fg("toolTitle", theme.bold("read"));
+	const actionWidth = visibleWidth(action);
+	const rawPath = str(args?.file_path ?? args?.path);
+	const pathWidth = Math.max(0, width - actionWidth - 1);
+	let pathDisplay: string;
+	if (rawPath === null) {
+		pathDisplay = invalidArgText(theme);
+	} else {
+		const rawDisplay = rawPath || "...";
+		const shortened = shortenPathForWidth(rawDisplay, pathWidth);
+		pathDisplay = rawPath ? linkPath(theme.fg("accent", shortened), rawPath, cwd) : theme.fg("toolOutput", shortened);
+	}
+
+	let text = `${action} ${pathDisplay}`;
+	const range = formatReadLineRange(args, theme);
+	if (range && visibleWidth(text) + visibleWidth(range) <= width) text += range;
+	return truncateToWidth(text, width, "");
 }
 
 function trimTrailingEmptyLines(lines: string[]): string[] {
@@ -175,6 +207,7 @@ function formatReadResult(
 	showImages: boolean,
 	_cwd: string,
 	isError: boolean,
+	sectioned: boolean,
 ): string {
 	if (!options.expanded && !isError) {
 		return "";
@@ -188,7 +221,10 @@ function formatReadResult(
 	const maxLines = options.expanded ? lines.length : 10;
 	const displayLines = lines.slice(0, maxLines);
 	const remaining = lines.length - maxLines;
-	let text = `\n${displayLines.map((line) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
+	let text = sectioned ? "" : "\n";
+	text += displayLines
+		.map((line) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line))))
+		.join("\n");
 	if (remaining > 0) {
 		text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
 	}
@@ -196,11 +232,11 @@ function formatReadResult(
 	const truncation = result.details?.truncation;
 	if (truncation?.truncated) {
 		if (truncation.firstLineExceedsLimit) {
-			text += `\n${theme.fg("warning", `[First line exceeds ${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit]`)}`;
+			text += `${text ? "\n" : sectioned ? "" : "\n"}${theme.fg("warning", `[First line exceeds ${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit]`)}`;
 		} else if (truncation.truncatedBy === "lines") {
-			text += `\n${theme.fg("warning", `[Truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${truncation.maxLines ?? DEFAULT_MAX_LINES} line limit)]`)}`;
+			text += `${text ? "\n" : sectioned ? "" : "\n"}${theme.fg("warning", `[Truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${truncation.maxLines ?? DEFAULT_MAX_LINES} line limit)]`)}`;
 		} else {
-			text += `\n${theme.fg("warning", `[Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)]`)}`;
+			text += `${text ? "\n" : sectioned ? "" : "\n"}${theme.fg("warning", `[Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)]`)}`;
 		}
 	}
 	return text;
@@ -334,6 +370,33 @@ export function createReadToolDefinition(
 			);
 		},
 		renderCall(args, theme, context) {
+			if (context.sectioned && !context.expanded) {
+				const component =
+					context.lastComponent instanceof SectionedToolCallHeader
+						? context.lastComponent
+						: new SectionedToolCallHeader("", 0, 0);
+				component.setSectionedContent(
+					(width) => formatSectionedReadCall(args, theme, context.cwd, width),
+					formatReadCall(args, theme, context.cwd),
+					{
+						retainCanonicalFirstRow: (width) => {
+							const renderArgs = args as ReadRenderArgs | undefined;
+							const rawPath = str(renderArgs?.file_path ?? renderArgs?.path);
+							if (!rawPath || getCompactReadClassification(renderArgs, context.cwd)) return false;
+							const action = theme.fg("toolTitle", theme.bold("read"));
+							const pathWidth = Math.max(0, width - visibleWidth(action) - 1);
+							return (
+								shortenPathForWidth(rawPath, pathWidth) !==
+								shortenPathForWidth(rawPath, Number.MAX_SAFE_INTEGER)
+							);
+						},
+					},
+				);
+				return component;
+			}
+			if (context.lastComponent instanceof SectionedToolCallHeader) {
+				context.lastComponent.clearSectionedContent();
+			}
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			const classification = !context.expanded ? getCompactReadClassification(args, context.cwd) : undefined;
 			text.setText(
@@ -346,7 +409,16 @@ export function createReadToolDefinition(
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(
-				formatReadResult(context.args, result, options, theme, context.showImages, context.cwd, context.isError),
+				formatReadResult(
+					context.args,
+					result,
+					options,
+					theme,
+					context.showImages,
+					context.cwd,
+					context.isError,
+					context.sectioned === true,
+				),
 			);
 			return text;
 		},

@@ -79,6 +79,36 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 	}
 }
 
+function expandedToolGroupLines(toolCount = 32): string[] {
+	return ["Before", "Group expanded", ...Array.from({ length: toolCount }, (_, index) => `Tool ${index}`), "After"];
+}
+
+async function withKittyImageRendering(run: () => Promise<void>): Promise<void> {
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	setCellDimensions({ widthPx: 10, heightPx: 10 });
+	try {
+		await run();
+	} finally {
+		resetCapabilitiesCache();
+		setCellDimensions({ widthPx: 9, heightPx: 18 });
+	}
+}
+
+function imageLinesWithFoldEnds(): { lines: string[]; toolEnd: string; groupEnd: string } {
+	const image = new Image(
+		"AAAA",
+		"image/png",
+		{ fallbackColor: (value) => value },
+		{ maxWidthCells: 3 },
+		{ widthPx: 30, heightPx: 30 },
+	);
+	const lines = image.render(40);
+	const toolEnd = "\x1b]777;tool-end\x07";
+	const groupEnd = "\x1b]777;group-end\x07";
+	lines[lines.length - 1] += toolEnd + groupEnd;
+	return { lines, toolEnd, groupEnd };
+}
+
 async function withEnv<T>(updates: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
 	const previousValues = new Map<string, string | undefined>();
 	for (const [key, value] of Object.entries(updates)) {
@@ -207,6 +237,51 @@ describe("TUI bounded render output", () => {
 });
 
 describe("TUI Kitty image cleanup", () => {
+	it("writes zero-width boundary controls after image rows during the first render", async () => {
+		await withKittyImageRendering(async () => {
+			const terminal = new LoggingVirtualTerminal(40, 10);
+			const tui: TUI = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+			const image = imageLinesWithFoldEnds();
+			component.lines = ["before", ...image.lines, "after"];
+
+			tui.start();
+			await terminal.waitForRender();
+
+			const writes = terminal.getWrites();
+			assert.ok(writes.includes(image.toolEnd), "first render should write the Tool Call END control");
+			assert.ok(writes.includes(image.groupEnd), "first render should write the Tool Group END control");
+			assert.ok(writes.indexOf(image.toolEnd) < writes.indexOf(image.groupEnd));
+			tui.stop();
+		});
+	});
+
+	it("writes zero-width boundary controls after image rows during an update", async () => {
+		await withKittyImageRendering(async () => {
+			const terminal = new LoggingVirtualTerminal(40, 10);
+			const tui: TUI = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+
+			component.lines = ["before"];
+			tui.start();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+
+			const image = imageLinesWithFoldEnds();
+			component.lines = ["before", ...image.lines, "after"];
+			tui.requestRender();
+			await terminal.waitForRender();
+
+			const writes = terminal.getWrites();
+			assert.ok(writes.includes(image.toolEnd), "updated render should write the Tool Call END control");
+			assert.ok(writes.includes(image.groupEnd), "updated render should write the Tool Group END control");
+			assert.ok(writes.indexOf(image.toolEnd) < writes.indexOf(image.groupEnd));
+			tui.stop();
+		});
+	});
+
 	it("clears reserved Kitty image rows before drawing appended image placements", async () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		setCellDimensions({ widthPx: 10, heightPx: 10 });
@@ -618,6 +693,54 @@ describe("TUI content shrinkage", () => {
 });
 
 describe("TUI differential rendering", () => {
+	it("clears one removed visible tail with one bounded erase", async () => {
+		const terminal = new LoggingVirtualTerminal(80, 40);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = expandedToolGroupLines();
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		component.lines = ["Before", "Group collapsed", "After"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(writes.includes("\x1b[1B\r\x1b[J\x1b[1A"), "removed tail should use one bounded erase");
+		assert.strictEqual(writes.match(/\x1b\[J/g)?.length, 1, "removed tail should be erased once");
+
+		tui.stop();
+	});
+
+	it("preserves the viewport and cursor after a bounded tail erase", async () => {
+		const terminal = new VirtualTerminal(80, 40);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = expandedToolGroupLines();
+		tui.start();
+		await terminal.waitForRender();
+
+		component.lines = ["Before", "Group collapsed", "After"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(terminal.getViewport().slice(0, 4), ["Before", "Group collapsed", "After", ""]);
+		assert.deepStrictEqual(terminal.getCursorPosition(), { x: 0, y: 2 });
+
+		component.lines = ["Before", "Group updated", "After"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(terminal.getViewport().slice(0, 3), ["Before", "Group updated", "After"]);
+
+		tui.stop();
+	});
+
 	it("tracks cursor correctly when content shrinks with unchanged remaining lines", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);

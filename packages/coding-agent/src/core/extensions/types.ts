@@ -443,6 +443,41 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	showImages: boolean;
 	/** Whether the current result is an error. */
 	isError: boolean;
+	/** Whether V3 normalized sections are active for this render. */
+	sectioned?: boolean;
+}
+
+/** Presentation selected for one built-in Tool Call without replacing its execution. */
+export type ToolPresentationV1 = { state: "collapsed"; component: Component } | { state: "expanded" };
+
+export interface ToolPresentationResultV1 {
+	readonly content: readonly {
+		readonly type: string;
+		readonly text?: string;
+		readonly data?: string;
+		readonly mimeType?: string;
+	}[];
+	readonly details?: unknown;
+	readonly isError: boolean;
+}
+
+/** Select presentation for one live built-in Tool Call. */
+export type ToolPresentationOverrideV1 = (context: {
+	toolName: string;
+	toolCallId: string;
+	ownerEntryId?: string;
+	args: unknown;
+	isPartial: boolean;
+	result?: ToolPresentationResultV1;
+	theme: Theme;
+	cwd: string;
+	invalidate: () => void;
+}) => ToolPresentationV1 | undefined;
+
+export interface ToolGroupMemberV1 {
+	toolName: string;
+	toolCallId: string;
+	ownerEntryId?: string;
 }
 
 /**
@@ -489,6 +524,10 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 	/** Custom rendering for tool call display */
 	renderCall?: (args: Static<TParams>, theme: Theme, context: ToolRenderContext<TState, Static<TParams>>) => Component;
+	/** Locate the first body row in this tool's self-rendered call component. */
+	getRenderCallBodyRow?: (component: Component) => number | undefined;
+	/** Return the first logical header row for a self-rendered call. */
+	getRenderCallHeaderRow?: (component: Component) => number | undefined;
 
 	/** Custom rendering for tool result display */
 	renderResult?: (
@@ -779,6 +818,8 @@ export interface TurnEndEvent {
 export interface MessageStartEvent {
 	type: "message_start";
 	message: AgentMessage;
+	/** Reserved ID used when this message is persisted. */
+	entryId: string;
 }
 
 /** Fired during assistant message streaming with token-by-token updates */
@@ -786,12 +827,16 @@ export interface MessageUpdateEvent {
 	type: "message_update";
 	message: AgentMessage;
 	assistantMessageEvent: AssistantMessageEvent;
+	/** Reserved ID used when this message is persisted. */
+	entryId: string;
 }
 
 /** Fired when a message ends */
 export interface MessageEndEvent {
 	type: "message_end";
 	message: AgentMessage;
+	/** Reserved ID used when this message is persisted. */
+	entryId: string;
 }
 
 /** Fired when a tool starts executing */
@@ -1206,6 +1251,104 @@ export interface MarkdownTransformContext {
 
 export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;
 
+/** Half-open range used to describe rendered columns or rows. */
+export interface MessageRenderRangeV1 {
+	start: 0;
+	end: number;
+}
+
+export type MessageRenderRoleV1 = "user" | "assistant" | "tool-group" | "tool";
+
+/** Facts from one completed built-in message render. */
+export interface MessageRenderBoundaryContextV1 {
+	entryId: string;
+	role: MessageRenderRoleV1;
+	state: "streaming" | "final" | "collapsed" | "expanded";
+	ownerEntryId?: string;
+	allocatedColumns: Readonly<MessageRenderRangeV1>;
+	stockRows: Readonly<MessageRenderRangeV1>;
+}
+
+/** Zero-column terminal controls to place around one built-in message render. */
+export interface MessageRenderBoundariesV1 {
+	prefix?: string;
+	suffix?: string;
+}
+
+/** Exact zero-column boundaries for a complete canonical render with an optional body seam. */
+export interface MessageRenderBoundariesV2 {
+	begin?: string;
+	body?: string;
+	end?: string;
+}
+
+/**
+ * Synchronous message render decorator. The callback must not block.
+ * Pi ignores thrown errors and invalid controls.
+ */
+export type MessageRenderBoundaryDecoratorV1 = (
+	context: Readonly<MessageRenderBoundaryContextV1>,
+) => MessageRenderBoundariesV1 | undefined;
+
+/** Decorate one selected V2 canonical render using its actual layout ranges. */
+export type MessageRenderBoundaryDecoratorV2 = (
+	context: Readonly<MessageRenderBoundaryContextV1>,
+) => MessageRenderBoundariesV2;
+
+/** Stable identity facts used before Pi chooses a V2 canonical render. */
+export interface MessageRenderBoundaryCandidateV2 {
+	entryId: string;
+	role: MessageRenderRoleV1;
+	state: "streaming" | "final" | "collapsed" | "expanded";
+	ownerEntryId?: string;
+}
+
+/** Pure synchronous selector called once before Pi chooses a V2 canonical render. */
+export type MessageRenderBoundarySelectorV2 = (
+	candidate: Readonly<MessageRenderBoundaryCandidateV2>,
+) => MessageRenderBoundaryDecoratorV2 | undefined;
+
+export interface MessageRenderBoundaryCandidateV3 {
+	producerSessionId: string;
+	renderScopeId: string;
+	entryId: string;
+	blockId: string;
+	role: "tool" | "tool-group";
+	state: "expanded";
+	ownerEntryId?: string;
+}
+
+export type MessageRenderBoundarySelectorV3 = (
+	candidate: Readonly<MessageRenderBoundaryCandidateV3>,
+) => MessageRenderBoundaryDecoratorV2 | undefined;
+
+/** Complete supported-message membership selected by one interactive transcript render. */
+export interface MessageRenderFinalizedEntryV1 {
+	entryId: string;
+	message: AgentMessage;
+}
+
+export type MessageRenderProjectionMemberV1 =
+	| { entryId: string; role: "user" | "assistant" }
+	| { entryId: string; role: "tool-group"; groupId: string; groupClosed: boolean }
+	| {
+			entryId: string;
+			role: "tool";
+			ownerEntryId: string;
+			groupId?: string;
+			/** Zero-based position in the canonical Tool Group. */
+			groupOrder?: number;
+	  };
+
+export interface MessageRenderProjectionV1 {
+	members: readonly Readonly<MessageRenderProjectionMemberV1>[];
+	mode: "append" | "replace";
+	finalized?: Readonly<MessageRenderFinalizedEntryV1>;
+}
+
+/** Synchronous observation of one complete interactive supported-message projection. */
+export type MessageRenderProjectionObserverV1 = (projection: Readonly<MessageRenderProjectionV1>) => void;
+
 export interface EntryRenderOptions {
 	expanded: boolean;
 }
@@ -1353,6 +1496,19 @@ export interface ExtensionAPI {
 
 	/** Register a transformer for user and assistant Markdown before Pi renders it in the interactive transcript. */
 	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
+
+	/** Decorate built-in user and assistant render boundaries with zero-column terminal controls. */
+	registerMessageRenderBoundaryDecoratorV1(decorator: MessageRenderBoundaryDecoratorV1): void;
+
+	/** Select canonical rendering and its V2 boundary decorator before Pi constructs the render. */
+	registerMessageRenderBoundarySelectorV2(selector: MessageRenderBoundarySelectorV2): void;
+	registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void;
+
+	/** Select collapsed or stock presentation for built-in Tool Calls. */
+	registerToolPresentationOverrideV1(override: ToolPresentationOverrideV1): void;
+
+	/** Observe complete supported-message membership selected by the interactive render owner. */
+	registerMessageRenderProjectionObserverV1(observer: MessageRenderProjectionObserverV1): void;
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
@@ -1765,6 +1921,11 @@ export interface Extension {
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
 	markdownTransformer?: MarkdownTransformer;
+	messageRenderBoundaryDecoratorV1?: MessageRenderBoundaryDecoratorV1;
+	messageRenderBoundarySelectorV2?: MessageRenderBoundarySelectorV2;
+	messageRenderBoundarySelectorV3?: MessageRenderBoundarySelectorV3;
+	toolPresentationOverrideV1?: ToolPresentationOverrideV1;
+	messageRenderProjectionObserverV1?: MessageRenderProjectionObserverV1;
 	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

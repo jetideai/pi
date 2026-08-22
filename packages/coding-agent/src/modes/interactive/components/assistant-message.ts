@@ -3,10 +3,24 @@ import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { decorateMessageRender, type MessageRenderBoundaryOptionsV1 } from "./message-render-boundaries.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+
+export function shouldRenderHiddenThinkingPlaceholder(
+	message: AssistantMessage,
+	streaming: boolean,
+	hideThinkingBlock: boolean,
+): boolean {
+	if (!hideThinkingBlock || !streaming) return false;
+	const hasThinking = message.content.some((content) => content.type === "thinking" && content.thinking.trim());
+	if (!hasThinking) return false;
+	return !message.content.some(
+		(content) => (content.type === "text" && content.text.trim()) || content.type === "toolCall",
+	);
+}
 
 /**
  * Component that renders a complete assistant message
@@ -18,6 +32,7 @@ export class AssistantMessageComponent extends Container {
 	private hiddenThinkingLabel: string;
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
+	private renderBoundaryOptions?: MessageRenderBoundaryOptionsV1;
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
 	private isStreaming = false;
@@ -29,6 +44,7 @@ export class AssistantMessageComponent extends Container {
 		hiddenThinkingLabel = "Thinking...",
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
+		renderBoundaryOptions?: MessageRenderBoundaryOptionsV1,
 	) {
 		super();
 
@@ -37,6 +53,7 @@ export class AssistantMessageComponent extends Container {
 		this.hiddenThinkingLabel = hiddenThinkingLabel;
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
+		this.renderBoundaryOptions = renderBoundaryOptions;
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
@@ -77,13 +94,22 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): string[] {
 		const lines = super.render(width);
-		if (this.hasToolCalls || lines.length === 0) {
+		if (lines.length === 0) {
 			return lines;
 		}
 
-		lines[0] = OSC133_ZONE_START + lines[0];
-		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
-		return lines;
+		if (!this.hasToolCalls) {
+			lines[0] = OSC133_ZONE_START + lines[0];
+			lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
+		}
+
+		return decorateMessageRender(
+			lines,
+			width,
+			"assistant",
+			this.isStreaming ? "streaming" : "final",
+			this.renderBoundaryOptions,
+		);
 	}
 
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
@@ -93,9 +119,17 @@ export class AssistantMessageComponent extends Container {
 		// Clear content container
 		this.contentContainer.clear();
 
-		const hasVisibleContent = message.content.some(
-			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
+		const showHiddenThinkingPlaceholder = shouldRenderHiddenThinkingPlaceholder(
+			message,
+			this.isStreaming,
+			this.hideThinkingBlock,
 		);
+		const hasVisibleContent = message.content.some(
+			(c) =>
+				(c.type === "text" && c.text.trim()) ||
+				(c.type === "thinking" && (!this.hideThinkingBlock || showHiddenThinkingPlaceholder) && c.thinking.trim()),
+		);
+		let hiddenThinkingPlaceholderRendered = false;
 
 		if (hasVisibleContent) {
 			this.contentContainer.addChild(new Spacer(1));
@@ -126,7 +160,7 @@ export class AssistantMessageComponent extends Container {
 				}
 				i--;
 
-				if (thinkingBlocks.length === 0) {
+				if (thinkingBlocks.length === 0 || (this.hideThinkingBlock && !showHiddenThinkingPlaceholder)) {
 					continue;
 				}
 
@@ -137,7 +171,9 @@ export class AssistantMessageComponent extends Container {
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
 				if (this.hideThinkingBlock) {
-					// Show one static label for each run of thinking blocks when hidden.
+					if (hiddenThinkingPlaceholderRendered) continue;
+					hiddenThinkingPlaceholderRendered = true;
+					// Show one static label for hidden thinking while it streams alone.
 					this.contentContainer.addChild(
 						new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), this.outputPad, 0),
 					);

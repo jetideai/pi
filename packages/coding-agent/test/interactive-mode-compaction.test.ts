@@ -48,7 +48,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(disabled.chatContainer.children).toHaveLength(0);
 	});
 
-	test("renders each compaction cost after its summary", () => {
+	test("renders each compaction cost after its summary", async () => {
 		const currentUsage: Usage = {
 			input: 10,
 			output: 20,
@@ -91,15 +91,21 @@ describe("InteractiveMode compaction events", () => {
 		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
 			this: typeof fakeThis,
 			entries: SessionEntry[],
-		) => void;
+		) => Promise<void>;
 
-		renderSessionEntries.call(fakeThis, entries);
+		await renderSessionEntries.call(fakeThis, entries);
 
 		expect(fakeThis.renderSessionItems).toHaveBeenCalledWith(
 			[
-				expect.objectContaining({ role: "compactionSummary", summary: "current summary" }),
+				{
+					message: expect.objectContaining({ role: "compactionSummary", summary: "current summary" }),
+					entryId: undefined,
+				},
 				{ type: "compaction_cost", kind: "compaction", usage: currentUsage },
-				expect.objectContaining({ role: "compactionSummary", summary: "previous summary" }),
+				{
+					message: expect.objectContaining({ role: "compactionSummary", summary: "previous summary" }),
+					entryId: undefined,
+				},
 				{ type: "compaction_cost", kind: "compaction", usage: previousUsage },
 			],
 			{},
@@ -147,6 +153,7 @@ describe("InteractiveMode compaction events", () => {
 			renderSessionEntries: vi.fn(),
 			addMessageToChat: vi.fn(),
 			addCompactionCostNotice: vi.fn(),
+			startFreshMessageRenderScope: vi.fn(),
 			showError: vi.fn(),
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
@@ -179,6 +186,7 @@ describe("InteractiveMode compaction events", () => {
 			willRetry: false,
 		});
 
+		expect(fakeThis.startFreshMessageRenderScope).toHaveBeenCalledTimes(1);
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
 		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousCompaction]);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);

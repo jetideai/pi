@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
@@ -19,7 +19,7 @@ import {
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
-import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
+import { getTextOutput, invalidArgText, SectionedToolCallHeader, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
 
@@ -243,6 +243,28 @@ function formatShellCall(args: { command?: string; timeout?: number } | undefine
 	return theme.fg("toolTitle", theme.bold(`${prompt} ${commandDisplay}`)) + timeoutSuffix;
 }
 
+function formatSectionedBashCall(args: { command?: string; timeout?: number } | undefined, width: number): string {
+	const command = str(args?.command);
+	const action = theme.fg("toolTitle", theme.bold("$ "));
+	const commandWidth = Math.max(0, width - visibleWidth(action));
+	let commandDisplay: string;
+	if (command === null) {
+		commandDisplay = invalidArgText(theme);
+	} else {
+		const rawCommand = command || "...";
+		const commandHead = truncateToWidth(rawCommand, commandWidth, "");
+		commandDisplay = theme.fg("toolTitle", theme.bold(commandHead));
+	}
+
+	let text = action + commandDisplay;
+	const timeout = args?.timeout;
+	if (timeout) {
+		const timeoutSuffix = theme.fg("muted", ` (timeout ${timeout}s)`);
+		if (visibleWidth(text) + visibleWidth(timeoutSuffix) <= width) text += timeoutSuffix;
+	}
+	return truncateToWidth(text, width, "");
+}
+
 function rebuildBashResultRenderComponent(
 	component: BashResultRenderComponent,
 	result: {
@@ -253,9 +275,11 @@ function rebuildBashResultRenderComponent(
 	showImages: boolean,
 	startedAt: number | undefined,
 	endedAt: number | undefined,
+	sectioned: boolean,
 ): void {
 	const state = component.state;
 	component.clear();
+	let hasContent = false;
 
 	let output = getTextOutput(result as any, showImages).trim();
 	const truncation = result.details?.truncation;
@@ -274,7 +298,7 @@ function rebuildBashResultRenderComponent(
 			.join("\n");
 
 		if (options.expanded) {
-			component.addChild(new Text(`\n${styledOutput}`, 0, 0));
+			component.addChild(new Text(`${sectioned ? "" : "\n"}${styledOutput}`, 0, 0));
 		} else {
 			component.addChild({
 				render: (width: number) => {
@@ -288,9 +312,13 @@ function rebuildBashResultRenderComponent(
 						const hint =
 							theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
 							` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-						return ["", truncateToWidth(hint, width, "..."), ...(state.cachedLines ?? [])];
+						return [
+							...(sectioned ? [] : [""]),
+							truncateToWidth(hint, width, "..."),
+							...(state.cachedLines ?? []),
+						];
 					}
-					return ["", ...(state.cachedLines ?? [])];
+					return [...(sectioned ? [] : [""]), ...(state.cachedLines ?? [])];
 				},
 				invalidate: () => {
 					state.cachedWidth = undefined;
@@ -299,6 +327,7 @@ function rebuildBashResultRenderComponent(
 				},
 			});
 		}
+		hasContent = true;
 	}
 
 	if (truncation?.truncated || fullOutputPath) {
@@ -315,13 +344,22 @@ function rebuildBashResultRenderComponent(
 				);
 			}
 		}
-		component.addChild(new Text(`\n${theme.fg("warning", `[${warnings.join(". ")}]`)}`, 0, 0));
+		component.addChild(
+			new Text(`${hasContent || !sectioned ? "\n" : ""}${theme.fg("warning", `[${warnings.join(". ")}]`)}`, 0, 0),
+		);
+		hasContent = true;
 	}
 
 	if (startedAt !== undefined) {
 		const label = options.isPartial ? "Elapsed" : "Took";
 		const endTime = endedAt ?? Date.now();
-		component.addChild(new Text(`\n${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`, 0, 0));
+		component.addChild(
+			new Text(
+				`${hasContent || !sectioned ? "\n" : ""}${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`,
+				0,
+				0,
+			),
+		);
 	}
 }
 
@@ -484,6 +522,20 @@ export function createShellToolDefinition(
 				state.startedAt = Date.now();
 				state.endedAt = undefined;
 			}
+			if (context.sectioned && !context.expanded) {
+				const component =
+					context.lastComponent instanceof SectionedToolCallHeader
+						? context.lastComponent
+						: new SectionedToolCallHeader("", 0, 0);
+				component.setSectionedContent(
+					(width) => formatSectionedBashCall(args, width),
+					formatShellCall(args, config.prompt),
+				);
+				return component;
+			}
+			if (context.lastComponent instanceof SectionedToolCallHeader) {
+				context.lastComponent.clearSectionedContent();
+			}
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(formatShellCall(args, config.prompt));
 			return text;
@@ -509,6 +561,7 @@ export function createShellToolDefinition(
 				context.showImages,
 				state.startedAt,
 				state.endedAt,
+				context.sectioned === true,
 			);
 			component.invalidate();
 			return component;

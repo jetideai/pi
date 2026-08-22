@@ -42,7 +42,11 @@ import type {
 	MarkdownTransformer,
 	MessageEndEvent,
 	MessageEndEventResult,
+	MessageRenderBoundaryDecoratorV1,
+	MessageRenderBoundarySelectorV2,
+	MessageRenderBoundarySelectorV3,
 	MessageRenderer,
+	MessageRenderProjectionObserverV1,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
@@ -60,6 +64,7 @@ import type {
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolPresentationOverrideV1,
 	ToolResultEvent,
 	ToolResultEventResult,
 	UIPromptKind,
@@ -638,6 +643,36 @@ export class ExtensionRunner {
 
 	getMarkdownTransformers(): MarkdownTransformer[] {
 		return this.extensions.flatMap((ext) => (ext.markdownTransformer ? [ext.markdownTransformer] : []));
+	}
+
+	getMessageRenderBoundaryDecoratorsV1(): MessageRenderBoundaryDecoratorV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderBoundaryDecoratorV1 ? [extension.messageRenderBoundaryDecoratorV1] : [],
+		);
+	}
+
+	getMessageRenderBoundarySelectorsV2(): MessageRenderBoundarySelectorV2[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderBoundarySelectorV2 ? [extension.messageRenderBoundarySelectorV2] : [],
+		);
+	}
+
+	getMessageRenderBoundarySelectorsV3(): MessageRenderBoundarySelectorV3[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderBoundarySelectorV3 ? [extension.messageRenderBoundarySelectorV3] : [],
+		);
+	}
+
+	getToolPresentationOverridesV1(): ToolPresentationOverrideV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.toolPresentationOverrideV1 ? [extension.toolPresentationOverrideV1] : [],
+		);
+	}
+
+	getMessageRenderProjectionObserversV1(): MessageRenderProjectionObserverV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderProjectionObserverV1 ? [extension.messageRenderProjectionObserverV1] : [],
+		);
 	}
 
 	getEntryRenderer(customType: string): EntryRenderer | undefined {

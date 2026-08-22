@@ -142,7 +142,15 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
-	| Exclude<AgentEvent, { type: "agent_end" }>
+	| Exclude<AgentEvent, { type: "agent_end" | "message_start" | "message_update" | "message_end" }>
+	| { type: "message_start"; message: AgentMessage; entryId: string }
+	| {
+			type: "message_update";
+			message: AgentMessage;
+			assistantMessageEvent: MessageUpdateEvent["assistantMessageEvent"];
+			entryId: string;
+	  }
+	| { type: "message_end"; message: AgentMessage; entryId: string }
 	| {
 			type: "agent_end";
 			messages: AgentMessage[];
@@ -321,6 +329,7 @@ export class AgentSession {
 	private _isAgentRunActive = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
+	private _activeMessageEntryId: string | undefined;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -640,8 +649,29 @@ export class AgentSession {
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
+	private _clearActiveMessageEntryId(): void {
+		if (this._activeMessageEntryId) {
+			this.sessionManager.discardReservedEntryId(this._activeMessageEntryId);
+			this._activeMessageEntryId = undefined;
+		}
+	}
+
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		if (event.type === "message_start") {
+			this._clearActiveMessageEntryId();
+			this._activeMessageEntryId = this.sessionManager.reserveEntryId();
+		}
+		const entryId =
+			event.type === "message_start" || event.type === "message_update" || event.type === "message_end"
+				? this._activeMessageEntryId
+				: undefined;
+		if (
+			(event.type === "message_start" || event.type === "message_update" || event.type === "message_end") &&
+			!entryId
+		) {
+			throw new Error(`Missing reserved entry ID for ${event.type}`);
+		}
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -665,10 +695,16 @@ export class AgentSession {
 		}
 
 		// Emit to extensions first
-		await this._emitExtensionEvent(event);
+		await this._emitExtensionEvent(event, entryId);
 
 		// Notify all listeners
-		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
+		this._emit(
+			event.type === "agent_end"
+				? { ...event, willRetry: this._willRetryAfterAgentEnd(event) }
+				: event.type === "message_start" || event.type === "message_update" || event.type === "message_end"
+					? { ...event, entryId: entryId! }
+					: event,
+		);
 
 		// Handle session persistence
 		if (event.type === "message_end") {
@@ -680,6 +716,7 @@ export class AgentSession {
 					event.message.content,
 					event.message.display,
 					event.message.details,
+					entryId,
 				);
 			} else if (
 				event.message.role === "user" ||
@@ -687,7 +724,7 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+				this.sessionManager.appendMessage(event.message, entryId);
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
@@ -711,6 +748,9 @@ export class AgentSession {
 					this._retryAttempt = 0;
 				}
 			}
+			this._activeMessageEntryId = undefined;
+		} else if (event.type === "agent_end") {
+			this._clearActiveMessageEntryId();
 		}
 
 		// A turn ends after its assistant message and every tool result has been appended,
@@ -767,7 +807,7 @@ export class AgentSession {
 	}
 
 	/** Emit extension events based on agent events */
-	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
+	private async _emitExtensionEvent(event: AgentEvent, entryId?: string): Promise<void> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start" });
@@ -793,6 +833,7 @@ export class AgentSession {
 			const extensionEvent: MessageStartEvent = {
 				type: "message_start",
 				message: event.message,
+				entryId: entryId!,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "message_update") {
@@ -800,12 +841,14 @@ export class AgentSession {
 				type: "message_update",
 				message: event.message,
 				assistantMessageEvent: event.assistantMessageEvent,
+				entryId: entryId!,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "message_end") {
 			const extensionEvent: MessageEndEvent = {
 				type: "message_end",
 				message: event.message,
+				entryId: entryId!,
 			};
 			const replacement = await this._extensionRunner.emitMessageEnd(extensionEvent);
 			if (replacement) {
@@ -893,6 +936,7 @@ export class AgentSession {
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
+		this._clearActiveMessageEntryId();
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
@@ -1515,15 +1559,21 @@ export class AgentSession {
 	}
 
 	private _appendCustomMessage(appMessage: CustomMessage): void {
-		this.agent.state.messages.push(appMessage);
-		this.sessionManager.appendCustomMessageEntry(
-			appMessage.customType,
-			appMessage.content,
-			appMessage.display,
-			appMessage.details,
-		);
-		this._emit({ type: "message_start", message: appMessage });
-		this._emit({ type: "message_end", message: appMessage });
+		const entryId = this.sessionManager.reserveEntryId();
+		try {
+			this.agent.state.messages.push(appMessage);
+			this._emit({ type: "message_start", message: appMessage, entryId });
+			this.sessionManager.appendCustomMessageEntry(
+				appMessage.customType,
+				appMessage.content,
+				appMessage.display,
+				appMessage.details,
+				entryId,
+			);
+			this._emit({ type: "message_end", message: appMessage, entryId });
+		} finally {
+			this.sessionManager.discardReservedEntryId(entryId);
+		}
 	}
 
 	/**
@@ -2808,7 +2858,7 @@ export class AgentSession {
 		});
 	}
 
-	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+	async reload(): Promise<void> {
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
@@ -2829,7 +2879,6 @@ export class AgentSession {
 			this._extensionShutdownHandler ||
 			this._extensionErrorListener;
 		if (hasBindings) {
-			await options?.beforeSessionStart?.();
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
 		}

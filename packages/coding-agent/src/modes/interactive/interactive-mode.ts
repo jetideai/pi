@@ -77,7 +77,14 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 	MarkdownTransformer,
+	MessageRenderBoundaryDecoratorV1,
+	MessageRenderBoundarySelectorV2,
+	MessageRenderBoundarySelectorV3,
+	MessageRenderFinalizedEntryV1,
+	MessageRenderProjectionMemberV1,
+	MessageRenderProjectionV1,
 	ProjectTrustContext,
+	ToolPresentationOverrideV1,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
@@ -113,7 +120,7 @@ import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
-import { AssistantMessageComponent } from "./components/assistant-message.ts";
+import { AssistantMessageComponent, shouldRenderHiddenThinkingPlaceholder } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
@@ -150,6 +157,7 @@ import {
 } from "./components/status-indicator.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
+import { ToolGroupComponent } from "./components/tool-group.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -214,7 +222,15 @@ type CompactionCostNotice = {
 	usage: Usage;
 };
 
-type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" }> | CompactionCostNotice;
+type RenderMessageItem = { message: AgentMessage; entryId?: string };
+type RenderSessionItem = RenderMessageItem | Extract<SessionEntry, { type: "custom" }> | CompactionCostNotice;
+type LiveAssistantRenderEntry = { entryId: string; message: AssistantMessage; streaming: boolean };
+type AssistantContent = AssistantMessage["content"][number];
+type AssistantToolCall = Extract<AssistantContent, { type: "toolCall" }>;
+type AssistantRenderAtom =
+	| { type: "visual"; content: Exclude<AssistantContent, { type: "toolCall" }>[] }
+	| { type: "tools"; calls: AssistantToolCall[] };
+type OpenToolGroupProjection = { groupId: string; nextOrder: number };
 
 function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "custom" }> {
 	return "type" in item && item.type === "custom";
@@ -222,6 +238,163 @@ function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionE
 
 function isCompactionCostNotice(item: RenderSessionItem): item is CompactionCostNotice {
 	return "type" in item && item.type === "compaction_cost";
+}
+
+function toolGroupId(firstToolCallId: string): string {
+	return `tool-group:${firstToolCallId}`;
+}
+
+function messageRenderProjectionMembers(
+	entryId: string,
+	message: Extract<AgentMessage, { role: "user" | "assistant" }>,
+	openToolGroup?: OpenToolGroupProjection,
+	streaming = false,
+	hideThinkingBlock = false,
+): {
+	members: MessageRenderProjectionMemberV1[];
+	openToolGroup?: OpenToolGroupProjection;
+	closedToolGroupIds: string[];
+} {
+	const closedToolGroupIds: string[] = [];
+	if (message.role === "user") {
+		if (openToolGroup) closedToolGroupIds.push(openToolGroup.groupId);
+		return { members: [{ entryId, role: "user" }], closedToolGroupIds };
+	}
+	const members: MessageRenderProjectionMemberV1[] = [{ entryId, role: "assistant" }];
+	let activeToolGroup = openToolGroup ? { ...openToolGroup } : undefined;
+	for (const atom of assistantRenderAtoms(message, streaming, hideThinkingBlock)) {
+		if (atom.type === "visual") {
+			if (activeToolGroup) closedToolGroupIds.push(activeToolGroup.groupId);
+			activeToolGroup = undefined;
+			continue;
+		}
+		if (!activeToolGroup) {
+			const groupId = toolGroupId(atom.calls[0]!.id);
+			activeToolGroup = { groupId, nextOrder: 0 };
+			members.push({ entryId: groupId, role: "tool-group", groupId, groupClosed: false });
+		}
+		for (const content of atom.calls) {
+			members.push({
+				entryId: content.id,
+				ownerEntryId: entryId,
+				role: "tool",
+				groupId: activeToolGroup.groupId,
+				groupOrder: activeToolGroup.nextOrder++,
+			});
+		}
+	}
+	return { members, ...(activeToolGroup ? { openToolGroup: activeToolGroup } : {}), closedToolGroupIds };
+}
+
+function sameMessageRenderProjectionMembers(
+	left: readonly MessageRenderProjectionMemberV1[],
+	right: readonly MessageRenderProjectionMemberV1[],
+): boolean {
+	if (left.length !== right.length) return false;
+	return left.every((member, index) => {
+		const other = right[index];
+		if (!other || member.entryId !== other.entryId || member.role !== other.role) return false;
+		if (member.role === "tool-group" && other.role === "tool-group") {
+			return member.groupId === other.groupId && member.groupClosed === other.groupClosed;
+		}
+		if (member.role === "tool" && other.role === "tool") {
+			return (
+				member.ownerEntryId === other.ownerEntryId &&
+				member.groupId === other.groupId &&
+				member.groupOrder === other.groupOrder
+			);
+		}
+		return member.role === "user" || member.role === "assistant";
+	});
+}
+
+function closeToolGroups(
+	members: readonly MessageRenderProjectionMemberV1[],
+	groupIds: readonly string[],
+): MessageRenderProjectionMemberV1[] {
+	if (groupIds.length === 0) return [...members];
+	const closedGroupIds = new Set(groupIds);
+	return members.map((member) =>
+		member.role === "tool-group" && closedGroupIds.has(member.groupId) && !member.groupClosed
+			? { ...member, groupClosed: true }
+			: member,
+	);
+}
+
+function canonicalMessageRenderProjectionMembers(
+	members: readonly MessageRenderProjectionMemberV1[],
+): MessageRenderProjectionMemberV1[] {
+	const toolCountByGroup = new Map<string, number>();
+	for (const member of members) {
+		if (member.role === "tool" && member.groupId) {
+			toolCountByGroup.set(member.groupId, (toolCountByGroup.get(member.groupId) ?? 0) + 1);
+		}
+	}
+	const singletonGroups = new Set(
+		[...toolCountByGroup].filter(([, toolCount]) => toolCount === 1).map(([groupId]) => groupId),
+	);
+	return members.flatMap((member) => {
+		if (member.role === "tool-group" && singletonGroups.has(member.groupId)) return [];
+		if (member.role === "tool" && member.groupId && singletonGroups.has(member.groupId)) {
+			return [{ entryId: member.entryId, ownerEntryId: member.ownerEntryId, role: "tool" as const }];
+		}
+		return [member];
+	});
+}
+
+function promotesCanonicalSingletonTool(
+	previous: readonly MessageRenderProjectionMemberV1[],
+	members: readonly MessageRenderProjectionMemberV1[],
+): boolean {
+	return members.some((member) => {
+		if (member.role !== "tool" || member.groupOrder !== 0) return false;
+		const prior = previous.find((candidate) => candidate.entryId === member.entryId);
+		return prior?.role === "tool" && prior.groupId === undefined;
+	});
+}
+
+function isMessageRenderProjectionPrefix(
+	prefix: readonly MessageRenderProjectionMemberV1[],
+	members: readonly MessageRenderProjectionMemberV1[],
+): boolean {
+	return sameMessageRenderProjectionMembers(prefix, members.slice(0, prefix.length));
+}
+
+function assistantRenderAtoms(
+	message: AssistantMessage,
+	streaming: boolean,
+	hideThinkingBlock: boolean,
+): AssistantRenderAtom[] {
+	const atoms: AssistantRenderAtom[] = [];
+	const showHiddenThinkingPlaceholder = shouldRenderHiddenThinkingPlaceholder(message, streaming, hideThinkingBlock);
+	for (const content of message.content) {
+		if (content.type === "text" && !content.text.trim()) continue;
+		if (content.type === "thinking" && hideThinkingBlock && !showHiddenThinkingPlaceholder) continue;
+		if (content.type === "toolCall") {
+			const previous = atoms.at(-1);
+			if (previous?.type === "tools") {
+				previous.calls.push(content);
+			} else {
+				atoms.push({ type: "tools", calls: [content] });
+			}
+		} else {
+			const previous = atoms.at(-1);
+			if (previous?.type === "visual") {
+				previous.content.push(content);
+			} else {
+				atoms.push({ type: "visual", content: [content] });
+			}
+		}
+	}
+	const hasToolCalls = message.content.some((content) => content.type === "toolCall");
+	if (
+		atoms.length === 0 &&
+		(message.stopReason === "length" ||
+			(!hasToolCalls && (message.stopReason === "aborted" || message.stopReason === "error")))
+	) {
+		atoms.push({ type: "visual", content: [] });
+	}
+	return atoms;
 }
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
@@ -473,6 +646,14 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	private liveRenderContainer: Container | undefined = undefined;
+	private liveAssistantRenderEntries: LiveAssistantRenderEntry[] = [];
+	private liveToolComponents = new Map<string, ToolExecutionComponent>();
+	private messageRenderMembers: MessageRenderProjectionMemberV1[] = [];
+	private publishedCanonicalMessageRenderMembers: MessageRenderProjectionMemberV1[] | undefined = undefined;
+	private messageRenderOpenToolGroup: OpenToolGroupProjection | undefined = undefined;
+	private publishedStreamingMessageRenderMembers: MessageRenderProjectionMemberV1[] | undefined = undefined;
+	private messageRenderScopeId = crypto.randomUUID();
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -493,6 +674,7 @@ export class InteractiveMode {
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
+	private renderEventTail: Promise<void> = Promise.resolve();
 	private signalCleanupHandlers: Array<() => void> = [];
 
 	// Track if editor is in bash mode (text starts with !)
@@ -574,7 +756,7 @@ export class InteractiveMode {
 			this.resetExtensionUI();
 		});
 		this.runtimeHost.setRebindSession(async () => {
-			await this.rebindCurrentSession({ renderBeforeBind: true });
+			await this.rebindCurrentSession({ renderReplacementState: true });
 			await this.themeController.applyFromSettings();
 		});
 		this.version = VERSION;
@@ -1039,7 +1221,7 @@ export class InteractiveMode {
 		await this.rebindCurrentSession();
 
 		// Render initial messages AFTER showing loaded resources
-		this.renderInitialMessages();
+		await this.renderInitialMessages();
 
 		// Set up theme file watcher
 		onThemeChange(() => {
@@ -1948,7 +2130,7 @@ export class InteractiveMode {
 					}
 
 					this.chatContainer.clear();
-					this.renderInitialMessages();
+					await this.renderInitialMessages();
 					if (result.editorText && !this.editor.getText().trim()) {
 						this.editor.setText(result.editorText);
 					}
@@ -2015,15 +2197,14 @@ export class InteractiveMode {
 		}
 	}
 
-	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
+	private async rebindCurrentSession(options: { renderReplacementState?: boolean } = {}): Promise<void> {
 		const session = this.session;
 
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.applyRuntimeSettings();
 
-		if (options.renderBeforeBind) {
-			this.renderCurrentSessionState();
+		if (options.renderReplacementState) {
 			this.subscribeToAgent();
 		}
 
@@ -2033,7 +2214,9 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (!options.renderBeforeBind) {
+		if (options.renderReplacementState) {
+			await this.renderCurrentSessionState();
+		} else {
 			this.subscribeToAgent();
 		}
 
@@ -2050,7 +2233,8 @@ export class InteractiveMode {
 		process.exit(1);
 	}
 
-	private renderCurrentSessionState(): void {
+	private async renderCurrentSessionState(): Promise<void> {
+		this.startFreshMessageRenderScope();
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -2058,7 +2242,7 @@ export class InteractiveMode {
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();
-		this.renderInitialMessages();
+		await this.renderInitialMessages();
 	}
 
 	/**
@@ -2070,6 +2254,193 @@ export class InteractiveMode {
 
 	private getMarkdownTransformers(): MarkdownTransformer[] {
 		return [this.mermaidMarkdownTransformer, ...this.session.extensionRunner.getMarkdownTransformers()];
+	}
+
+	private getMessageRenderBoundaryDecoratorsV1(): MessageRenderBoundaryDecoratorV1[] {
+		return this.session.extensionRunner.getMessageRenderBoundaryDecoratorsV1();
+	}
+
+	private getMessageRenderBoundarySelectorsV2(): MessageRenderBoundarySelectorV2[] {
+		return this.session.extensionRunner?.getMessageRenderBoundarySelectorsV2?.() ?? [];
+	}
+
+	private getMessageRenderBoundarySelectorsV3(): MessageRenderBoundarySelectorV3[] {
+		return this.session.extensionRunner?.getMessageRenderBoundarySelectorsV3?.() ?? [];
+	}
+
+	private getToolPresentationOverridesV1(): ToolPresentationOverrideV1[] {
+		return this.session.extensionRunner.getToolPresentationOverridesV1();
+	}
+
+	private renderAssistantAtoms(
+		container: Container,
+		message: AssistantMessage,
+		entryId: string | undefined,
+		streaming: boolean,
+		openToolGroup: ToolGroupComponent | undefined,
+		renderVisual: (message: AssistantMessage, streaming: boolean) => void,
+		getToolComponent: (content: AssistantToolCall) => ToolExecutionComponent,
+	): ToolGroupComponent | undefined {
+		for (const atom of assistantRenderAtoms(message, streaming, this.hideThinkingBlock)) {
+			if (atom.type === "visual") {
+				openToolGroup = undefined;
+				renderVisual({ ...message, content: atom.content }, streaming);
+				continue;
+			}
+
+			if (!openToolGroup) {
+				const groupId = toolGroupId(atom.calls[0]!.id);
+				openToolGroup = new ToolGroupComponent({
+					groupId,
+					closed: this.messageRenderMembers.some(
+						(member) => member.role === "tool-group" && member.groupId === groupId && member.groupClosed,
+					),
+					outputPad: this.outputPad,
+					semanticDecorators: this.getMessageRenderBoundaryDecoratorsV1(),
+					semanticSelectorsV2: this.getMessageRenderBoundarySelectorsV2?.() ?? [],
+					semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3?.() ?? [],
+					producerSessionId: this.sessionManager.getSessionId?.() ?? "unknown-session",
+					renderScopeId: this.messageRenderScopeId,
+				});
+				container.addChild(openToolGroup);
+			}
+
+			for (const content of atom.calls) {
+				openToolGroup.addTool(getToolComponent(content), {
+					toolName: content.name,
+					toolCallId: content.id,
+					...(entryId ? { ownerEntryId: entryId } : {}),
+				});
+			}
+		}
+		return openToolGroup;
+	}
+
+	private getLiveToolComponent(content: AssistantToolCall, entryId: string): ToolExecutionComponent {
+		let component = this.liveToolComponents.get(content.id);
+		if (component) {
+			component.updateArgs(content.arguments);
+			return component;
+		}
+		component = new ToolExecutionComponent(
+			content.name,
+			content.id,
+			content.arguments,
+			{
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+				ownerEntryId: entryId,
+				semanticDecorators: this.getMessageRenderBoundaryDecoratorsV1(),
+				semanticSelectorsV2: this.getMessageRenderBoundarySelectorsV2?.() ?? [],
+				semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3?.() ?? [],
+				producerSessionId: this.sessionManager.getSessionId?.() ?? "unknown-session",
+				renderScopeId: this.messageRenderScopeId,
+				presentationOverrides: this.getToolPresentationOverridesV1(),
+			},
+			this.getRegisteredToolDefinition(content.name),
+			this.ui,
+			this.sessionManager.getCwd(),
+		);
+		component.setExpanded(this.toolOutputExpanded);
+		this.liveToolComponents.set(content.id, component);
+		this.pendingTools.set(content.id, component);
+		return component;
+	}
+
+	private renderLiveAssistantEntries(): void {
+		const container = this.liveRenderContainer;
+		if (!container) return;
+		container.clear();
+		for (const { entryId, message, streaming } of this.liveAssistantRenderEntries) {
+			this.renderAssistantAtoms(
+				container,
+				message,
+				entryId,
+				streaming,
+				undefined,
+				(visualMessage, isStreaming) => {
+					const component = new AssistantMessageComponent(
+						undefined,
+						this.hideThinkingBlock,
+						this.getMarkdownThemeWithSettings(),
+						this.hiddenThinkingLabel,
+						this.outputPad,
+						this.getMarkdownTransformers(),
+						{
+							entryId,
+							decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+						},
+					);
+					component.updateContent(visualMessage, isStreaming);
+					container.addChild(component);
+				},
+				(content) => this.getLiveToolComponent(content, entryId),
+			);
+		}
+	}
+
+	private updateLiveAssistantEntry(entryId: string, message: AssistantMessage, streaming: boolean): void {
+		const existing = this.liveAssistantRenderEntries.find((entry) => entry.entryId === entryId);
+		if (existing) {
+			existing.message = message;
+			existing.streaming = streaming;
+		} else {
+			this.liveAssistantRenderEntries.push({ entryId, message, streaming });
+		}
+		this.renderLiveAssistantEntries();
+	}
+
+	private publishMessageRenderProjectionV1(
+		members: readonly MessageRenderProjectionMemberV1[],
+		requestedMode: "append" | "replace",
+		finalized?: MessageRenderFinalizedEntryV1,
+	): Readonly<MessageRenderProjectionV1> {
+		const canonicalMembers = canonicalMessageRenderProjectionMembers(members);
+		const previousMembers = this.publishedCanonicalMessageRenderMembers;
+		const mode =
+			requestedMode === "append" &&
+			previousMembers &&
+			(!isMessageRenderProjectionPrefix(previousMembers, canonicalMembers) ||
+				promotesCanonicalSingletonTool(previousMembers, canonicalMembers))
+				? "replace"
+				: requestedMode;
+		this.publishedCanonicalMessageRenderMembers = canonicalMembers;
+		const observers = this.session.extensionRunner.getMessageRenderProjectionObserversV1();
+		const projection = Object.freeze({
+			members: Object.freeze(canonicalMembers.map((member) => Object.freeze({ ...member }))),
+			mode,
+			...(finalized ? { finalized: Object.freeze({ ...finalized }) } : {}),
+		});
+		for (const observe of observers) {
+			try {
+				observe(projection);
+			} catch {
+				// Projection observers cannot interrupt stock transcript rendering.
+			}
+		}
+		return projection;
+	}
+
+	private publishStreamingMessageRenderProjectionV1(entryId: string, message: AssistantMessage): void {
+		const projection = messageRenderProjectionMembers(entryId, message, undefined, true, this.hideThinkingBlock);
+		const members = [...this.messageRenderMembers, ...projection.members];
+		if (
+			this.publishedStreamingMessageRenderMembers &&
+			sameMessageRenderProjectionMembers(this.publishedStreamingMessageRenderMembers, members)
+		) {
+			return;
+		}
+		this.publishedStreamingMessageRenderMembers = members;
+		this.publishMessageRenderProjectionV1(members, "append");
+	}
+
+	private releaseActiveAgentRunRendering(): void {
+		this.pendingTools.clear();
+		this.liveRenderContainer = undefined;
+		this.liveAssistantRenderEntries = [];
+		this.liveToolComponents.clear();
+		this.publishedStreamingMessageRenderMembers = undefined;
+		this.messageRenderOpenToolGroup = undefined;
 	}
 
 	/**
@@ -2201,6 +2572,33 @@ export class InteractiveMode {
 			this.streamingComponent.setHiddenThinkingLabel(this.hiddenThinkingLabel);
 		}
 		this.ui.requestRender();
+	}
+
+	private setOutputPad(padding: 0 | 1): void {
+		this.settingsManager.setOutputPad(padding);
+		this.outputPad = padding;
+		if (this.streamingComponent || this.session.isStreaming) {
+			for (const child of this.chatContainer.children) {
+				if (
+					child instanceof AssistantMessageComponent ||
+					child instanceof CustomMessageComponent ||
+					child instanceof UserMessageComponent
+				) {
+					child.setOutputPad(padding);
+				} else if (child instanceof ToolGroupComponent) {
+					child.setOutputPad(padding);
+				}
+			}
+			if (this.liveRenderContainer) {
+				this.renderLiveAssistantEntries();
+			}
+			if (this.streamingComponent) {
+				this.streamingComponent.setOutputPad(padding);
+			}
+			this.ui.requestRender();
+			return;
+		}
+		void this.rebuildChatFromMessages();
 	}
 
 	/**
@@ -3171,9 +3569,21 @@ export class InteractiveMode {
 	}
 
 	private subscribeToAgent(): void {
-		this.unsubscribe = this.session.subscribe(async (event) => {
-			await this.handleEvent(event);
+		this.unsubscribe = this.session.subscribe((event) => {
+			this.renderEventTail = this.renderEventTail
+				.then(() => this.handleEvent(event))
+				.catch((error: unknown) => this.handleRenderEventFailure(event, error));
 		});
+	}
+
+	private handleRenderEventFailure(event: AgentSessionEvent, error: unknown): void {
+		const message = error instanceof Error ? error.message : String(error);
+		this.showError(`Failed to render ${event.type}: ${message}`);
+		if (event.type !== "agent_end") return;
+		if (this.settingsManager.getShowTerminalProgress()) this.ui.terminal.setProgress(false);
+		this.clearStatusIndicator("working");
+		this.releaseActiveAgentRunRendering();
+		this.ui.renderNow();
 	}
 
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
@@ -3185,7 +3595,10 @@ export class InteractiveMode {
 
 		switch (event.type) {
 			case "agent_start":
-				this.pendingTools.clear();
+				this.releaseActiveAgentRunRendering();
+				if (this.settingsManager.getShowTerminalProgress()) {
+					this.ui.terminal.setProgress(true);
+				}
 				// Restore main escape handler if retry handler is still active
 				// (retry success event fires later, but we need main handler now)
 				if (this.retryEscapeHandler) {
@@ -3236,64 +3649,70 @@ export class InteractiveMode {
 					this.addMessageToChat(event.message);
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
-					this.addMessageToChat(event.message);
+					const closedGroupIds = this.messageRenderOpenToolGroup ? [this.messageRenderOpenToolGroup.groupId] : [];
+					this.messageRenderOpenToolGroup = undefined;
+					this.messageRenderMembers = [
+						...closeToolGroups(this.messageRenderMembers, closedGroupIds),
+						{ entryId: event.entryId, role: "user" },
+					];
+					this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
+						entryId: event.entryId,
+						message: event.message,
+					});
+					if (closedGroupIds.length > 0) this.renderLiveAssistantEntries();
+					this.addMessageToChat(event.message, { entryId: event.entryId });
 					this.updatePendingMessagesDisplay();
-					this.ui.requestRender();
+					if (closedGroupIds.length > 0) this.ui.renderNow();
+					else this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
-					this.streamingComponent = new AssistantMessageComponent(
-						undefined,
-						this.hideThinkingBlock,
-						this.getMarkdownThemeWithSettings(),
-						this.hiddenThinkingLabel,
-						this.outputPad,
-						this.getMarkdownTransformers(),
-					);
+					if (!this.liveRenderContainer) {
+						this.liveRenderContainer = new Container();
+						this.chatContainer.addChild(this.liveRenderContainer);
+					}
 					this.streamingMessage = event.message;
-					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage, true);
+					this.publishStreamingMessageRenderProjectionV1(event.entryId, this.streamingMessage);
+					this.updateLiveAssistantEntry(event.entryId, this.streamingMessage, true);
 					this.ui.requestRender();
 				}
 				break;
 
 			case "message_update":
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if (this.liveRenderContainer && event.message.role === "assistant") {
+					this.streamingMessage = event.message;
+					this.publishStreamingMessageRenderProjectionV1(event.entryId, this.streamingMessage);
+					this.updateLiveAssistantEntry(event.entryId, this.streamingMessage, true);
+					this.ui.requestRender();
+				} else if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
-
-					for (const content of this.streamingMessage.content) {
-						if (content.type === "toolCall") {
-							if (!this.pendingTools.has(content.id)) {
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.id,
-									content.arguments,
-									{
-										showImages: this.settingsManager.getShowImages(),
-										imageWidthCells: this.settingsManager.getImageWidthCells(),
-									},
-									this.getRegisteredToolDefinition(content.name),
-									this.ui,
-									this.sessionManager.getCwd(),
-								);
-								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-							} else {
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
-							}
-						}
-					}
 					this.ui.requestRender();
 				}
 				break;
 
 			case "message_end":
 				if (event.message.role === "user") break;
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if ((this.liveRenderContainer || this.streamingComponent) && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
+					const projection = messageRenderProjectionMembers(
+						event.entryId,
+						event.message,
+						undefined,
+						false,
+						this.hideThinkingBlock,
+					);
+					this.messageRenderOpenToolGroup = undefined;
+					this.messageRenderMembers = closeToolGroups(
+						[...this.messageRenderMembers, ...projection.members],
+						[
+							...projection.closedToolGroupIds,
+							...(projection.openToolGroup ? [projection.openToolGroup.groupId] : []),
+						],
+					);
+					this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
+						entryId: event.entryId,
+						message: this.streamingMessage,
+					});
+					this.publishedStreamingMessageRenderMembers = undefined;
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
 						const retryAttempt = this.session.retryAttempt;
@@ -3303,7 +3722,11 @@ export class InteractiveMode {
 								: "Operation aborted";
 						this.streamingMessage.errorMessage = errorMessage;
 					}
-					this.streamingComponent.updateContent(this.streamingMessage, false);
+					if (this.liveRenderContainer) {
+						this.updateLiveAssistantEntry(event.entryId, this.streamingMessage, false);
+					} else {
+						this.streamingComponent?.updateContent(this.streamingMessage, false);
+					}
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 						if (!errorMessage) {
@@ -3326,8 +3749,8 @@ export class InteractiveMode {
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 					this.footer.invalidate();
-				}
-				this.ui.requestRender();
+					this.ui.renderNow();
+				} else this.ui.requestRender();
 				break;
 
 			case "bash_execution_update":
@@ -3344,6 +3767,7 @@ export class InteractiveMode {
 						{
 							showImages: this.settingsManager.getShowImages(),
 							imageWidthCells: this.settingsManager.getImageWidthCells(),
+							presentationOverrides: this.getToolPresentationOverridesV1(),
 						},
 						this.getRegisteredToolDefinition(event.toolName),
 						this.ui,
@@ -3372,12 +3796,19 @@ export class InteractiveMode {
 				if (component) {
 					component.updateResult({ ...event.result, isError: event.isError });
 					this.pendingTools.delete(event.toolCallId);
-					this.ui.requestRender();
+					this.ui.renderNow();
 				}
 				break;
 			}
 
-			case "agent_end":
+			case "agent_end": {
+				if (this.messageRenderOpenToolGroup) {
+					const closedGroupId = this.messageRenderOpenToolGroup.groupId;
+					this.messageRenderOpenToolGroup = undefined;
+					this.messageRenderMembers = closeToolGroups(this.messageRenderMembers, [closedGroupId]);
+					this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+					this.renderLiveAssistantEntries();
+				}
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
 				}
@@ -3387,10 +3818,11 @@ export class InteractiveMode {
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 				}
-				this.pendingTools.clear();
+				this.releaseActiveAgentRunRendering();
 
-				this.ui.requestRender();
+				this.ui.renderNow();
 				break;
+			}
 
 			case "agent_settled":
 				await this.checkShutdownRequested();
@@ -3430,9 +3862,10 @@ export class InteractiveMode {
 					if (entries[0]?.type !== "compaction") {
 						throw new Error("Completed compaction is missing from the session context");
 					}
+					this.startFreshMessageRenderScope();
 					this.chatContainer.clear();
 					// The latest compaction is prepended for model context; append it below at its chronological position.
-					this.renderSessionEntries(entries.slice(1));
+					await this.renderSessionEntries(entries.slice(1));
 					this.addMessageToChat(
 						createCompactionSummaryMessage(
 							event.result.summary,
@@ -3587,9 +4020,14 @@ export class InteractiveMode {
 		}
 
 		this.chatContainer.addChild(component);
+		if (this.liveRenderContainer && !this.streamingMessage) {
+			this.liveRenderContainer = undefined;
+			this.liveAssistantRenderEntries = [];
+			this.liveToolComponents.clear();
+		}
 	}
 
-	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
+	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean; entryId?: string }): void {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
@@ -3665,6 +4103,12 @@ export class InteractiveMode {
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
 							this.getMarkdownTransformers(),
+							options?.entryId
+								? {
+										entryId: options.entryId,
+										decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+									}
+								: undefined,
 						);
 						this.chatContainer.addChild(userComponent);
 					}
@@ -3682,6 +4126,12 @@ export class InteractiveMode {
 					this.hiddenThinkingLabel,
 					this.outputPad,
 					this.getMarkdownTransformers(),
+					options?.entryId
+						? {
+								entryId: options.entryId,
+								decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+							}
+						: undefined,
 				);
 				this.chatContainer.addChild(assistantComponent);
 				break;
@@ -3696,11 +4146,37 @@ export class InteractiveMode {
 		}
 	}
 
-	private renderSessionItems(
+	private async renderSessionItems(
 		items: readonly RenderSessionItem[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
-	): void {
+	): Promise<void> {
 		this.pendingTools.clear();
+		let messageMembers: MessageRenderProjectionMemberV1[] = [];
+		for (const item of items) {
+			if (isCustomSessionEntry(item) || isCompactionCostNotice(item)) {
+				continue;
+			}
+			if ((item.message.role === "user" || item.message.role === "assistant") && item.entryId) {
+				const projection = messageRenderProjectionMembers(
+					item.entryId,
+					item.message,
+					undefined,
+					false,
+					this.hideThinkingBlock,
+				);
+				messageMembers = closeToolGroups(
+					[...messageMembers, ...projection.members],
+					[
+						...projection.closedToolGroupIds,
+						...(projection.openToolGroup ? [projection.openToolGroup.groupId] : []),
+					],
+				);
+			}
+		}
+		this.messageRenderMembers = messageMembers;
+		this.messageRenderOpenToolGroup = undefined;
+		this.publishedStreamingMessageRenderMembers = undefined;
+		this.publishMessageRenderProjectionV1(messageMembers, "replace");
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
 		// list and re-inject them after the assistant messages that paid for them.
@@ -3723,13 +4199,17 @@ export class InteractiveMode {
 				continue;
 			}
 
-			const message = item;
+			const { message, entryId } = item;
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
-				this.addMessageToChat(message);
-				// Render tool call components
-				for (const content of message.content) {
-					if (content.type === "toolCall") {
+				this.renderAssistantAtoms(
+					this.chatContainer,
+					message,
+					entryId,
+					false,
+					undefined,
+					(visualMessage) => this.addMessageToChat(visualMessage, { entryId }),
+					(content) => {
 						const component = new ToolExecutionComponent(
 							content.name,
 							content.id,
@@ -3737,13 +4217,19 @@ export class InteractiveMode {
 							{
 								showImages: this.settingsManager.getShowImages(),
 								imageWidthCells: this.settingsManager.getImageWidthCells(),
+								ownerEntryId: entryId,
+								semanticDecorators: this.getMessageRenderBoundaryDecoratorsV1(),
+								semanticSelectorsV2: this.getMessageRenderBoundarySelectorsV2?.() ?? [],
+								semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3?.() ?? [],
+								producerSessionId: this.sessionManager.getSessionId?.() ?? "unknown-session",
+								renderScopeId: this.messageRenderScopeId,
+								presentationOverrides: this.getToolPresentationOverridesV1(),
 							},
 							this.getRegisteredToolDefinition(content.name),
 							this.ui,
 							this.sessionManager.getCwd(),
 						);
 						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
 							let errorMessage: string;
@@ -3760,8 +4246,9 @@ export class InteractiveMode {
 						} else {
 							renderedPendingTools.set(content.id, component);
 						}
-					}
-				}
+						return component;
+					},
+				);
 				if (message.stopReason !== "aborted" && message.stopReason !== "error") {
 					const miss = cacheMisses.get(message);
 					if (miss) this.addCacheMissNotice(miss);
@@ -3775,14 +4262,14 @@ export class InteractiveMode {
 				}
 			} else {
 				// All other messages use standard rendering
-				this.addMessageToChat(message, options);
+				this.addMessageToChat(message, { ...options, entryId });
 			}
 		}
 
 		for (const [toolCallId, component] of renderedPendingTools) {
 			this.pendingTools.set(toolCallId, component);
 		}
-		this.ui.requestRender();
+		this.ui.renderNow();
 	}
 
 	/**
@@ -3791,21 +4278,24 @@ export class InteractiveMode {
 	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
 	 */
-	private renderSessionEntries(
+	private async renderSessionEntries(
 		entries: SessionEntry[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
-	): void {
+	): Promise<void> {
 		const items = entries.flatMap((entry): RenderSessionItem[] => {
 			if (entry.type === "custom") {
 				return [entry];
 			}
-			const messages = sessionEntryToContextMessages(entry);
+			const messages: RenderMessageItem[] = sessionEntryToContextMessages(entry).map((message) => ({
+				message,
+				entryId: entry.type === "message" ? entry.id : undefined,
+			}));
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {
 				return [...messages, { type: "compaction_cost", kind: entry.type, usage: entry.usage }];
 			}
 			return messages;
 		});
-		this.renderSessionItems(items, options);
+		await this.renderSessionItems(items, options);
 	}
 
 	/**
@@ -3854,9 +4344,9 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Text(text, 1, 0));
 	}
 
-	renderInitialMessages(): void {
+	async renderInitialMessages(): Promise<void> {
 		const entries = this.sessionManager.buildContextEntries();
-		this.renderSessionEntries(entries, {
+		await this.renderSessionEntries(entries, {
 			updateFooter: true,
 			populateHistory: true,
 		});
@@ -3905,9 +4395,14 @@ export class InteractiveMode {
 		});
 	}
 
-	private rebuildChatFromMessages(): void {
+	private startFreshMessageRenderScope(): void {
+		this.messageRenderScopeId = crypto.randomUUID();
+	}
+
+	private async rebuildChatFromMessages(options?: { freshTranscriptRender?: boolean }): Promise<void> {
+		if (options?.freshTranscriptRender) this.startFreshMessageRenderScope();
 		this.chatContainer.clear();
-		this.renderSessionEntries(this.sessionManager.buildContextEntries());
+		await this.renderSessionEntries(this.sessionManager.buildContextEntries());
 	}
 
 	// =========================================================================
@@ -4217,6 +4712,9 @@ export class InteractiveMode {
 			if (child instanceof AssistantMessageComponent) {
 				child.setHideThinkingBlock(this.hideThinkingBlock);
 			}
+		}
+		if (this.liveRenderContainer) {
+			this.renderLiveAssistantEntries();
 		}
 		this.ui.requestRender();
 	}
@@ -4668,7 +5166,7 @@ export class InteractiveMode {
 					},
 					onShowCacheMissNoticesChange: (shown) => {
 						this.settingsManager.setShowCacheMissNotices(shown);
-						this.rebuildChatFromMessages();
+						void this.rebuildChatFromMessages();
 					},
 					onCollapseChangelogChange: (collapsed) => {
 						this.settingsManager.setCollapseChangelog(collapsed);
@@ -4699,27 +5197,7 @@ export class InteractiveMode {
 							this.editor.setPaddingX(padding);
 						}
 					},
-					onOutputPadChange: (padding) => {
-						this.settingsManager.setOutputPad(padding);
-						this.outputPad = padding;
-						if (this.streamingComponent || this.session.isStreaming) {
-							for (const child of this.chatContainer.children) {
-								if (
-									child instanceof AssistantMessageComponent ||
-									child instanceof CustomMessageComponent ||
-									child instanceof UserMessageComponent
-								) {
-									child.setOutputPad(padding);
-								}
-							}
-							if (this.streamingComponent) {
-								this.streamingComponent.setOutputPad(padding);
-							}
-							this.ui.requestRender();
-							return;
-						}
-						this.rebuildChatFromMessages();
-					},
+					onOutputPadChange: (padding) => this.setOutputPad(padding),
 					onAutocompleteMaxVisibleChange: (maxVisible) => {
 						this.settingsManager.setAutocompleteMaxVisible(maxVisible);
 						this.defaultEditor.setAutocompleteMaxVisible(maxVisible);
@@ -5286,7 +5764,7 @@ export class InteractiveMode {
 
 						// Update UI
 						this.chatContainer.clear();
-						this.renderInitialMessages();
+						await this.renderInitialMessages();
 						if (result.editorText && !this.editor.getText().trim()) {
 							this.editor.setText(result.editorText);
 						}
@@ -5962,21 +6440,13 @@ export class InteractiveMode {
 			this.ui.requestRender();
 		};
 
-		let chatRestoredBeforeSessionStart = false;
 		let reloadBoxDismissed = false;
-		const restoreChatBeforeSessionStart = () => {
-			if (chatRestoredBeforeSessionStart) {
-				return;
-			}
-			this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
-			this.outputPad = this.settingsManager.getOutputPad();
-			this.rebuildChatFromMessages();
-			chatRestoredBeforeSessionStart = true;
-		};
 
 		try {
-			await this.session.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
-			restoreChatBeforeSessionStart();
+			this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+			this.outputPad = this.settingsManager.getOutputPad();
+			await this.session.reload();
+			await this.rebuildChatFromMessages({ freshTranscriptRender: true });
 			this.keybindings.reload();
 			const activeHeader = this.customHeader ?? this.builtInHeader;
 			if (isExpandable(activeHeader)) {

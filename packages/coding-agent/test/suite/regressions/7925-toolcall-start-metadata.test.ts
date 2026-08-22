@@ -31,6 +31,7 @@ describe("regression #7925: tool-call metadata is available when streaming start
 
 		expect(toJsonEvent(update)).toEqual({
 			type: "message_update",
+			entryId: update.entryId,
 			usage: update.message.usage,
 			assistantMessageEvent: {
 				type: "toolcall_start",

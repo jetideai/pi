@@ -593,6 +593,71 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("message and entry renderers", () => {
+		it("gets message render projection observers in extension load order", async () => {
+			const extCode = (entryId: string) => `
+				export default function(pi) {
+					pi.registerMessageRenderProjectionObserverV1(() => "${entryId}");
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "projection-a.ts"), extCode("a"));
+			fs.writeFileSync(path.join(extensionsDir, "projection-b.ts"), extCode("b"));
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const observers = runner.getMessageRenderProjectionObserversV1();
+
+			expect(observers.map((observe) => (observe as unknown as () => string)())).toEqual(["a", "b"]);
+		});
+
+		it("gets message render boundary decorators in extension load order", async () => {
+			const extCode = (prefix: string) => `
+				export default function(pi) {
+					pi.registerMessageRenderBoundaryDecoratorV1(() => ({ prefix: "${prefix}" }));
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "boundary-a.ts"), extCode("a"));
+			fs.writeFileSync(path.join(extensionsDir, "boundary-b.ts"), extCode("b"));
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const decorators = runner.getMessageRenderBoundaryDecoratorsV1();
+
+			expect(decorators.map((decorate) => decorate({} as never)?.prefix)).toEqual(["a", "b"]);
+		});
+
+		it("gets message render boundary selectors in extension load order", async () => {
+			const extCode = (begin: string) => `
+				export default function(pi) {
+					pi.registerMessageRenderBoundarySelectorV2(() => () => ({ begin: "${begin}" }));
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "boundary-selector-a.ts"), extCode("a"));
+			fs.writeFileSync(path.join(extensionsDir, "boundary-selector-b.ts"), extCode("b"));
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const selectors = runner.getMessageRenderBoundarySelectorsV2();
+			const decorators = selectors.map((select) => select({} as never));
+
+			expect(decorators.map((decorate) => decorate?.({} as never).begin)).toEqual(["a", "b"]);
+		});
+
+		it("gets Tool Call presentation overrides in extension load order", async () => {
+			const extCode = (state: string) => `
+				export default function(pi) {
+					pi.registerToolPresentationOverrideV1(() => ({ state: "${state}" }));
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-presentation-a.ts"), extCode("expanded"));
+			fs.writeFileSync(path.join(extensionsDir, "tool-presentation-b.ts"), extCode("collapsed"));
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const overrides = runner.getToolPresentationOverridesV1();
+
+			expect(overrides.map((override) => override({} as never)?.state)).toEqual(["expanded", "collapsed"]);
+		});
+
 		it("gets Markdown transformers in extension load order", async () => {
 			const extCode = `
 				export default function(pi) {
