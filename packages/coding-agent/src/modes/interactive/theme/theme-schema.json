@@ -34,7 +34,7 @@
 		},
 		"colors": {
 			"type": "object",
-			"description": "Theme color definitions (thinkingMax, scrollbarThumb, and search highlight colors are optional and use compatible fallbacks)",
+			"description": "Theme color definitions (thinkingMax, scrollbarThumb, search highlight, and diff background colors are optional and use compatible fallbacks)",
 			"required": [
 				"accent",
 				"border",
@@ -240,6 +240,22 @@
 				"toolDiffContext": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Context lines in tool diffs"
+				},
+				"toolDiffAddedBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Strong background tint for wholly added diff lines and for added word ranges. Diff backgrounds stay off unless both strong tints are set."
+				},
+				"toolDiffRemovedBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Strong background tint for wholly removed diff lines and for removed word ranges. Diff backgrounds stay off unless both strong tints are set."
+				},
+				"toolDiffAddedSoftBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Soft background wash for modified diff lines on the added side (falls back to toolDiffAddedBg when omitted)"
+				},
+				"toolDiffRemovedSoftBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Soft background wash for modified diff lines on the removed side (falls back to toolDiffRemovedBg when omitted)"
 				},
 				"syntaxComment": {
 					"$ref": "#/$defs/colorValue",

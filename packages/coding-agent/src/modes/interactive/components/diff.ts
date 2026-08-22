@@ -1,5 +1,5 @@
 import * as Diff from "diff";
-import { theme } from "../theme/theme.ts";
+import { type ThemeBg, type ThemeColor, theme } from "../theme/theme.ts";
 
 /**
  * Parse diff line to extract prefix, line number, and content.
@@ -19,11 +19,55 @@ function replaceTabs(text: string): string {
 }
 
 /**
+ * Marks the changed word ranges of a modified line pair.
+ */
+interface WordRunStyle {
+	removed: (value: string) => string;
+	added: (value: string) => string;
+}
+
+/** Default style: invert the changed word ranges. */
+const INVERSE_WORD_RUNS: WordRunStyle = {
+	removed: (value: string) => theme.inverse(value),
+	added: (value: string) => theme.inverse(value),
+};
+
+/**
+ * True when the theme gives diff background tints. The soft washes have a
+ * fallback, so the two strong tints decide.
+ */
+function hasDiffBackgrounds(): boolean {
+	return theme.hasBg("toolDiffAddedBg") && theme.hasBg("toolDiffRemovedBg");
+}
+
+/**
+ * Put a changed word range on the strong tint, then go back to the soft wash of
+ * the line. `theme.bg` resets the background to the terminal default, so the
+ * soft wash must be set again after each range.
+ */
+function strongRun(strongBg: ThemeBg, softBg: ThemeBg): (value: string) => string {
+	return (value: string) => `${theme.getBgAnsi(strongBg)}${value}${theme.getBgAnsi(softBg)}`;
+}
+
+/**
+ * Paint one whole diff line, prefix and line number included. The prefix keeps
+ * its diff color; the content uses the default foreground so the background
+ * tint carries the meaning.
+ */
+function paintDiffLine(bg: ThemeBg, prefixColor: ThemeColor, prefix: string, content: string): string {
+	return theme.bg(bg, `${theme.fg(prefixColor, prefix)}${content}`);
+}
+
+/**
  * Compute word-level diff and render with inverse on changed parts.
  * Uses diffWords which groups whitespace with adjacent words for cleaner highlighting.
  * Strips leading whitespace from inverse to avoid highlighting indentation.
  */
-function renderIntraLineDiff(oldContent: string, newContent: string): { removedLine: string; addedLine: string } {
+function renderIntraLineDiff(
+	oldContent: string,
+	newContent: string,
+	wordRuns: WordRunStyle = INVERSE_WORD_RUNS,
+): { removedLine: string; addedLine: string } {
 	const wordDiff = Diff.diffWords(oldContent, newContent);
 
 	let removedLine = "";
@@ -42,7 +86,7 @@ function renderIntraLineDiff(oldContent: string, newContent: string): { removedL
 				isFirstRemoved = false;
 			}
 			if (value) {
-				removedLine += theme.inverse(value);
+				removedLine += wordRuns.removed(value);
 			}
 		} else if (part.added) {
 			let value = part.value;
@@ -54,7 +98,7 @@ function renderIntraLineDiff(oldContent: string, newContent: string): { removedL
 				isFirstAdded = false;
 			}
 			if (value) {
-				addedLine += theme.inverse(value);
+				addedLine += wordRuns.added(value);
 			}
 		} else {
 			removedLine += part.value;
@@ -72,13 +116,20 @@ export interface RenderDiffOptions {
 
 /**
  * Render a diff string with colored lines and intra-line change highlighting.
+ *
+ * Without diff backgrounds in the theme:
  * - Context lines: dim/gray
  * - Removed lines: red, with inverse on changed tokens
  * - Added lines: green, with inverse on changed tokens
+ *
+ * With diff backgrounds in the theme, the render follows the JetBrains diff
+ * model: a wholly added or removed line gets the strong tint. A modified line
+ * gets the soft line wash plus the strong tint on the changed word ranges.
  */
 export function renderDiff(diffText: string, _options: RenderDiffOptions = {}): string {
 	const lines = diffText.split("\n");
 	const result: string[] = [];
+	const useBackgrounds = hasDiffBackgrounds();
 
 	let i = 0;
 	while (i < lines.length) {
@@ -119,22 +170,50 @@ export function renderDiff(diffText: string, _options: RenderDiffOptions = {}): 
 				const { removedLine, addedLine } = renderIntraLineDiff(
 					replaceTabs(removed.content),
 					replaceTabs(added.content),
+					useBackgrounds
+						? {
+								removed: strongRun("toolDiffRemovedBg", "toolDiffRemovedSoftBg"),
+								added: strongRun("toolDiffAddedBg", "toolDiffAddedSoftBg"),
+							}
+						: INVERSE_WORD_RUNS,
 				);
 
-				result.push(theme.fg("toolDiffRemoved", `-${removed.lineNum} ${removedLine}`));
-				result.push(theme.fg("toolDiffAdded", `+${added.lineNum} ${addedLine}`));
+				if (useBackgrounds) {
+					result.push(
+						paintDiffLine("toolDiffRemovedSoftBg", "toolDiffRemoved", `-${removed.lineNum} `, removedLine),
+					);
+					result.push(paintDiffLine("toolDiffAddedSoftBg", "toolDiffAdded", `+${added.lineNum} `, addedLine));
+				} else {
+					result.push(theme.fg("toolDiffRemoved", `-${removed.lineNum} ${removedLine}`));
+					result.push(theme.fg("toolDiffAdded", `+${added.lineNum} ${addedLine}`));
+				}
 			} else {
 				// Show all removed lines first, then all added lines
 				for (const removed of removedLines) {
-					result.push(theme.fg("toolDiffRemoved", `-${removed.lineNum} ${replaceTabs(removed.content)}`));
+					const content = replaceTabs(removed.content);
+					result.push(
+						useBackgrounds
+							? paintDiffLine("toolDiffRemovedBg", "toolDiffRemoved", `-${removed.lineNum} `, content)
+							: theme.fg("toolDiffRemoved", `-${removed.lineNum} ${content}`),
+					);
 				}
 				for (const added of addedLines) {
-					result.push(theme.fg("toolDiffAdded", `+${added.lineNum} ${replaceTabs(added.content)}`));
+					const content = replaceTabs(added.content);
+					result.push(
+						useBackgrounds
+							? paintDiffLine("toolDiffAddedBg", "toolDiffAdded", `+${added.lineNum} `, content)
+							: theme.fg("toolDiffAdded", `+${added.lineNum} ${content}`),
+					);
 				}
 			}
 		} else if (parsed.prefix === "+") {
 			// Standalone added line
-			result.push(theme.fg("toolDiffAdded", `+${parsed.lineNum} ${replaceTabs(parsed.content)}`));
+			const content = replaceTabs(parsed.content);
+			result.push(
+				useBackgrounds
+					? paintDiffLine("toolDiffAddedBg", "toolDiffAdded", `+${parsed.lineNum} `, content)
+					: theme.fg("toolDiffAdded", `+${parsed.lineNum} ${content}`),
+			);
 			i++;
 		} else {
 			// Context line

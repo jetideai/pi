@@ -72,10 +72,14 @@ const ThemeJsonSchema = Type.Object({
 		mdQuoteBorder: ColorValueSchema,
 		mdHr: ColorValueSchema,
 		mdListBullet: ColorValueSchema,
-		// Tool Diffs (3 colors)
+		// Tool Diffs (3 colors, 4 optional backgrounds)
 		toolDiffAdded: ColorValueSchema,
 		toolDiffRemoved: ColorValueSchema,
 		toolDiffContext: ColorValueSchema,
+		toolDiffAddedBg: Type.Optional(ColorValueSchema),
+		toolDiffRemovedBg: Type.Optional(ColorValueSchema),
+		toolDiffAddedSoftBg: Type.Optional(ColorValueSchema),
+		toolDiffRemovedSoftBg: Type.Optional(ColorValueSchema),
 		// Syntax Highlighting (9 colors)
 		syntaxComment: ColorValueSchema,
 		syntaxKeyword: ColorValueSchema,
@@ -167,10 +171,20 @@ export type ThemeBg =
 	| "customMessageBg"
 	| "toolPendingBg"
 	| "toolSuccessBg"
-	| "toolErrorBg";
+	| "toolErrorBg"
+	| "toolDiffAddedBg"
+	| "toolDiffRemovedBg"
+	| "toolDiffAddedSoftBg"
+	| "toolDiffRemovedSoftBg";
 
 type OptionalThemeColor = "thinkingMax" | "searchMatchText";
-type OptionalThemeBg = "scrollbarThumb" | "searchMatchBg";
+type OptionalThemeBg =
+	| "scrollbarThumb"
+	| "searchMatchBg"
+	| "toolDiffAddedBg"
+	| "toolDiffRemovedBg"
+	| "toolDiffAddedSoftBg"
+	| "toolDiffRemovedSoftBg";
 
 type ColorMode = "truecolor" | "256color";
 
@@ -329,6 +343,24 @@ function resolveThemeColors<T extends Record<string, ColorValue>>(
 	return resolved as Record<keyof T, string | number>;
 }
 
+/**
+ * Soft diff washes fall back to the strong tint of the same side. The strong
+ * tints have no fallback: a theme without them has no diff backgrounds.
+ */
+function withDiffBackgroundFallbacks<T extends string | number>(backgrounds: {
+	toolDiffAddedBg?: T;
+	toolDiffRemovedBg?: T;
+	toolDiffAddedSoftBg?: T;
+	toolDiffRemovedSoftBg?: T;
+}): { toolDiffAddedSoftBg?: T; toolDiffRemovedSoftBg?: T } {
+	const addedSoftBg = backgrounds.toolDiffAddedSoftBg ?? backgrounds.toolDiffAddedBg;
+	const removedSoftBg = backgrounds.toolDiffRemovedSoftBg ?? backgrounds.toolDiffRemovedBg;
+	return {
+		...(addedSoftBg === undefined ? {} : { toolDiffAddedSoftBg: addedSoftBg }),
+		...(removedSoftBg === undefined ? {} : { toolDiffRemovedSoftBg: removedSoftBg }),
+	};
+}
+
 function withThemeColorFallbacks(colors: ThemeJson["colors"]): ThemeJson["colors"] & {
 	thinkingMax: ColorValue;
 	scrollbarThumb: ColorValue;
@@ -341,6 +373,7 @@ function withThemeColorFallbacks(colors: ThemeJson["colors"]): ThemeJson["colors
 		scrollbarThumb: colors.scrollbarThumb ?? colors.selectedBg,
 		searchMatchBg: colors.searchMatchBg ?? colors.selectedBg,
 		searchMatchText: colors.searchMatchText ?? colors.text,
+		...withDiffBackgroundFallbacks(colors),
 	};
 }
 
@@ -382,8 +415,11 @@ export class Theme {
 			...bgColors,
 			scrollbarThumb: bgColors.scrollbarThumb ?? bgColors.selectedBg,
 			searchMatchBg: bgColors.searchMatchBg ?? bgColors.selectedBg,
+			...withDiffBackgroundFallbacks(bgColors),
 		};
-		for (const [key, value] of Object.entries(backgrounds) as [ThemeBg, string | number][]) {
+		for (const [key, value] of Object.entries(backgrounds) as [ThemeBg, string | number | undefined][]) {
+			// Absent optional backgrounds stay absent. Use hasBg() to test them.
+			if (value === undefined) continue;
 			this.bgColors.set(key, bgAnsi(value, mode));
 		}
 	}
@@ -398,6 +434,11 @@ export class Theme {
 		const ansi = this.bgColors.get(color);
 		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
 		return `${ansi}${text}\x1b[49m`; // Reset only background color
+	}
+
+	/** True when the theme defines the background. Optional backgrounds can be absent. */
+	hasBg(color: ThemeBg): boolean {
+		return this.bgColors.has(color);
 	}
 
 	bold(text: string): string {
@@ -640,6 +681,10 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 		"toolPendingBg",
 		"toolSuccessBg",
 		"toolErrorBg",
+		"toolDiffAddedBg",
+		"toolDiffRemovedBg",
+		"toolDiffAddedSoftBg",
+		"toolDiffRemovedSoftBg",
 	]);
 	for (const [key, value] of Object.entries(resolvedColors)) {
 		if (bgColorKeys.has(key)) {
