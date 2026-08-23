@@ -89,7 +89,7 @@ export class ToolGroupComponent extends Container {
 				width,
 				"…",
 			);
-			const body = super.render(width);
+			const body = this.children.flatMap((child) => ["", ...child.render(width)]);
 			let lines = decorateMessageRenderV2([header, ...body], 1, width, "tool-group", "expanded", {
 				entryId: this.groupId,
 				decorators: this.semanticDecoratorsV2,

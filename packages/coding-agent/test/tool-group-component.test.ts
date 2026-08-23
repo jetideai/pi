@@ -136,8 +136,34 @@ describe("ToolGroupComponent", () => {
 
 		expect(group.render(20).map((line) => line.trimEnd())).toEqual([
 			`\x1b[1m ${theme.fg("muted", "$ Read files")}`,
-			"\x1b[2mfirst child",
+			"\x1b[2m",
+			"first child",
+			"",
 			"second child        \x1b[3m",
+		]);
+	});
+
+	it("adds one row after the group header and between sibling Tool Calls", () => {
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:spaced",
+			closed: true,
+			semanticSelectorsV2: [() => () => ({ begin: "", body: "", end: "" })],
+		});
+		group.addTool(new Text("first child", 0, 0) as unknown as ToolExecutionComponent, {
+			toolName: "read",
+			toolCallId: "tool-1",
+		});
+		group.addTool(new Text("second child", 0, 0) as unknown as ToolExecutionComponent, {
+			toolName: "read",
+			toolCallId: "tool-2",
+		});
+
+		expect(group.render(80).map((line) => stripAnsi(line).trimEnd())).toEqual([
+			" $ Read files",
+			"",
+			"first child",
+			"",
+			"second child",
 		]);
 	});
 
@@ -164,7 +190,7 @@ describe("ToolGroupComponent", () => {
 
 		expect(stripAnsi(rows[0]!)).toBe(expectedHeader);
 		expect(rows[0]).toBe(`${" ".repeat(outputPad)}${theme.fg("muted", expectedHeader.trimStart())}`);
-		expect(stripAnsi(rows[1]!).trimEnd()).toBe("first child");
+		expect(stripAnsi(rows[2]!).trimEnd()).toBe("first child");
 	});
 
 	it("keeps a styled action header to one row at narrow widths", () => {
@@ -188,7 +214,7 @@ describe("ToolGroupComponent", () => {
 			const header = rows[0]!;
 			expect(header).not.toContain("\n");
 			expect(visibleWidth(header)).toBeLessThanOrEqual(width);
-			expect(rows[1]).toBeDefined();
+			expect(rows[2]).toBeDefined();
 		}
 		expect(stripAnsi(group.render(8)[0]!)).toContain("…");
 	});
