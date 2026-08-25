@@ -642,6 +642,32 @@ describe("ExtensionRunner", () => {
 			expect(decorators.map((decorate) => decorate?.({} as never).begin)).toEqual(["a", "b"]);
 		});
 
+		it("gets Tool Execution presentation selectors in extension load order", async () => {
+			const extCode = (liveToolCall: string) => `
+				export default function(pi) {
+					pi.registerToolExecutionPresentationSelectorV1(() => ({ liveToolCall: "${liveToolCall}" }));
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-execution-a.ts"), extCode("stock"));
+			fs.writeFileSync(path.join(extensionsDir, "tool-execution-b.ts"), extCode("compact-stock-header"));
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const selectors = runner.getToolExecutionPresentationSelectorsV1();
+
+			expect(selectors.map((select) => select({} as never)?.liveToolCall)).toEqual([
+				"stock",
+				"compact-stock-header",
+			]);
+		});
+
+		it("returns no Tool Execution presentation selectors without extensions", async () => {
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+			expect(runner.getToolExecutionPresentationSelectorsV1()).toEqual([]);
+		});
+
 		it("gets Tool Call presentation overrides in extension load order", async () => {
 			const extCode = (state: string) => `
 				export default function(pi) {

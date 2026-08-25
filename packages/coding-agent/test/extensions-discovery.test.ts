@@ -411,6 +411,27 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].messageRenderBoundaryDecoratorV1).toBeDefined();
 	});
 
+	it("keeps the latest Tool Execution presentation selector from one extension", async () => {
+		const extCode = `
+			export default function(pi) {
+				pi.registerToolExecutionPresentationSelectorV1(() => ({ liveToolCall: "stock" }));
+				pi.registerToolExecutionPresentationSelectorV1(() => ({ liveToolCall: "compact-stock-header" }));
+			}
+		`;
+		fs.writeFileSync(path.join(extensionsDir, "with-tool-execution-presentation.ts"), extCode);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+		const selection = result.extensions[0]?.toolExecutionPresentationSelectorV1?.({
+			role: "tool",
+			hasExactHeaderSeam: true,
+			hasCanonicalResultRenderer: true,
+			hasInitialCollapsedBoundaries: true,
+		});
+
+		expect(result.errors).toHaveLength(0);
+		expect(selection?.liveToolCall).toBe("compact-stock-header");
+	});
+
 	it("registers a Tool Call presentation override", async () => {
 		const extCode = `
 			export default function(pi) {

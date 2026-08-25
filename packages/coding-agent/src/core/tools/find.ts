@@ -177,6 +177,8 @@ export function createFindToolDefinition(
 		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		promptSnippet: findToolSystemPromptContribution.snippet,
 		parameters: findSchema,
+		getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
+		getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
 		async execute(
 			_toolCallId,
 			{ pattern, path: searchDir, limit }: { pattern: string; path?: string; limit?: number },

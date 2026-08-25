@@ -228,6 +228,8 @@ export function createWriteToolDefinition(
 		promptGuidelines: [...writeToolSystemPromptContribution.guidelines],
 		parameters: writeSchema,
 		constrainedSampling: getExperimentalToolSampling(),
+		getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
+		getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
 		async execute(
 			_toolCallId,
 			{ path, content }: { path: string; content: string },

@@ -8,6 +8,7 @@ import type {
 	MessageRenderBoundaryContextV1,
 	MessageRenderBoundaryDecoratorV2,
 	ToolDefinition,
+	ToolExecutionPresentationSelectorV1,
 	ToolPresentationOverrideV1,
 } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
@@ -16,8 +17,12 @@ import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
 import { createLsToolDefinition } from "../src/core/tools/ls.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
+import { SectionedToolCallHeader } from "../src/core/tools/render-utils.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
-import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
+import {
+	ToolExecutionComponent,
+	type ToolExecutionOptions,
+} from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -40,7 +45,261 @@ function createFakeTui(): TUI {
 	} as unknown as TUI;
 }
 
+const admitCompactLiveToolCall: ToolExecutionPresentationSelectorV1 = () => ({
+	liveToolCall: "compact-stock-header",
+	liveToolGroup: "stock",
+	header: "exact-one-row",
+	settled: "canonical-initial-collapsed",
+});
+
+function liveToolOptions(
+	selector: ToolExecutionPresentationSelectorV1 = admitCompactLiveToolCall,
+): ToolExecutionOptions {
+	return {
+		ownerEntryId: "assistant-entry-live",
+		producerSessionId: "session-live",
+		renderScopeId: "scope-live",
+		semanticSelectorsV3: [
+			() => () => ({
+				begin: "\x1b]777;live-begin\x07",
+				body: "\x1b]777;live-body\x07",
+				end: "\x1b]777;live-end\x07",
+			}),
+		],
+		toolExecutionPresentationSelectorsV1: [selector],
+	};
+}
+
 describe("ToolExecutionComponent parity", () => {
+	test("keeps admitted cumulative running output behind one stock header row", () => {
+		let resultRenders = 0;
+		const latestPartial = Array.from({ length: 200 }, (_, index) => `partial-${index + 1}`).join("\n");
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			getRenderCallHeaderRow: () => 0,
+			getRenderCallBodyRow: () => 1,
+			renderCall: () => {
+				const header = new SectionedToolCallHeader("", 0, 0);
+				header.setSectionedContent(() => "stock running header", "stock running header");
+				return header;
+			},
+			renderResult: (result) => {
+				resultRenders += 1;
+				const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+				return new Text(text, 0, 0);
+			},
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-live-cumulative",
+			{},
+			liveToolOptions(),
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+
+		for (const lineCount of [50, 125, 200]) {
+			const cumulative = latestPartial.split("\n").slice(0, lineCount).join("\n");
+			component.updateResult({ content: [{ type: "text", text: cumulative }], isError: false }, true);
+			expect(component.render(80)).toHaveLength(1);
+		}
+		const wide = component.render(80).map((line) => stripAnsi(line));
+		const narrow = component.render(12).map((line) => stripAnsi(line));
+
+		expect(wide.map((line) => line.trimEnd())).toEqual(["stock running header"]);
+		expect(narrow).toHaveLength(1);
+		expect(narrow.join("\n")).not.toContain("partial-");
+		expect(component.render(80).join("\n")).not.toMatch(/begin|body|end/);
+		expect(resultRenders).toBe(0);
+
+		component.updateResult({ content: [{ type: "text", text: latestPartial }], isError: false }, false);
+		const settled = component.render(80).join("\n");
+		const positions = ["begin", "body", "partial-1", "partial-200", "end"].map((value) => settled.indexOf(value));
+		expect(positions.every((position) => position >= 0)).toBe(true);
+		expect(positions).toEqual([...positions].sort((left, right) => left - right));
+		expect(resultRenders).toBe(1);
+	});
+
+	test("keeps stock streaming rows when compact live presentation is disabled", () => {
+		let resultRenders = 0;
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			getRenderCallHeaderRow: () => 0,
+			getRenderCallBodyRow: () => 1,
+			renderCall: () => new Text("stock header", 0, 0),
+			renderResult: () => {
+				resultRenders += 1;
+				return new Text("stock partial body", 0, 0);
+			},
+		};
+		const options = liveToolOptions();
+		options.toolExecutionPresentationSelectorsV1 = [];
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-live-disabled",
+			{},
+			options,
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+
+		component.updateResult({ content: [{ type: "text", text: "stock partial body" }], isError: false }, true);
+
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("stock partial body");
+		expect(resultRenders).toBe(1);
+	});
+
+	test("keeps stock streaming rows without an exact compact header seam", () => {
+		let resultRenders = 0;
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderCall: () => new Text("unsupported header", 0, 0),
+			renderResult: () => {
+				resultRenders += 1;
+				return new Text("unsupported partial body", 0, 0);
+			},
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-live-unsupported",
+			{},
+			liveToolOptions(),
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+
+		component.updateResult({ content: [{ type: "text", text: "unsupported partial body" }], isError: false }, true);
+
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("unsupported partial body");
+		expect(resultRenders).toBe(1);
+	});
+
+	test.each([
+		[
+			"throws",
+			(() => {
+				throw new Error("selector failure");
+			}) as ToolExecutionPresentationSelectorV1,
+		],
+		[
+			"returns an invalid response",
+			(() => ({ liveToolCall: "stock" })) as unknown as ToolExecutionPresentationSelectorV1,
+		],
+	])("keeps stock streaming rows when the selector %s", (_caseName, selector) => {
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			getRenderCallHeaderRow: () => 0,
+			getRenderCallBodyRow: () => 1,
+			renderCall: () => new Text("stock header", 0, 0),
+			renderResult: () => new Text("selector fallback body", 0, 0),
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-live-selector-fallback",
+			{},
+			liveToolOptions(selector),
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+
+		component.updateResult({ content: [{ type: "text", text: "selector fallback body" }], isError: false }, true);
+
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("selector fallback body");
+	});
+
+	test.each([
+		["completion", false, "complete result"],
+		["tool error", true, "tool error result"],
+		["normal cancellation", true, "Operation aborted"],
+	])("materializes canonical stock content and boundaries on %s", (_outcome, isError, resultText) => {
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			getRenderCallHeaderRow: () => 0,
+			getRenderCallBodyRow: () => 1,
+			renderCall: () => new Text("stock header", 0, 0),
+			renderResult: (result) => new Text(result.content[0]?.type === "text" ? result.content[0].text : "", 0, 0),
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			`tool-live-${_outcome}`,
+			{},
+			liveToolOptions(),
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult({ content: [{ type: "text", text: "partial result" }], isError: false }, true);
+
+		component.updateResult({ content: [{ type: "text", text: resultText }], isError }, false);
+		const first = component.render(80);
+		component.updateResult({ content: [{ type: "text", text: resultText }], isError }, false);
+		const duplicate = component.render(80);
+
+		expect(stripAnsi(first.join("\n"))).toContain(resultText);
+		expect(first.join("\n")).toMatch(/begin.*body.*end/s);
+		expect(duplicate).toEqual(first);
+	});
+
+	test("keeps historical Tool Calls canonical without entering live compact state", () => {
+		const component = new ToolExecutionComponent(
+			"bash",
+			"tool-live-history",
+			{ command: "printf historical" },
+			liveToolOptions(),
+			createBashToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		component.updateResult({ content: [{ type: "text", text: "historical body" }], isError: false }, false);
+
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("historical body");
+	});
+
+	test("updates the admitted Bash status without adding a row", () => {
+		vi.useFakeTimers();
+		try {
+			const requestRender = vi.fn();
+			const component = new ToolExecutionComponent(
+				"bash",
+				"tool-live-status",
+				{ command: "printf running" },
+				liveToolOptions(),
+				createBashToolDefinition(process.cwd()),
+				{ requestRender } as unknown as TUI,
+				process.cwd(),
+			);
+			component.markExecutionStarted();
+			component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
+			requestRender.mockClear();
+
+			const before = component.render(40);
+			vi.advanceTimersByTime(1000);
+			const after = component.render(40);
+
+			expect(before).toHaveLength(1);
+			expect(after).toHaveLength(1);
+			expect(requestRender).toHaveBeenCalledTimes(1);
+			component.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.restoreAllMocks();
+			vi.useRealTimers();
+		}
+	});
 	beforeAll(() => {
 		initTheme("dark");
 	});

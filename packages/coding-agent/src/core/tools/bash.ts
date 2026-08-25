@@ -390,6 +390,8 @@ export function createShellToolDefinition(
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters: bashSchema,
 		constrainedSampling: getExperimentalToolSampling(),
+		getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
+		getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
 		async execute(
 			_toolCallId,
 			{ command, timeout }: { command: string; timeout?: number },
@@ -522,6 +524,9 @@ export function createShellToolDefinition(
 				state.startedAt = Date.now();
 				state.endedAt = undefined;
 			}
+			if (context.executionStarted && state.endedAt === undefined && !state.interval) {
+				state.interval = setInterval(() => context.invalidate(), 1000);
+			}
 			if (context.sectioned && !context.expanded) {
 				const component =
 					context.lastComponent instanceof SectionedToolCallHeader
@@ -542,9 +547,6 @@ export function createShellToolDefinition(
 		},
 		renderResult(result, options, _theme, context) {
 			const state = context.state;
-			if (state.startedAt !== undefined && options.isPartial && !state.interval) {
-				state.interval = setInterval(() => context.invalidate(), 1000);
-			}
 			if (!options.isPartial || context.isError) {
 				state.endedAt ??= Date.now();
 				if (state.interval) {

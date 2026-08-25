@@ -172,6 +172,9 @@ export type {
 	ToolExecutionEndEvent,
 	// Tool execution mode
 	ToolExecutionMode,
+	ToolExecutionPresentationCandidateV1,
+	ToolExecutionPresentationSelectorV1,
+	ToolExecutionPresentationV1,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
 	ToolGroupMemberV1,

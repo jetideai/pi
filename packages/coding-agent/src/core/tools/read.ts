@@ -256,6 +256,8 @@ export function createReadToolDefinition(
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		parameters: readSchema,
 		constrainedSampling: getExperimentalToolSampling(),
+		getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
+		getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
 		async execute(
 			_toolCallId,
 			{ path, offset, limit }: { path: string; offset?: number; limit?: number },

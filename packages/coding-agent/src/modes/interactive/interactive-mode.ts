@@ -84,6 +84,7 @@ import type {
 	MessageRenderProjectionMemberV1,
 	MessageRenderProjectionV1,
 	ProjectTrustContext,
+	ToolExecutionPresentationSelectorV1,
 	ToolPresentationOverrideV1,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
@@ -2268,6 +2269,10 @@ export class InteractiveMode {
 		return this.session.extensionRunner?.getMessageRenderBoundarySelectorsV3?.() ?? [];
 	}
 
+	private getToolExecutionPresentationSelectorsV1(): ToolExecutionPresentationSelectorV1[] {
+		return this.session.extensionRunner?.getToolExecutionPresentationSelectorsV1?.() ?? [];
+	}
+
 	private getToolPresentationOverridesV1(): ToolPresentationOverrideV1[] {
 		return this.session.extensionRunner.getToolPresentationOverridesV1();
 	}
@@ -2336,6 +2341,7 @@ export class InteractiveMode {
 				producerSessionId: this.sessionManager.getSessionId?.() ?? "unknown-session",
 				renderScopeId: this.messageRenderScopeId,
 				presentationOverrides: this.getToolPresentationOverridesV1(),
+				toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 			},
 			this.getRegisteredToolDefinition(content.name),
 			this.ui,
@@ -4224,6 +4230,7 @@ export class InteractiveMode {
 								producerSessionId: this.sessionManager.getSessionId?.() ?? "unknown-session",
 								renderScopeId: this.messageRenderScopeId,
 								presentationOverrides: this.getToolPresentationOverridesV1(),
+								toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 							},
 							this.getRegisteredToolDefinition(content.name),
 							this.ui,

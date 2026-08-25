@@ -48,6 +48,7 @@ import type {
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
+	ToolExecutionPresentationSelectorV1,
 	ToolPresentationOverrideV1,
 } from "./types.ts";
 
@@ -363,6 +364,11 @@ function createExtensionAPI(
 		registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void {
 			runtime.assertActive();
 			extension.messageRenderBoundarySelectorV3 = selector;
+		},
+
+		registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void {
+			runtime.assertActive();
+			extension.toolExecutionPresentationSelectorV1 = selector;
 		},
 
 		registerToolPresentationOverrideV1(override: ToolPresentationOverrideV1): void {

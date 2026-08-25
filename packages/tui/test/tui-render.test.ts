@@ -74,6 +74,10 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 		return this.writes.join("");
 	}
 
+	getWriteChunks(): readonly string[] {
+		return this.writes;
+	}
+
 	clearWrites(): void {
 		this.writes = [];
 	}
@@ -144,6 +148,44 @@ function getCellItalic(terminal: VirtualTerminal, row: number, col: number): num
 }
 
 describe("TUI render scheduling", () => {
+	it("writes a running-to-settled Tool Call and all boundaries in one synchronized update", async () => {
+		const terminal = new LoggingVirtualTerminal(80, 24);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		const begin = "\x1b]777;tool-begin\x07";
+		const body = "\x1b]777;tool-body\x07";
+		const end = "\x1b]777;tool-end\x07";
+		component.lines = ["stock running header"];
+		tui.addChild(component);
+		tui.start();
+		await terminal.waitForRender();
+
+		const runningWrites = terminal.getWrites();
+		terminal.clearWrites();
+		component.lines = [
+			`${begin}stock settled header`,
+			`${body}canonical-1`,
+			...Array.from({ length: 198 }, (_, index) => `canonical-${index + 2}`),
+			`canonical-200${end}`,
+		];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		const [settledUpdate] = terminal.getWriteChunks();
+		assert.ok(!runningWrites.includes("canonical-1"));
+		assert.strictEqual(terminal.getWriteChunks().length, 1);
+		assert.ok(settledUpdate);
+		const positions = ["\x1b[?2026h", begin, body, "canonical-200", end, "\x1b[?2026l"].map((value) =>
+			settledUpdate.indexOf(value),
+		);
+		assert.ok(positions.every((position) => position >= 0));
+		assert.deepStrictEqual(
+			positions,
+			[...positions].sort((left, right) => left - right),
+		);
+		tui.stop();
+	});
+
 	it("renders keyboard input without waiting for a throttled frame", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);

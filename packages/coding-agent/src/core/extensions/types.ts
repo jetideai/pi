@@ -524,9 +524,9 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 	/** Custom rendering for tool call display */
 	renderCall?: (args: Static<TParams>, theme: Theme, context: ToolRenderContext<TState, Static<TParams>>) => Component;
-	/** Locate the first body row in this tool's self-rendered call component. */
+	/** Locate the first canonical body row after this tool's exact one-row live header. */
 	getRenderCallBodyRow?: (component: Component) => number | undefined;
-	/** Return the first logical header row for a self-rendered call. */
+	/** Return the exact one-row live header in this tool's stock call component. */
 	getRenderCallHeaderRow?: (component: Component) => number | undefined;
 
 	/** Custom rendering for tool result display */
@@ -1322,6 +1322,25 @@ export type MessageRenderBoundarySelectorV3 = (
 	candidate: Readonly<MessageRenderBoundaryCandidateV3>,
 ) => MessageRenderBoundaryDecoratorV2 | undefined;
 
+export interface ToolExecutionPresentationCandidateV1 {
+	role: "tool" | "tool-group";
+	hasExactHeaderSeam: boolean;
+	hasCanonicalResultRenderer: boolean;
+	hasInitialCollapsedBoundaries: boolean;
+}
+
+export interface ToolExecutionPresentationV1 {
+	liveToolCall: "compact-stock-header" | "stock";
+	liveToolGroup: "compact-stock-header" | "stock";
+	header: "exact-one-row" | "stock";
+	settled: "canonical-initial-collapsed" | "stock";
+}
+
+/** Select stock live Tool Call or Tool Group presentation from exact renderer facts. */
+export type ToolExecutionPresentationSelectorV1 = (
+	candidate: Readonly<ToolExecutionPresentationCandidateV1>,
+) => ToolExecutionPresentationV1 | undefined;
+
 /** Complete supported-message membership selected by one interactive transcript render. */
 export interface MessageRenderFinalizedEntryV1 {
 	entryId: string;
@@ -1503,6 +1522,7 @@ export interface ExtensionAPI {
 	/** Select canonical rendering and its V2 boundary decorator before Pi constructs the render. */
 	registerMessageRenderBoundarySelectorV2(selector: MessageRenderBoundarySelectorV2): void;
 	registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void;
+	registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void;
 
 	/** Select collapsed or stock presentation for built-in Tool Calls. */
 	registerToolPresentationOverrideV1(override: ToolPresentationOverrideV1): void;
@@ -1924,6 +1944,7 @@ export interface Extension {
 	messageRenderBoundaryDecoratorV1?: MessageRenderBoundaryDecoratorV1;
 	messageRenderBoundarySelectorV2?: MessageRenderBoundarySelectorV2;
 	messageRenderBoundarySelectorV3?: MessageRenderBoundarySelectorV3;
+	toolExecutionPresentationSelectorV1?: ToolExecutionPresentationSelectorV1;
 	toolPresentationOverrideV1?: ToolPresentationOverrideV1;
 	messageRenderProjectionObserverV1?: MessageRenderProjectionObserverV1;
 	entryRenderers?: Map<string, EntryRenderer>;

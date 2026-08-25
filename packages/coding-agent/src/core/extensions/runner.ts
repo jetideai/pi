@@ -64,6 +64,7 @@ import type {
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolExecutionPresentationSelectorV1,
 	ToolPresentationOverrideV1,
 	ToolResultEvent,
 	ToolResultEventResult,
@@ -660,6 +661,12 @@ export class ExtensionRunner {
 	getMessageRenderBoundarySelectorsV3(): MessageRenderBoundarySelectorV3[] {
 		return this.extensions.flatMap((extension) =>
 			extension.messageRenderBoundarySelectorV3 ? [extension.messageRenderBoundarySelectorV3] : [],
+		);
+	}
+
+	getToolExecutionPresentationSelectorsV1(): ToolExecutionPresentationSelectorV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.toolExecutionPresentationSelectorV1 ? [extension.toolExecutionPresentationSelectorV1] : [],
 		);
 	}
 

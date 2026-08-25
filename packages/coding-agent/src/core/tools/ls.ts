@@ -144,6 +144,8 @@ export function createLsToolDefinition(
 		description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		promptSnippet: lsToolSystemPromptContribution.snippet,
 		parameters: lsSchema,
+		getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
+		getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
 		async execute(
 			_toolCallId,
 			{ path, limit }: { path?: string; limit?: number },

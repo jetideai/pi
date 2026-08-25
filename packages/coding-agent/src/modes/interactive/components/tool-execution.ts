@@ -5,6 +5,7 @@ import type {
 	MessageRenderBoundarySelectorV2,
 	MessageRenderBoundarySelectorV3,
 	ToolDefinition,
+	ToolExecutionPresentationSelectorV1,
 	ToolPresentationOverrideV1,
 	ToolPresentationV1,
 	ToolRenderContext,
@@ -34,6 +35,7 @@ export interface ToolExecutionOptions {
 	producerSessionId?: string;
 	renderScopeId?: string;
 	presentationOverrides?: readonly ToolPresentationOverrideV1[];
+	toolExecutionPresentationSelectorsV1?: readonly ToolExecutionPresentationSelectorV1[];
 }
 
 class RetainedToolSection extends Container {
@@ -72,6 +74,7 @@ export class ToolExecutionComponent extends Container {
 	private usesV3Sections = false;
 	private presentationOverrides: readonly ToolPresentationOverrideV1[];
 	private presentation?: ToolPresentationV1;
+	private compactLiveToolCall = false;
 	private args: any;
 	private expanded = false;
 	private showImages: boolean;
@@ -131,6 +134,7 @@ export class ToolExecutionComponent extends Container {
 		this.args = args;
 		this.toolDefinition = toolDefinition;
 		this.builtInToolDefinition = createAllToolDefinitions(cwd)[toolName as ToolName];
+		this.compactLiveToolCall = this.selectCompactLiveToolCall(options.toolExecutionPresentationSelectorsV1 ?? []);
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.ui = ui;
@@ -170,7 +174,6 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private getCallBodyRowLocator(): ToolDefinition<any, any>["getRenderCallBodyRow"] | undefined {
-		if (this.getRenderShell() !== "self") return undefined;
 		if (!this.builtInToolDefinition) return this.toolDefinition?.getRenderCallBodyRow;
 		if (!this.toolDefinition) return this.builtInToolDefinition.getRenderCallBodyRow;
 		return this.toolDefinition.renderCall
@@ -179,7 +182,6 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private getCallHeaderRowLocator(): ToolDefinition<any, any>["getRenderCallHeaderRow"] | undefined {
-		if (this.getRenderShell() !== "self") return undefined;
 		if (!this.builtInToolDefinition) return this.toolDefinition?.getRenderCallHeaderRow;
 		if (!this.toolDefinition) return this.builtInToolDefinition.getRenderCallHeaderRow;
 		return this.toolDefinition.renderCall
@@ -362,6 +364,12 @@ export class ToolExecutionComponent extends Container {
 			lines = super.render(width);
 		}
 
+		if (this.isCompactLiveToolCall()) {
+			if (this.normalizedSectionsAccepted && lines.length === 1) return lines;
+			this.compactLiveToolCall = false;
+			this.updateDisplay();
+			return this.render(width);
+		}
 		if (!this.ownerEntryId) return lines;
 		if (this.isSectioned()) {
 			lines = decorateMessageRenderV2(lines, this.getBodyRow(), width, "tool", "expanded", {
@@ -400,11 +408,17 @@ export class ToolExecutionComponent extends Container {
 		const callBodyLocator = this.callRendererComponent ? this.getCallBodyRowLocator() : undefined;
 		const callBodyRow = this.callRendererComponent ? callBodyLocator?.(this.callRendererComponent) : undefined;
 		const hasExactCallHeader = callHeaderRow !== undefined && callHeaderRow >= 0 && callHeaderRow < headerRows.length;
-		const hasExactCallSeam =
+		const hasReportedExactCallSeam =
 			hasExactCallHeader &&
 			callBodyRow !== undefined &&
 			callBodyRow > callHeaderRow &&
 			callBodyRow <= headerRows.length;
+		if (this.isCompactLiveToolCall() && hasReportedExactCallSeam) {
+			this.normalizedSectionsAccepted = true;
+			this.normalizedHeaderRow = 0;
+			return [headerRows[callHeaderRow]!];
+		}
+		const hasExactCallSeam = this.getRenderShell() === "self" && hasReportedExactCallSeam;
 
 		if (this.getRenderShell() === "self" && hasExactCallHeader && callBodyLocator && !hasExactCallSeam) {
 			const hasOtherNonBlankCallRows = headerRows.some(
@@ -578,7 +592,7 @@ export class ToolExecutionComponent extends Container {
 				}
 			}
 
-			if (this.result) {
+			if (this.result && !this.isCompactLiveToolCall()) {
 				const resultRenderer = this.getResultRenderer();
 				if (!resultRenderer) {
 					const component = this.createResultFallback();
@@ -622,7 +636,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		this.imageSpacers = [];
 
-		if (this.result) {
+		if (this.result && !this.isCompactLiveToolCall()) {
 			const imageBlocks = this.result.content.filter((c) => c.type === "image");
 			const caps = getCapabilities();
 			for (let i = 0; i < imageBlocks.length; i++) {
@@ -674,6 +688,40 @@ export class ToolExecutionComponent extends Container {
 			} catch {}
 		}
 		return undefined;
+	}
+
+	private selectCompactLiveToolCall(selectors: readonly ToolExecutionPresentationSelectorV1[]): boolean {
+		const candidate = {
+			role: "tool" as const,
+			hasExactHeaderSeam: Boolean(this.getCallHeaderRowLocator() && this.getCallBodyRowLocator()),
+			hasCanonicalResultRenderer: Boolean(this.getResultRenderer()),
+			hasInitialCollapsedBoundaries: this.usesV3Sections,
+		};
+		if (
+			!candidate.hasExactHeaderSeam ||
+			!candidate.hasCanonicalResultRenderer ||
+			!candidate.hasInitialCollapsedBoundaries
+		) {
+			return false;
+		}
+		for (const selector of selectors) {
+			try {
+				const selection = selector(candidate);
+				if (
+					selection?.liveToolCall === "compact-stock-header" &&
+					selection.liveToolGroup === "stock" &&
+					selection.header === "exact-one-row" &&
+					selection.settled === "canonical-initial-collapsed"
+				) {
+					return true;
+				}
+			} catch {}
+		}
+		return false;
+	}
+
+	private isCompactLiveToolCall(): boolean {
+		return this.compactLiveToolCall && this.executionStarted && this.isPartial;
 	}
 
 	private getTextOutput(): string {
