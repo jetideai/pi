@@ -8,7 +8,7 @@ import type {
 	MessageRenderBoundarySelectorV3,
 	ToolPresentationOverrideV1,
 } from "../src/core/extensions/types.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+import { type SessionEntry, SessionManager } from "../src/core/session-manager.ts";
 import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import type { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -55,7 +55,7 @@ type RenderProjectionContext = {
 	messageRenderMembers: RenderMember[];
 	hideThinkingBlock?: boolean;
 	pendingTools: Map<string, ToolExecutionComponent>;
-	chatContainer?: { addChild(component: unknown): void };
+	chatContainer?: { addChild(component: unknown): void; clear?(): void };
 	footer: { invalidate(): void };
 	ui: TUI;
 	settingsManager: {
@@ -63,7 +63,11 @@ type RenderProjectionContext = {
 		getShowImages(): boolean;
 		getImageWidthCells(): number;
 	};
-	sessionManager: { getEntries(): SessionEntry[]; getCwd(): string };
+	sessionManager: {
+		getEntries(): SessionEntry[];
+		getCwd(): string;
+		buildTranscriptEntries?(): SessionEntry[];
+	};
 	session: { modelRuntime: undefined };
 	outputPad: number;
 	toolOutputExpanded: boolean;
@@ -74,6 +78,7 @@ type RenderProjectionContext = {
 	getMessageRenderBoundarySelectorsV2?(): MessageRenderBoundarySelectorV2[];
 	getMessageRenderBoundarySelectorsV3?(): MessageRenderBoundarySelectorV3[];
 	getToolPresentationOverridesV1?(): ToolPresentationOverrideV1[];
+	getToolExecutionPresentationSelectorsV1?(): [];
 	renderAssistantAtoms: (...args: never[]) => unknown;
 	publishMessageRenderProjectionV1(
 		members: readonly RenderMember[],
@@ -156,6 +161,7 @@ function createRenderProjectionContext(options: {
 		getMessageRenderBoundarySelectorsV2: (): MessageRenderBoundarySelectorV2[] => [],
 		getMessageRenderBoundarySelectorsV3: (): MessageRenderBoundarySelectorV3[] => [],
 		getToolPresentationOverridesV1: () => [],
+		getToolExecutionPresentationSelectorsV1: () => [],
 		renderAssistantAtoms,
 		publishMessageRenderProjectionV1: vi.fn(),
 	};
@@ -194,18 +200,217 @@ function createLiveEventMode(chatContainer = new Container()) {
 		getMessageRenderBoundaryDecoratorsV1: () => [],
 		getMessageRenderBoundarySelectorsV2: (): MessageRenderBoundarySelectorV2[] => [],
 		getToolPresentationOverridesV1: () => [],
+		getToolExecutionPresentationSelectorsV1: () => [],
 		getRegisteredToolDefinition: () => undefined,
 		maybeShowCacheMissNotice: vi.fn(),
 		retryEscapeHandler: undefined,
 		workingVisible: false,
 		clearStatusIndicator: vi.fn(),
+		checkShutdownRequested: vi.fn(),
 	};
 	Object.setPrototypeOf(mode, InteractiveMode.prototype);
 	return mode;
 }
 
+function representativeToolResponses() {
+	const response = (entryId: string, toolCallId: string, toolName: "bash" | "edit" | "read", text?: string) => {
+		const started = fauxAssistantMessage("");
+		const toolCall = { type: "toolCall" as const, id: toolCallId, name: toolName, arguments: {} };
+		return {
+			entryId,
+			started,
+			message: { ...started, content: text ? [{ type: "text" as const, text }, toolCall] : [toolCall] },
+			toolCall,
+		};
+	};
+	return [
+		response("assistant-edit-1", "edit-1", "edit", "Start edits"),
+		response("assistant-read-1", "read-1", "read"),
+		response("assistant-edit-2", "edit-2", "edit"),
+		response("assistant-bash-1", "bash-1", "bash"),
+		response("assistant-bash-2", "bash-2", "bash", "First separator"),
+		response("assistant-bash-3", "bash-3", "bash", "Second separator"),
+		response("assistant-bash-4", "bash-4", "bash", "Third separator"),
+		response("assistant-bash-5", "bash-5", "bash"),
+	];
+}
+
+function representativeToolResult(toolCallId: string, toolName: string): AgentMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName,
+		content: [{ type: "text", text: `${toolCallId} complete` }],
+		isError: false,
+		timestamp: 1,
+	};
+}
+
+function representativeGroupFacts(members: readonly RenderMember[]) {
+	return members.filter((member) => member.role === "tool-group" || member.role === "tool");
+}
+
+function expectedRepresentativeGroupFacts(): RenderMember[] {
+	return [
+		{
+			entryId: "tool-group:edit-1",
+			role: "tool-group",
+			groupId: "tool-group:edit-1",
+			groupClosed: true,
+		},
+		...[
+			["edit-1", "assistant-edit-1"],
+			["read-1", "assistant-read-1"],
+			["edit-2", "assistant-edit-2"],
+			["bash-1", "assistant-bash-1"],
+		].map(([entryId, ownerEntryId], groupOrder) => ({
+			entryId: entryId!,
+			ownerEntryId: ownerEntryId!,
+			role: "tool" as const,
+			groupId: "tool-group:edit-1",
+			groupOrder,
+		})),
+		{ entryId: "bash-2", ownerEntryId: "assistant-bash-2", role: "tool" },
+		{ entryId: "bash-3", ownerEntryId: "assistant-bash-3", role: "tool" },
+		{
+			entryId: "tool-group:bash-4",
+			role: "tool-group",
+			groupId: "tool-group:bash-4",
+			groupClosed: true,
+		},
+		{
+			entryId: "bash-4",
+			ownerEntryId: "assistant-bash-4",
+			role: "tool",
+			groupId: "tool-group:bash-4",
+			groupOrder: 0,
+		},
+		{
+			entryId: "bash-5",
+			ownerEntryId: "assistant-bash-5",
+			role: "tool",
+			groupId: "tool-group:bash-4",
+			groupOrder: 1,
+		},
+	];
+}
+
 describe("InteractiveMode message render projection", () => {
 	beforeAll(() => initTheme("dark"));
+
+	it("rebuilds a compacted session from every original selected-branch message", async () => {
+		const user = (id: string, parentId: string | null, text: string): SessionEntry => ({
+			type: "message",
+			id,
+			parentId,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			message: { role: "user", content: text, timestamp: 1 },
+		});
+		const assistant = (id: string, parentId: string, text: string): SessionEntry => ({
+			type: "message",
+			id,
+			parentId,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			message: fauxAssistantMessage(text),
+		});
+		const transcript = [
+			user("user-1", null, "one"),
+			assistant("assistant-1", "user-1", "first"),
+			user("user-2", "assistant-1", "two"),
+			assistant("assistant-2", "user-2", "second"),
+			user("user-3", "assistant-2", "three"),
+			assistant("assistant-3", "user-3", "third"),
+		];
+		const compaction: SessionEntry = {
+			type: "compaction",
+			id: "compaction",
+			parentId: "assistant-3",
+			timestamp: "2026-01-01T00:00:01.000Z",
+			summary: "one first two second three third",
+			firstKeptEntryId: "assistant-3",
+			tokensBefore: 100,
+		};
+		const mode = createRenderProjectionContext({});
+		const buildTranscriptEntries = vi.fn(() => transcript);
+		mode.sessionManager = {
+			getEntries: () => [...transcript, compaction],
+			getCwd: () => process.cwd(),
+			buildTranscriptEntries,
+		};
+		Object.assign(mode, {
+			renderProjectTrustWarningIfNeeded: vi.fn(),
+			showStatus: vi.fn(),
+		});
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+
+		expect(buildTranscriptEntries).toHaveBeenCalledOnce();
+		expect(mode.publishMessageRenderProjectionV1).toHaveBeenLastCalledWith(
+			transcript.map((entry) => ({
+				entryId: entry.id,
+				role: entry.type === "message" ? entry.message.role : undefined,
+			})),
+			"replace",
+		);
+	});
+
+	it("keeps live identity order when rebuilding only the selected branch after rewind", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const rootUser = sessionManager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+		const rootAssistant = sessionManager.appendMessage(fauxAssistantMessage("root answer"));
+		const branchAUser = sessionManager.appendMessage({ role: "user", content: "branch A", timestamp: 2 });
+		const branchAAssistant = sessionManager.appendMessage(fauxAssistantMessage("A answer"));
+		sessionManager.branch(rootAssistant);
+		const branchBUser = sessionManager.appendMessage({ role: "user", content: "branch B", timestamp: 3 });
+		const branchBAssistant = sessionManager.appendMessage(fauxAssistantMessage("B answer"));
+		const mode = createRenderProjectionContext({});
+		mode.sessionManager = sessionManager;
+		mode.chatContainer = new Container();
+		Object.assign(mode, {
+			renderProjectTrustWarningIfNeeded: vi.fn(),
+			showStatus: vi.fn(),
+		});
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+		const selectedBranchIds = [rootUser, rootAssistant, branchBUser, branchBAssistant];
+		expect(mode.messageRenderMembers.map((member) => member.entryId)).toEqual(selectedBranchIds);
+
+		const liveMode = createLiveEventMode();
+		Object.assign(liveMode, {
+			addMessageToChat: vi.fn(),
+			updatePendingMessagesDisplay: vi.fn(),
+		});
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof liveMode, event: object): Promise<void>;
+			}
+		).handleEvent;
+		for (const entryId of selectedBranchIds) {
+			const entry = sessionManager.getEntry(entryId);
+			if (entry?.type !== "message") throw new Error(`Missing message ${entryId}`);
+			await handleEvent.call(liveMode, { type: "message_start", message: entry.message, entryId });
+			if (entry.message.role === "assistant") {
+				await handleEvent.call(liveMode, { type: "message_end", message: entry.message, entryId });
+			}
+		}
+		expect(liveMode.messageRenderMembers.map((member) => member.entryId)).toEqual(selectedBranchIds);
+
+		sessionManager.branch(branchAAssistant);
+		await (
+			InteractiveMode.prototype as unknown as {
+				rebuildChatFromMessages(this: RenderProjectionContext): Promise<void>;
+			}
+		).rebuildChatFromMessages.call(mode);
+
+		expect(mode.messageRenderMembers.map((member) => member.entryId)).toEqual([
+			rootUser,
+			rootAssistant,
+			branchAUser,
+			branchAAssistant,
+		]);
+	});
 
 	it("serializes asynchronous render events without blocking their producer", async () => {
 		let listener: ((event: { type: string }) => void) | undefined;
@@ -555,161 +760,287 @@ describe("InteractiveMode message render projection", () => {
 		});
 	});
 
-	it("keeps each finalized assistant response in independent Tool Groups for live and restore", async () => {
-		const firstStart = fauxAssistantMessage("");
-		const first = {
-			...firstStart,
-			content: [
-				{ type: "text" as const, text: "First response" },
-				...Array.from({ length: 3 }, (_, index) => ({
-					type: "toolCall" as const,
-					id: `first-tool-${index + 1}`,
-					name: "read",
-					arguments: { path: `first-${index + 1}.txt` },
-				})),
-			],
-		};
-		const secondStart = fauxAssistantMessage("");
-		const second = {
-			...secondStart,
-			content: Array.from({ length: 2 }, (_, index) => ({
-				type: "toolCall" as const,
-				id: `second-tool-${index + 1}`,
-				name: "read",
-				arguments: { path: `second-${index + 1}.txt` },
-			})),
-		};
-		const chatContainer = new Container();
-		const liveMode = createLiveEventMode(chatContainer);
+	it("groups restored Tool Calls by visible separators across assistant responses", () => {
+		const mode = createRenderProjectionContext({});
+		const renderSessionItems = (
+			InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItemsWithResults }
+		).renderSessionItems;
+		const items = representativeToolResponses().flatMap(({ entryId, message, toolCall }) => [
+			{ entryId, message },
+			{
+				entryId: `result-${toolCall.id}`,
+				message: representativeToolResult(toolCall.id, toolCall.name),
+			},
+		]);
+
+		renderSessionItems.call(mode, items);
+
+		expect(representativeGroupFacts(mode.messageRenderMembers)).toEqual(expectedRepresentativeGroupFacts());
+	});
+
+	it("keeps representative live and restored Tool Group projection and components identical", async () => {
+		const responses = representativeToolResponses();
+		const liveChat = new Container();
+		const liveMode = createLiveEventMode(liveChat);
 		const handleEvent = (
 			InteractiveMode.prototype as unknown as {
 				handleEvent(this: typeof liveMode, event: object): Promise<void>;
 			}
 		).handleEvent;
-		const stream = async (entryId: string, started: AssistantMessage, completed: AssistantMessage) => {
+		for (const { entryId, started, message, toolCall } of responses) {
 			await handleEvent.call(liveMode, { type: "message_start", message: started, entryId });
 			await handleEvent.call(liveMode, {
 				type: "message_update",
-				message: completed,
+				message,
 				entryId,
 				assistantMessageEvent: {},
 			});
-			await handleEvent.call(liveMode, { type: "message_end", message: completed, entryId });
-		};
+			await handleEvent.call(liveMode, { type: "message_end", message, entryId });
+			await handleEvent.call(liveMode, {
+				type: "tool_execution_start",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
+			});
+			await handleEvent.call(liveMode, {
+				type: "tool_execution_end",
+				toolCallId: toolCall.id,
+				result: representativeToolResult(toolCall.id, toolCall.name),
+				isError: false,
+			});
+		}
+		await handleEvent.call(liveMode, { type: "agent_end" });
+		await handleEvent.call(liveMode, { type: "agent_settled" });
 
-		await stream("assistant-1", firstStart, first);
-		await stream("assistant-2", secondStart, second);
-
+		const restoredChat = new Container();
 		const restoredMode = createRenderProjectionContext({});
-		const renderSessionItems = (InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItems })
-			.renderSessionItems;
-		await renderSessionItems.call(restoredMode, [
-			{ message: first, entryId: "assistant-1" },
-			{ message: second, entryId: "assistant-2" },
-		]);
-		const groupFacts = (members: readonly RenderMember[]) =>
-			members.filter((member) => member.role === "tool-group" || member.role === "tool");
-		const expected = [
-			{
-				entryId: "tool-group:first-tool-1",
-				role: "tool-group",
-				groupId: "tool-group:first-tool-1",
-				groupClosed: true,
-			},
-			...Array.from({ length: 3 }, (_, index) => ({
-				entryId: `first-tool-${index + 1}`,
-				ownerEntryId: "assistant-1",
-				role: "tool",
-				groupId: "tool-group:first-tool-1",
-				groupOrder: index,
-			})),
-			{
-				entryId: "tool-group:second-tool-1",
-				role: "tool-group",
-				groupId: "tool-group:second-tool-1",
-				groupClosed: true,
-			},
-			...Array.from({ length: 2 }, (_, index) => ({
-				entryId: `second-tool-${index + 1}`,
-				ownerEntryId: "assistant-2",
-				role: "tool",
-				groupId: "tool-group:second-tool-1",
-				groupOrder: index,
-			})),
-		];
-		const liveContainer = chatContainer.children[0] as Container;
+		restoredMode.chatContainer = restoredChat;
+		const renderSessionItems = (
+			InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItemsWithResults }
+		).renderSessionItems;
+		renderSessionItems.call(
+			restoredMode,
+			responses.flatMap(({ entryId, message, toolCall }) => [
+				{ entryId, message },
+				{
+					entryId: `result-${toolCall.id}`,
+					message: representativeToolResult(toolCall.id, toolCall.name),
+				},
+			]),
+		);
+		const componentGroupSizes = (container: Container) =>
+			container.children
+				.flatMap((component) =>
+					component.constructor === Container ? (component as Container).children : [component],
+				)
+				.filter((component): component is ToolGroupComponent => component.constructor.name === "ToolGroupComponent")
+				.map((component) => component.children.length);
 
 		expect({
-			liveComponents: liveContainer.children.map((component) => component.constructor.name),
-			live: groupFacts(liveMode.messageRenderMembers),
-			restored: groupFacts(restoredMode.messageRenderMembers),
+			live: representativeGroupFacts(liveMode.messageRenderMembers),
+			restored: representativeGroupFacts(restoredMode.messageRenderMembers),
+			liveComponentGroups: componentGroupSizes(liveChat),
+			restoredComponentGroups: componentGroupSizes(restoredChat),
 		}).toEqual({
-			liveComponents: ["AssistantMessageComponent", "ToolGroupComponent", "ToolGroupComponent"],
-			live: expected,
-			restored: expected,
+			live: expectedRepresentativeGroupFacts(),
+			restored: expectedRepresentativeGroupFacts(),
+			liveComponentGroups: [4, 1, 1, 2],
+			restoredComponentGroups: [4, 1, 1, 2],
 		});
 	});
 
-	it("closes each response Tool Group before agent cleanup", async () => {
-		const fakeMode = createLiveEventMode();
-		const facts: Array<{
-			groups: Array<{ groupId: string; groupClosed: boolean }>;
-			mode: "append" | "replace";
-		}> = [];
-		fakeMode.publishMessageRenderProjectionV1 = vi.fn((members: readonly RenderMember[], mode) => {
-			const groups = members.flatMap((member) =>
-				member.role === "tool-group" && member.groupId && typeof member.groupClosed === "boolean"
-					? [{ groupId: member.groupId, groupClosed: member.groupClosed }]
-					: [],
-			);
-			if (groups.length > 0) facts.push({ groups, mode });
-		});
-		(
-			fakeMode as typeof fakeMode & {
-				awaitInitialSemanticFoldAdmission: ReturnType<typeof vi.fn>;
+	it("replaces a streaming singleton when the next response extends its stable Tool Group", async () => {
+		const observed: Array<{ members: readonly RenderMember[]; mode: "append" | "replace" }> = [];
+		const mode = createLiveEventMode();
+		mode.session = {
+			retryAttempt: 0,
+			isStreaming: true,
+			extensionRunner: {
+				getMessageRenderProjectionObserversV1: () => [
+					(projection: (typeof observed)[number]) => observed.push(projection),
+				],
+			},
+		} as never;
+		mode.publishMessageRenderProjectionV1 = (
+			InteractiveMode.prototype as unknown as {
+				publishMessageRenderProjectionV1: typeof mode.publishMessageRenderProjectionV1;
 			}
-		).awaitInitialSemanticFoldAdmission = vi.fn();
+		).publishMessageRenderProjectionV1;
 		const handleEvent = (
 			InteractiveMode.prototype as unknown as {
-				handleEvent(this: typeof fakeMode, event: object): Promise<void>;
+				handleEvent(this: typeof mode, event: object): Promise<void>;
 			}
 		).handleEvent;
 		const streamTool = async (entryId: string, toolCallId: string) => {
 			const started = fauxAssistantMessage("");
-			const completed = {
+			const message = {
 				...started,
 				content: [{ type: "toolCall" as const, id: toolCallId, name: "read", arguments: {} }],
 			};
-			await handleEvent.call(fakeMode, { type: "message_start", message: started, entryId });
-			await handleEvent.call(fakeMode, {
-				type: "message_update",
-				message: completed,
-				entryId,
-				assistantMessageEvent: {},
-			});
-			await handleEvent.call(fakeMode, { type: "message_end", message: completed, entryId });
+			await handleEvent.call(mode, { type: "message_start", message: started, entryId });
+			await handleEvent.call(mode, { type: "message_update", message, entryId, assistantMessageEvent: {} });
+			await handleEvent.call(mode, { type: "message_end", message, entryId });
 		};
 
 		await streamTool("assistant-1", "tool-1");
-		const firstFinal = facts.at(-1);
-		await streamTool("assistant-2", "tool-2");
-		const secondFinal = facts.at(-1);
-		await handleEvent.call(fakeMode, { type: "agent_end" });
+		expect(observed.at(-1)?.members.filter((member) => member.role === "tool")).toEqual([
+			{ entryId: "tool-1", ownerEntryId: "assistant-1", role: "tool" },
+		]);
 
-		expect({ firstFinal, secondFinal, afterCleanup: facts.at(-1) }).toEqual({
-			firstFinal: {
-				groups: [{ groupId: "tool-group:tool-1", groupClosed: true }],
-				mode: "append",
-			},
-			secondFinal: {
-				groups: [
-					{ groupId: "tool-group:tool-1", groupClosed: true },
-					{ groupId: "tool-group:tool-2", groupClosed: true },
-				],
-				mode: "append",
-			},
-			afterCleanup: secondFinal,
+		await streamTool("assistant-2", "tool-2");
+
+		const promoted = [...observed].reverse().find((projection) => projection.mode === "replace");
+		expect(promoted).toEqual({
+			mode: "replace",
+			members: [
+				{ entryId: "assistant-1", role: "assistant" },
+				{
+					entryId: "tool-group:tool-1",
+					role: "tool-group",
+					groupId: "tool-group:tool-1",
+					groupClosed: false,
+				},
+				{
+					entryId: "tool-1",
+					ownerEntryId: "assistant-1",
+					role: "tool",
+					groupId: "tool-group:tool-1",
+					groupOrder: 0,
+				},
+				{ entryId: "assistant-2", role: "assistant" },
+				{
+					entryId: "tool-2",
+					ownerEntryId: "assistant-2",
+					role: "tool",
+					groupId: "tool-group:tool-1",
+					groupOrder: 1,
+				},
+			],
 		});
+	});
+
+	it("keeps one live and restored Tool Group across retry lifecycle events until settlement", async () => {
+		const response = (entryId: string, toolCallId: string) => {
+			const started = fauxAssistantMessage("");
+			return {
+				entryId,
+				started,
+				message: {
+					...started,
+					content: [{ type: "toolCall" as const, id: toolCallId, name: "read", arguments: {} }],
+				},
+			};
+		};
+		const responses = [response("assistant-1", "tool-1"), response("assistant-2", "tool-2")];
+		const liveChat = new Container();
+		const liveMode = createLiveEventMode(liveChat);
+		Object.assign(liveMode, { checkShutdownRequested: vi.fn() });
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof liveMode, event: object): Promise<void>;
+			}
+		).handleEvent;
+		const stream = async ({ entryId, started, message }: (typeof responses)[number]) => {
+			await handleEvent.call(liveMode, { type: "message_start", message: started, entryId });
+			await handleEvent.call(liveMode, { type: "message_update", message, entryId, assistantMessageEvent: {} });
+			await handleEvent.call(liveMode, { type: "message_end", message, entryId });
+		};
+
+		await stream(responses[0]!);
+		await handleEvent.call(liveMode, { type: "agent_end" });
+		await handleEvent.call(liveMode, { type: "agent_start" });
+		await stream(responses[1]!);
+		await handleEvent.call(liveMode, { type: "agent_settled" });
+
+		const restoredChat = new Container();
+		const restoredMode = createRenderProjectionContext({});
+		restoredMode.chatContainer = restoredChat;
+		const renderSessionItems = (
+			InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItemsWithResults }
+		).renderSessionItems;
+		renderSessionItems.call(
+			restoredMode,
+			responses.flatMap(({ entryId, message }, index) => [
+				{ entryId, message },
+				{
+					entryId: `result-${index + 1}`,
+					message: representativeToolResult(`tool-${index + 1}`, "read"),
+				},
+			]),
+		);
+		const componentGroupSizes = (container: Container) =>
+			container.children
+				.flatMap((component) =>
+					component.constructor === Container ? (component as Container).children : [component],
+				)
+				.filter((component): component is ToolGroupComponent => component.constructor.name === "ToolGroupComponent")
+				.map((component) => component.children.length);
+		const expected = [
+			{
+				entryId: "tool-group:tool-1",
+				role: "tool-group",
+				groupId: "tool-group:tool-1",
+				groupClosed: true,
+			},
+			{
+				entryId: "tool-1",
+				ownerEntryId: "assistant-1",
+				role: "tool",
+				groupId: "tool-group:tool-1",
+				groupOrder: 0,
+			},
+			{
+				entryId: "tool-2",
+				ownerEntryId: "assistant-2",
+				role: "tool",
+				groupId: "tool-group:tool-1",
+				groupOrder: 1,
+			},
+		];
+
+		expect({
+			live: representativeGroupFacts(liveMode.messageRenderMembers),
+			restored: representativeGroupFacts(restoredMode.messageRenderMembers),
+			liveComponents: componentGroupSizes(liveChat),
+			restoredComponents: componentGroupSizes(restoredChat),
+		}).toEqual({ live: expected, restored: expected, liveComponents: [2], restoredComponents: [2] });
+	});
+
+	it("uses a visible render failure as a terminal Tool Group separator", async () => {
+		const mode = createLiveEventMode();
+		Object.assign(mode, { checkShutdownRequested: vi.fn(), showError: vi.fn() });
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof mode, event: object): Promise<void>;
+			}
+		).handleEvent;
+		const stream = async (entryId: string, toolCallId: string) => {
+			const started = fauxAssistantMessage("");
+			const message = {
+				...started,
+				content: [{ type: "toolCall" as const, id: toolCallId, name: "read", arguments: {} }],
+			};
+			await handleEvent.call(mode, { type: "message_start", message: started, entryId });
+			await handleEvent.call(mode, { type: "message_update", message, entryId, assistantMessageEvent: {} });
+			await handleEvent.call(mode, { type: "message_end", message, entryId });
+		};
+
+		await stream("assistant-1", "tool-1");
+		(
+			InteractiveMode.prototype as unknown as {
+				handleRenderEventFailure(this: typeof mode, event: object, error: unknown): void;
+			}
+		).handleRenderEventFailure.call(mode, { type: "message_update" }, new Error("render failed"));
+		await stream("assistant-2", "tool-2");
+		await handleEvent.call(mode, { type: "agent_settled" });
+
+		expect(mode.messageRenderMembers.filter((member) => member.role === "tool")).toEqual([
+			{ entryId: "tool-1", ownerEntryId: "assistant-1", role: "tool" },
+			{ entryId: "tool-2", ownerEntryId: "assistant-2", role: "tool" },
+		]);
+		expect((mode as typeof mode & { showError: ReturnType<typeof vi.fn> }).showError).toHaveBeenCalledWith(
+			"Failed to render message_update: render failed",
+		);
 	});
 
 	it("publishes one closed Tool Call as stock membership in live and rebuilt projections", async () => {
@@ -751,6 +1082,7 @@ describe("InteractiveMode message render projection", () => {
 		});
 		await handleEvent.call(liveMode, { type: "message_end", message: completed, entryId: "assistant-only" });
 		await handleEvent.call(liveMode, { type: "agent_end" });
+		await handleEvent.call(liveMode, { type: "agent_settled" });
 
 		let rebuilt: readonly RenderMember[] = [];
 		const rebuildMode = createRenderProjectionContext({});
@@ -782,7 +1114,7 @@ describe("InteractiveMode message render projection", () => {
 		expect(barrier).not.toHaveBeenCalled();
 	});
 
-	it("releases one completed run before the next Tool Group", async () => {
+	it("releases transient run state while retaining transcript grouping until settlement", async () => {
 		const chatContainer = new Container();
 		const fakeMode = createLiveEventMode(chatContainer);
 		const handleEvent = (
@@ -818,27 +1150,36 @@ describe("InteractiveMode message render projection", () => {
 			tools: fakeMode.liveToolComponents.size,
 			pending: fakeMode.pendingTools.size,
 			retainedChildren: firstContainer.children.length,
-		}).toEqual({ containerReleased: true, entries: 0, tools: 0, pending: 0, retainedChildren: 1 });
+		}).toEqual({ containerReleased: false, entries: 1, tools: 1, pending: 0, retainedChildren: 1 });
 
 		await handleEvent.call(fakeMode, { type: "agent_start" });
-		await streamTool("assistant-2", "tool-2");
-		const secondContainer = chatContainer.children[1] as Container;
+		const secondMessage = await streamTool("assistant-2", "tool-2");
+		const secondContainer = chatContainer.children[0] as Container;
 		const publishedMembers = fakeMode.publishMessageRenderProjectionV1.mock.lastCall?.[0] as RenderMember[];
 		expect({
 			reusedContainer: secondContainer === firstContainer,
 			childCount: (secondContainer.children[0] as Container).children.length,
 			projectedTool: publishedMembers.find((member) => member.entryId === "tool-2"),
 		}).toEqual({
-			reusedContainer: false,
-			childCount: 1,
+			reusedContainer: true,
+			childCount: 2,
 			projectedTool: {
 				entryId: "tool-2",
 				ownerEntryId: "assistant-2",
 				role: "tool",
-				groupId: "tool-group:tool-2",
-				groupOrder: 0,
+				groupId: "tool-group:tool-1",
+				groupOrder: 1,
 			},
 		});
+
+		await handleEvent.call(fakeMode, { type: "message_end", message: secondMessage, entryId: "assistant-2" });
+		await handleEvent.call(fakeMode, { type: "agent_settled" });
+		expect({
+			containerReleased: fakeMode.liveRenderContainer === undefined,
+			entries: fakeMode.liveAssistantRenderEntries.length,
+			tools: fakeMode.liveToolComponents.size,
+			pending: fakeMode.pendingTools.size,
+		}).toEqual({ containerReleased: true, entries: 0, tools: 0, pending: 0 });
 	});
 
 	it.each([
@@ -892,7 +1233,7 @@ describe("InteractiveMode message render projection", () => {
 		});
 	});
 
-	it("keeps Tool Results inside independent response Tool Groups", () => {
+	it("keeps Tool Results transparent inside one cross-response Tool Group", () => {
 		const added: unknown[] = [];
 		const fakeMode = createRenderProjectionContext({ onComponent: (component) => added.push(component) });
 		const renderSessionItems = (
@@ -921,13 +1262,69 @@ describe("InteractiveMode message render projection", () => {
 			{ message: second, entryId: "assistant-2" },
 		]);
 
+		expect(added.map((component) => (component as object).constructor.name)).toEqual(["ToolGroupComponent"]);
+		expect((added[0] as ToolGroupComponent).children).toHaveLength(2);
+	});
+
+	it("uses a user message as a live and restored cross-response Tool Group separator", async () => {
+		const added: unknown[] = [];
+		const mode = createRenderProjectionContext({ onComponent: (component) => added.push(component) });
+		const tool = (id: string) => ({
+			...fauxAssistantMessage(""),
+			content: [{ type: "toolCall" as const, id, name: "read", arguments: {} }],
+		});
+		const renderSessionItems = (
+			InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItemsWithResults }
+		).renderSessionItems;
+
+		renderSessionItems.call(mode, [
+			{ message: tool("tool-1"), entryId: "assistant-1" },
+			{ message: { role: "user", content: "continue", timestamp: 1 }, entryId: "user-2" },
+			{ message: tool("tool-2"), entryId: "assistant-2" },
+		]);
+
 		expect(added.map((component) => (component as object).constructor.name)).toEqual([
 			"ToolGroupComponent",
 			"ToolGroupComponent",
 		]);
+		expect(mode.messageRenderMembers.filter((member) => member.role === "tool")).toEqual([
+			{ entryId: "tool-1", ownerEntryId: "assistant-1", role: "tool" },
+			{ entryId: "tool-2", ownerEntryId: "assistant-2", role: "tool" },
+		]);
+
+		const liveChat = new Container();
+		const liveMode = createLiveEventMode(liveChat);
+		Object.assign(liveMode, { addMessageToChat: vi.fn(), updatePendingMessagesDisplay: vi.fn() });
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof liveMode, event: object): Promise<void>;
+			}
+		).handleEvent;
+		const stream = async (entryId: string, message: ReturnType<typeof tool>) => {
+			await handleEvent.call(liveMode, { type: "message_start", message, entryId });
+			await handleEvent.call(liveMode, { type: "message_end", message, entryId });
+		};
+		await stream("assistant-1", tool("tool-1"));
+		await handleEvent.call(liveMode, {
+			type: "message_start",
+			message: { role: "user", content: "continue", timestamp: 1 },
+			entryId: "user-2",
+		});
+		await stream("assistant-2", tool("tool-2"));
+		await handleEvent.call(liveMode, { type: "agent_end" });
+		await handleEvent.call(liveMode, { type: "agent_settled" });
+
+		expect(liveMode.messageRenderMembers).toEqual(mode.messageRenderMembers);
+		expect(
+			liveChat.children
+				.flatMap((component) =>
+					component.constructor === Container ? (component as Container).children : [component],
+				)
+				.filter((component) => component.constructor.name === "ToolGroupComponent"),
+		).toHaveLength(2);
 	});
 
-	it("keeps displayed custom entries between independent response Tool Groups during restore", async () => {
+	it("uses displayed custom entries as cross-response Tool Group separators", async () => {
 		const first = {
 			...fauxAssistantMessage(""),
 			content: [{ type: "toolCall" as const, id: "tool-1", name: "read", arguments: { path: "one.txt" } }],
@@ -991,6 +1388,7 @@ describe("InteractiveMode message render projection", () => {
 		await handleEvent.call(liveMode, { type: "entry_appended", entry: customEntry });
 		await streamAssistant(liveMode, "assistant-2", second);
 		await handleEvent.call(liveMode, { type: "agent_end" });
+		await handleEvent.call(liveMode, { type: "agent_settled" });
 
 		const livePresentation = liveChat.children.flatMap((component) =>
 			component.constructor === Container ? (component as Container).children : [component],
@@ -1020,30 +1418,14 @@ describe("InteractiveMode message render projection", () => {
 			members.filter((member) => member.role === "tool-group" || member.role === "tool");
 		expect(groupFacts(liveProjection)).toEqual([
 			{
-				entryId: "tool-group:tool-1",
-				role: "tool-group",
-				groupId: "tool-group:tool-1",
-				groupClosed: true,
-			},
-			{
 				entryId: "tool-1",
 				ownerEntryId: "assistant-1",
 				role: "tool",
-				groupId: "tool-group:tool-1",
-				groupOrder: 0,
-			},
-			{
-				entryId: "tool-group:tool-2",
-				role: "tool-group",
-				groupId: "tool-group:tool-2",
-				groupClosed: true,
 			},
 			{
 				entryId: "tool-2",
 				ownerEntryId: "assistant-2",
 				role: "tool",
-				groupId: "tool-group:tool-2",
-				groupOrder: 0,
 			},
 		]);
 		expect(restoredMode.messageRenderMembers).toEqual(liveProjection);
@@ -1058,7 +1440,7 @@ describe("InteractiveMode message render projection", () => {
 		);
 	});
 
-	it("keeps custom entries without renderers invisible between restored response Tool Groups", () => {
+	it("keeps custom entries without renderers transparent across responses", () => {
 		const added: unknown[] = [];
 		const fakeMode = createRenderProjectionContext({ onComponent: (component) => added.push(component) });
 		Object.setPrototypeOf(fakeMode, InteractiveMode.prototype);
@@ -1086,10 +1468,7 @@ describe("InteractiveMode message render projection", () => {
 			{ message: tool("tool-2", "two.txt"), entryId: "assistant-2" },
 		]);
 
-		expect(added.map((component) => (component as object).constructor.name)).toEqual([
-			"ToolGroupComponent",
-			"ToolGroupComponent",
-		]);
+		expect(added.map((component) => (component as object).constructor.name)).toEqual(["ToolGroupComponent"]);
 		expect(fakeMode.messageRenderMembers.filter((member) => member.role === "tool")).toEqual([
 			{
 				entryId: "tool-1",
@@ -1102,8 +1481,8 @@ describe("InteractiveMode message render projection", () => {
 				entryId: "tool-2",
 				ownerEntryId: "assistant-2",
 				role: "tool",
-				groupId: "tool-group:tool-2",
-				groupOrder: 0,
+				groupId: "tool-group:tool-1",
+				groupOrder: 1,
 			},
 		]);
 	});
@@ -1211,6 +1590,7 @@ describe("InteractiveMode message render projection", () => {
 			entryId: "assistant-v3",
 		});
 		await handleEvent.call(liveMode, { type: "agent_end" });
+		await handleEvent.call(liveMode, { type: "agent_settled" });
 
 		const liveContainer = liveChat.children[0] as Container;
 		const liveGroup = liveContainer.children[0] as ToolGroupComponent;
@@ -1436,7 +1816,7 @@ describe("InteractiveMode message render projection", () => {
 				entryId: "tool-group:tool-first",
 				role: "tool-group",
 				groupId: "tool-group:tool-first",
-				groupClosed: true,
+				groupClosed: false,
 			},
 			{
 				entryId: "tool-first",
@@ -1456,6 +1836,7 @@ describe("InteractiveMode message render projection", () => {
 		const liveFinalChildren = (liveMode.liveRenderContainer as unknown as Container).children;
 		expect(liveFinalChildren.map((child) => child.constructor.name)).toEqual(["ToolGroupComponent"]);
 		await handleEvent.call(liveMode, { type: "agent_end" });
+		await handleEvent.call(liveMode, { type: "agent_settled" });
 		const liveSettledProjection = observed.at(-1);
 		expect(liveSettledProjection?.members).toEqual([
 			{ entryId: "assistant-tools", role: "assistant" },
@@ -1622,7 +2003,7 @@ describe("InteractiveMode message render projection", () => {
 
 		expect(
 			projections[1]?.filter((member) => member.role === "tool").map((member) => [member.groupId, member.entryId]),
-		).toEqual([["tool-group:tool-current", "tool-current"]]);
+		).toEqual([[undefined, "tool-current"]]);
 	});
 
 	it("publishes an ordinary user under its persisted identity before its first boundary", async () => {
@@ -1784,7 +2165,7 @@ describe("InteractiveMode message render projection", () => {
 						entryId: "tool-group:tool-final",
 						role: "tool-group",
 						groupId: "tool-group:tool-final",
-						groupClosed: true,
+						groupClosed: false,
 					},
 					{
 						entryId: "tool-final",
@@ -1888,6 +2269,7 @@ describe("InteractiveMode message render projection", () => {
 			getRegisteredToolDefinition: () => undefined,
 			getMessageRenderBoundaryDecoratorsV1: () => [],
 			getToolPresentationOverridesV1: () => [],
+			getToolExecutionPresentationSelectorsV1: () => [],
 			renderAssistantAtoms,
 			publishMessageRenderProjectionV1,
 		};
@@ -1958,6 +2340,7 @@ describe("InteractiveMode message render projection", () => {
 			getRegisteredToolDefinition: () => undefined,
 			getMessageRenderBoundaryDecoratorsV1: () => [],
 			getToolPresentationOverridesV1: () => [override],
+			getToolExecutionPresentationSelectorsV1: () => [],
 			renderAssistantAtoms,
 			publishMessageRenderProjectionV1: vi.fn(),
 		};

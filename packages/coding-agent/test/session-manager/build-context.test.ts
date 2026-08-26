@@ -3,6 +3,7 @@ import {
 	type BranchSummaryEntry,
 	buildContextEntries,
 	buildSessionContext,
+	buildTranscriptEntries,
 	type CompactionEntry,
 	type CustomEntry,
 	type ModelChangeEntry,
@@ -124,6 +125,50 @@ describe("buildSessionContext", () => {
 	});
 
 	describe("with compaction", () => {
+		it("selects every original message for the displayed transcript while model context stays compacted", () => {
+			const entries: SessionEntry[] = [
+				msg("user-1", null, "user", "First question"),
+				msg("assistant-1", "user-1", "assistant", "First answer"),
+				msg("user-2", "assistant-1", "user", "Second question"),
+				msg("assistant-2", "user-2", "assistant", "Second answer"),
+				msg("user-3", "assistant-2", "user", "Third question"),
+				msg("assistant-3", "user-3", "assistant", "Third answer"),
+				compaction(
+					"compaction",
+					"assistant-3",
+					"First question First answer Second question Second answer Third question Third answer",
+					"assistant-3",
+				),
+			];
+
+			expect({
+				context: buildContextEntries(entries, "compaction").map((entry) => entry.id),
+				transcript: buildTranscriptEntries(entries, "compaction").map((entry) => entry.id),
+			}).toEqual({
+				context: ["compaction", "assistant-3"],
+				transcript: ["user-1", "assistant-1", "user-2", "assistant-2", "user-3", "assistant-3"],
+			});
+		});
+
+		it("keeps a fully compacted three-turn model context free of user messages", () => {
+			const entries: SessionEntry[] = [
+				msg("user-1", null, "user", "First question"),
+				msg("assistant-1", "user-1", "assistant", "First answer"),
+				msg("user-2", "assistant-1", "user", "Second question"),
+				msg("assistant-2", "user-2", "assistant", "Second answer"),
+				msg("user-3", "assistant-2", "user", "Third question"),
+				msg("assistant-3", "user-3", "assistant", "Third answer"),
+				compaction("compaction", "assistant-3", "Three completed turns", "assistant-3"),
+			];
+
+			const contextEntries = buildContextEntries(entries, "compaction");
+
+			expect(contextEntries.map((entry) => entry.id)).toEqual(["compaction", "assistant-3"]);
+			expect(contextEntries.filter((entry) => entry.type === "message" && entry.message.role === "user")).toEqual(
+				[],
+			);
+		});
+
 		it("includes summary before kept messages", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "first"),
@@ -209,6 +254,25 @@ describe("buildSessionContext", () => {
 	});
 
 	describe("with branches", () => {
+		it("selects only the requested branch for the displayed transcript", () => {
+			const entries: SessionEntry[] = [
+				msg("user-root", null, "user", "Root question"),
+				msg("assistant-root", "user-root", "assistant", "Root answer"),
+				msg("user-a", "assistant-root", "user", "Branch A question"),
+				msg("assistant-a", "user-a", "assistant", "Branch A answer"),
+				msg("user-b", "assistant-root", "user", "Branch B question"),
+				msg("assistant-b", "user-b", "assistant", "Branch B answer"),
+			];
+
+			expect({
+				branchA: buildTranscriptEntries(entries, "assistant-a").map((entry) => entry.id),
+				branchB: buildTranscriptEntries(entries, "assistant-b").map((entry) => entry.id),
+			}).toEqual({
+				branchA: ["user-root", "assistant-root", "user-a", "assistant-a"],
+				branchB: ["user-root", "assistant-root", "user-b", "assistant-b"],
+			});
+		});
+
 		it("follows path to specified leaf", () => {
 			// Tree:
 			//   1 -> 2 -> 3 (branch A)

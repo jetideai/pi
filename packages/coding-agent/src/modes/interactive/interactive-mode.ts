@@ -233,6 +233,30 @@ type AssistantRenderAtom =
 	| { type: "tools"; calls: AssistantToolCall[] };
 type OpenToolGroupProjection = { groupId: string; nextOrder: number };
 
+function walkAssistantRenderAtoms<T>(
+	atoms: readonly AssistantRenderAtom[],
+	openToolGroup: T | undefined,
+	handlers: {
+		open(firstCall: AssistantToolCall): T;
+		tool(openToolGroup: T, call: AssistantToolCall): void;
+		visual(content: Exclude<AssistantContent, { type: "toolCall" }>[]): void;
+		close(openToolGroup: T): void;
+	},
+): T | undefined {
+	for (const atom of atoms) {
+		if (atom.type === "visual") {
+			if (openToolGroup) handlers.close(openToolGroup);
+			openToolGroup = undefined;
+			handlers.visual(atom.content);
+			continue;
+		}
+
+		openToolGroup ??= handlers.open(atom.calls[0]!);
+		for (const call of atom.calls) handlers.tool(openToolGroup, call);
+	}
+	return openToolGroup;
+}
+
 function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "custom" }> {
 	return "type" in item && item.type === "custom";
 }
@@ -262,28 +286,28 @@ function messageRenderProjectionMembers(
 		return { members: [{ entryId, role: "user" }], closedToolGroupIds };
 	}
 	const members: MessageRenderProjectionMemberV1[] = [{ entryId, role: "assistant" }];
-	let activeToolGroup = openToolGroup ? { ...openToolGroup } : undefined;
-	for (const atom of assistantRenderAtoms(message, streaming, hideThinkingBlock)) {
-		if (atom.type === "visual") {
-			if (activeToolGroup) closedToolGroupIds.push(activeToolGroup.groupId);
-			activeToolGroup = undefined;
-			continue;
-		}
-		if (!activeToolGroup) {
-			const groupId = toolGroupId(atom.calls[0]!.id);
-			activeToolGroup = { groupId, nextOrder: 0 };
-			members.push({ entryId: groupId, role: "tool-group", groupId, groupClosed: false });
-		}
-		for (const content of atom.calls) {
-			members.push({
-				entryId: content.id,
-				ownerEntryId: entryId,
-				role: "tool",
-				groupId: activeToolGroup.groupId,
-				groupOrder: activeToolGroup.nextOrder++,
-			});
-		}
-	}
+	const activeToolGroup = walkAssistantRenderAtoms(
+		assistantRenderAtoms(message, streaming, hideThinkingBlock),
+		openToolGroup ? { ...openToolGroup } : undefined,
+		{
+			open: (firstCall) => {
+				const groupId = toolGroupId(firstCall.id);
+				members.push({ entryId: groupId, role: "tool-group", groupId, groupClosed: false });
+				return { groupId, nextOrder: 0 };
+			},
+			tool: (group, content) => {
+				members.push({
+					entryId: content.id,
+					ownerEntryId: entryId,
+					role: "tool",
+					groupId: group.groupId,
+					groupOrder: group.nextOrder++,
+				});
+			},
+			visual: () => {},
+			close: (group) => closedToolGroupIds.push(group.groupId),
+		},
+	);
 	return { members, ...(activeToolGroup ? { openToolGroup: activeToolGroup } : {}), closedToolGroupIds };
 }
 
@@ -315,11 +339,27 @@ function closeToolGroups(
 ): MessageRenderProjectionMemberV1[] {
 	if (groupIds.length === 0) return [...members];
 	const closedGroupIds = new Set(groupIds);
-	return members.map((member) =>
+	const closedMembers = members.map((member) =>
 		member.role === "tool-group" && closedGroupIds.has(member.groupId) && !member.groupClosed
 			? { ...member, groupClosed: true }
 			: member,
 	);
+	const toolCountByGroup = new Map<string, number>();
+	for (const member of closedMembers) {
+		if (member.role === "tool" && member.groupId && closedGroupIds.has(member.groupId)) {
+			toolCountByGroup.set(member.groupId, (toolCountByGroup.get(member.groupId) ?? 0) + 1);
+		}
+	}
+	const closedSingletons = new Set(
+		[...toolCountByGroup].filter(([, count]) => count === 1).map(([groupId]) => groupId),
+	);
+	return closedMembers.flatMap((member) => {
+		if (member.role === "tool-group" && closedSingletons.has(member.groupId)) return [];
+		if (member.role === "tool" && member.groupId && closedSingletons.has(member.groupId)) {
+			return [{ entryId: member.entryId, ownerEntryId: member.ownerEntryId, role: "tool" as const }];
+		}
+		return [member];
+	});
 }
 
 function canonicalMessageRenderProjectionMembers(
@@ -2286,16 +2326,10 @@ export class InteractiveMode {
 		renderVisual: (message: AssistantMessage, streaming: boolean) => void,
 		getToolComponent: (content: AssistantToolCall) => ToolExecutionComponent,
 	): ToolGroupComponent | undefined {
-		for (const atom of assistantRenderAtoms(message, streaming, this.hideThinkingBlock)) {
-			if (atom.type === "visual") {
-				openToolGroup = undefined;
-				renderVisual({ ...message, content: atom.content }, streaming);
-				continue;
-			}
-
-			if (!openToolGroup) {
-				const groupId = toolGroupId(atom.calls[0]!.id);
-				openToolGroup = new ToolGroupComponent({
+		return walkAssistantRenderAtoms(assistantRenderAtoms(message, streaming, this.hideThinkingBlock), openToolGroup, {
+			open: (firstCall) => {
+				const groupId = toolGroupId(firstCall.id);
+				const group = new ToolGroupComponent({
 					groupId,
 					closed: this.messageRenderMembers.some(
 						(member) => member.role === "tool-group" && member.groupId === groupId && member.groupClosed,
@@ -2307,18 +2341,19 @@ export class InteractiveMode {
 					producerSessionId: this.sessionManager.getSessionId?.() ?? "unknown-session",
 					renderScopeId: this.messageRenderScopeId,
 				});
-				container.addChild(openToolGroup);
-			}
-
-			for (const content of atom.calls) {
-				openToolGroup.addTool(getToolComponent(content), {
+				container.addChild(group);
+				return group;
+			},
+			tool: (group, content) => {
+				group.addTool(getToolComponent(content), {
 					toolName: content.name,
 					toolCallId: content.id,
 					...(entryId ? { ownerEntryId: entryId } : {}),
 				});
-			}
-		}
-		return openToolGroup;
+			},
+			visual: (content) => renderVisual({ ...message, content }, streaming),
+			close: () => {},
+		});
 	}
 
 	private getLiveToolComponent(content: AssistantToolCall, entryId: string): ToolExecutionComponent {
@@ -2357,13 +2392,14 @@ export class InteractiveMode {
 		const container = this.liveRenderContainer;
 		if (!container) return;
 		container.clear();
+		let openToolGroup: ToolGroupComponent | undefined;
 		for (const { entryId, message, streaming } of this.liveAssistantRenderEntries) {
-			this.renderAssistantAtoms(
+			openToolGroup = this.renderAssistantAtoms(
 				container,
 				message,
 				entryId,
 				streaming,
-				undefined,
+				openToolGroup,
 				(visualMessage, isStreaming) => {
 					const component = new AssistantMessageComponent(
 						undefined,
@@ -2428,7 +2464,13 @@ export class InteractiveMode {
 	}
 
 	private publishStreamingMessageRenderProjectionV1(entryId: string, message: AssistantMessage): void {
-		const projection = messageRenderProjectionMembers(entryId, message, undefined, true, this.hideThinkingBlock);
+		const projection = messageRenderProjectionMembers(
+			entryId,
+			message,
+			this.messageRenderOpenToolGroup,
+			true,
+			this.hideThinkingBlock,
+		);
 		const members = [...this.messageRenderMembers, ...projection.members];
 		if (
 			this.publishedStreamingMessageRenderMembers &&
@@ -2442,11 +2484,23 @@ export class InteractiveMode {
 
 	private releaseActiveAgentRunRendering(): void {
 		this.pendingTools.clear();
+		this.publishedStreamingMessageRenderMembers = undefined;
+	}
+
+	private releaseSettledMessageRendering(): void {
 		this.liveRenderContainer = undefined;
 		this.liveAssistantRenderEntries = [];
 		this.liveToolComponents.clear();
-		this.publishedStreamingMessageRenderMembers = undefined;
 		this.messageRenderOpenToolGroup = undefined;
+	}
+
+	private closeOpenMessageRenderGroup(): void {
+		if (!this.messageRenderOpenToolGroup) return;
+		const closedGroupId = this.messageRenderOpenToolGroup.groupId;
+		this.messageRenderOpenToolGroup = undefined;
+		this.messageRenderMembers = closeToolGroups(this.messageRenderMembers, [closedGroupId]);
+		this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+		this.renderLiveAssistantEntries();
 	}
 
 	/**
@@ -3584,8 +3638,10 @@ export class InteractiveMode {
 
 	private handleRenderEventFailure(event: AgentSessionEvent, error: unknown): void {
 		const message = error instanceof Error ? error.message : String(error);
+		this.closeOpenMessageRenderGroup();
 		this.showError(`Failed to render ${event.type}: ${message}`);
-		if (event.type !== "agent_end") return;
+		this.releaseSettledMessageRendering();
+		if (event.type !== "agent_end" && event.type !== "agent_settled") return;
 		if (this.settingsManager.getShowTerminalProgress()) this.ui.terminal.setProgress(false);
 		this.clearStatusIndicator("working");
 		this.releaseActiveAgentRunRendering();
@@ -3634,7 +3690,17 @@ export class InteractiveMode {
 
 			case "entry_appended":
 				if (event.entry.type === "custom") {
-					this.addCustomEntryToChat(event.entry);
+					const component = this.createCustomEntryComponent(event.entry);
+					if (component) {
+						if (this.messageRenderOpenToolGroup) {
+							const closedGroupId = this.messageRenderOpenToolGroup.groupId;
+							this.messageRenderOpenToolGroup = undefined;
+							this.messageRenderMembers = closeToolGroups(this.messageRenderMembers, [closedGroupId]);
+							this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+							this.renderLiveAssistantEntries();
+						}
+						this.addCustomEntryComponent(component);
+					}
 					this.ui.requestRender();
 				}
 				break;
@@ -3665,7 +3731,12 @@ export class InteractiveMode {
 						entryId: event.entryId,
 						message: event.message,
 					});
-					if (closedGroupIds.length > 0) this.renderLiveAssistantEntries();
+					if (closedGroupIds.length > 0) {
+						this.renderLiveAssistantEntries();
+						this.liveRenderContainer = undefined;
+						this.liveAssistantRenderEntries = [];
+						this.liveToolComponents.clear();
+					}
 					this.addMessageToChat(event.message, { entryId: event.entryId });
 					this.updatePendingMessagesDisplay();
 					if (closedGroupIds.length > 0) this.ui.renderNow();
@@ -3702,17 +3773,14 @@ export class InteractiveMode {
 					const projection = messageRenderProjectionMembers(
 						event.entryId,
 						event.message,
-						undefined,
+						this.messageRenderOpenToolGroup,
 						false,
 						this.hideThinkingBlock,
 					);
-					this.messageRenderOpenToolGroup = undefined;
+					this.messageRenderOpenToolGroup = projection.openToolGroup;
 					this.messageRenderMembers = closeToolGroups(
 						[...this.messageRenderMembers, ...projection.members],
-						[
-							...projection.closedToolGroupIds,
-							...(projection.openToolGroup ? [projection.openToolGroup.groupId] : []),
-						],
+						projection.closedToolGroupIds,
 					);
 					this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
 						entryId: event.entryId,
@@ -3808,13 +3876,6 @@ export class InteractiveMode {
 			}
 
 			case "agent_end": {
-				if (this.messageRenderOpenToolGroup) {
-					const closedGroupId = this.messageRenderOpenToolGroup.groupId;
-					this.messageRenderOpenToolGroup = undefined;
-					this.messageRenderMembers = closeToolGroups(this.messageRenderMembers, [closedGroupId]);
-					this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
-					this.renderLiveAssistantEntries();
-				}
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
 				}
@@ -3831,6 +3892,9 @@ export class InteractiveMode {
 			}
 
 			case "agent_settled":
+				this.closeOpenMessageRenderGroup();
+				this.releaseActiveAgentRunRendering();
+				this.releaseSettledMessageRendering();
 				await this.checkShutdownRequested();
 				break;
 
@@ -4006,17 +4070,22 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private addCustomEntryToChat(entry: Extract<SessionEntry, { type: "custom" }>): void {
+	private createCustomEntryComponent(
+		entry: Extract<SessionEntry, { type: "custom" }>,
+	): CustomEntryComponent | undefined {
 		const renderer = this.session.extensionRunner.getEntryRenderer(entry.customType);
 		if (!renderer) {
-			return;
+			return undefined;
 		}
 		const component = new CustomEntryComponent(entry, renderer);
 		component.setExpanded(this.toolOutputExpanded);
 		if (!component.hasContent()) {
-			return;
+			return undefined;
 		}
+		return component;
+	}
 
+	private addCustomEntryComponent(component: CustomEntryComponent): void {
 		if (this.streamingComponent) {
 			const streamingIndex = this.chatContainer.children.indexOf(this.streamingComponent);
 			if (streamingIndex >= 0) {
@@ -4158,26 +4227,35 @@ export class InteractiveMode {
 	): Promise<void> {
 		this.pendingTools.clear();
 		let messageMembers: MessageRenderProjectionMemberV1[] = [];
+		let openToolGroupProjection: OpenToolGroupProjection | undefined;
+		const customEntryComponents = new Map<string, CustomEntryComponent>();
 		for (const item of items) {
-			if (isCustomSessionEntry(item) || isCompactionCostNotice(item)) {
+			if (isCustomSessionEntry(item)) {
+				const component = this.createCustomEntryComponent(item);
+				if (component) {
+					customEntryComponents.set(item.id, component);
+					if (openToolGroupProjection) {
+						messageMembers = closeToolGroups(messageMembers, [openToolGroupProjection.groupId]);
+						openToolGroupProjection = undefined;
+					}
+				}
 				continue;
 			}
+			if (isCompactionCostNotice(item)) continue;
 			if ((item.message.role === "user" || item.message.role === "assistant") && item.entryId) {
 				const projection = messageRenderProjectionMembers(
 					item.entryId,
 					item.message,
-					undefined,
+					openToolGroupProjection,
 					false,
 					this.hideThinkingBlock,
 				);
-				messageMembers = closeToolGroups(
-					[...messageMembers, ...projection.members],
-					[
-						...projection.closedToolGroupIds,
-						...(projection.openToolGroup ? [projection.openToolGroup.groupId] : []),
-					],
-				);
+				messageMembers = closeToolGroups([...messageMembers, ...projection.members], projection.closedToolGroupIds);
+				openToolGroupProjection = projection.openToolGroup;
 			}
+		}
+		if (openToolGroupProjection) {
+			messageMembers = closeToolGroups(messageMembers, [openToolGroupProjection.groupId]);
 		}
 		this.messageRenderMembers = messageMembers;
 		this.messageRenderOpenToolGroup = undefined;
@@ -4195,9 +4273,14 @@ export class InteractiveMode {
 			this.updateEditorBorderColor();
 		}
 
+		let openToolGroupComponent: ToolGroupComponent | undefined;
 		for (const item of items) {
 			if (isCustomSessionEntry(item)) {
-				this.addCustomEntryToChat(item);
+				const component = customEntryComponents.get(item.id);
+				if (component) {
+					openToolGroupComponent = undefined;
+					this.addCustomEntryComponent(component);
+				}
 				continue;
 			}
 			if (isCompactionCostNotice(item)) {
@@ -4208,12 +4291,12 @@ export class InteractiveMode {
 			const { message, entryId } = item;
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
-				this.renderAssistantAtoms(
+				openToolGroupComponent = this.renderAssistantAtoms(
 					this.chatContainer,
 					message,
 					entryId,
 					false,
-					undefined,
+					openToolGroupComponent,
 					(visualMessage) => this.addMessageToChat(visualMessage, { entryId }),
 					(content) => {
 						const component = new ToolExecutionComponent(
@@ -4268,6 +4351,7 @@ export class InteractiveMode {
 					renderedPendingTools.delete(message.toolCallId);
 				}
 			} else {
+				if (message.role === "user") openToolGroupComponent = undefined;
 				// All other messages use standard rendering
 				this.addMessageToChat(message, { ...options, entryId });
 			}
@@ -4281,7 +4365,7 @@ export class InteractiveMode {
 
 	/**
 	 * Render session entries to chat. Used for initial load and rebuild after compaction.
-	 * @param entries Compaction-aware session entries to render
+	 * @param entries Selected session entries to render
 	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
 	 */
@@ -4352,7 +4436,7 @@ export class InteractiveMode {
 	}
 
 	async renderInitialMessages(): Promise<void> {
-		const entries = this.sessionManager.buildContextEntries();
+		const entries = this.sessionManager.buildTranscriptEntries();
 		await this.renderSessionEntries(entries, {
 			updateFooter: true,
 			populateHistory: true,
@@ -4409,7 +4493,7 @@ export class InteractiveMode {
 	private async rebuildChatFromMessages(options?: { freshTranscriptRender?: boolean }): Promise<void> {
 		if (options?.freshTranscriptRender) this.startFreshMessageRenderScope();
 		this.chatContainer.clear();
-		await this.renderSessionEntries(this.sessionManager.buildContextEntries());
+		await this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
 	}
 
 	// =========================================================================
