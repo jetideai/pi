@@ -108,6 +108,7 @@ export type {
 	MessageRenderBoundaryDecoratorV2,
 	MessageRenderBoundarySelectorV2,
 	MessageRenderBoundarySelectorV3,
+	MessageRenderCompletedTurnV1,
 	MessageRenderer,
 	MessageRenderFinalizedEntryV1,
 	MessageRenderOptions,

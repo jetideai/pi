@@ -80,6 +80,7 @@ import type {
 	MessageRenderBoundaryDecoratorV1,
 	MessageRenderBoundarySelectorV2,
 	MessageRenderBoundarySelectorV3,
+	MessageRenderCompletedTurnV1,
 	MessageRenderFinalizedEntryV1,
 	MessageRenderProjectionMemberV1,
 	MessageRenderProjectionV1,
@@ -232,6 +233,93 @@ type AssistantRenderAtom =
 	| { type: "visual"; content: Exclude<AssistantContent, { type: "toolCall" }>[] }
 	| { type: "tools"; calls: AssistantToolCall[] };
 type OpenToolGroupProjection = { groupId: string; nextOrder: number };
+const MAX_COMPLETED_TURN_PREVIEW_BYTES = 4 * 1024;
+const COMPLETED_TURN_PREVIEW_ELLIPSIS = "…";
+
+function boundedCompletedTurnPreview(text: string): string {
+	if (Buffer.byteLength(text, "utf8") <= MAX_COMPLETED_TURN_PREVIEW_BYTES) return text;
+	const parts: string[] = [];
+	let bytes = Buffer.byteLength(COMPLETED_TURN_PREVIEW_ELLIPSIS, "utf8");
+	for (const codePoint of text) {
+		const size = Buffer.byteLength(codePoint, "utf8");
+		if (bytes + size > MAX_COMPLETED_TURN_PREVIEW_BYTES) break;
+		parts.push(codePoint);
+		bytes += size;
+	}
+	return `${parts.join("")}${COMPLETED_TURN_PREVIEW_ELLIPSIS}`;
+}
+
+function userMessageText(message: AgentMessage | undefined): string | undefined {
+	if (message?.role !== "user") return undefined;
+	if (typeof message.content === "string") return message.content;
+	return message.content
+		.filter(
+			(content): content is Extract<(typeof message.content)[number], { type: "text" }> => content.type === "text",
+		)
+		.map((content) => content.text)
+		.join("");
+}
+
+function userMessagePreview(message: AgentMessage | undefined): string | undefined {
+	const text = userMessageText(message);
+	return text === undefined ? undefined : boundedCompletedTurnPreview(text);
+}
+
+function terminalAssistantPreview(message: AgentMessage | undefined): string | null | undefined {
+	if (
+		message?.role !== "assistant" ||
+		message.stopReason === "pending" ||
+		message.stopReason === "toolUse" ||
+		message.stopReason === "deferred"
+	) {
+		return undefined;
+	}
+	const text = message.content
+		.filter((content): content is Extract<AssistantContent, { type: "text" }> => content.type === "text")
+		.map((content) => content.text)
+		.join("\n\n");
+	return text.length === 0 && !message.content.some((content) => content.type === "text")
+		? null
+		: boundedCompletedTurnPreview(text);
+}
+
+function attachCompletedTurns(
+	members: readonly MessageRenderProjectionMemberV1[],
+	readMessage: (entryId: string) => AgentMessage | undefined,
+	completeLastTurn: boolean,
+): MessageRenderProjectionMemberV1[] {
+	const completedMembers = [...members];
+	let userIndex: number | undefined;
+	let userPreview: string | undefined;
+	let terminalAssistant: { entryId: string; preview: string | null } | undefined;
+	const completeTurn = (): void => {
+		if (userIndex === undefined || userPreview === undefined || terminalAssistant === undefined) return;
+		const user = completedMembers[userIndex];
+		if (user?.role !== "user") return;
+		completedMembers[userIndex] = {
+			...user,
+			completedTurn: {
+				assistantEntryId: terminalAssistant.entryId,
+				userPreview,
+				assistantPreview: terminalAssistant.preview,
+			},
+		};
+	};
+	for (const [index, member] of members.entries()) {
+		if (member.role === "user") {
+			completeTurn();
+			userIndex = index;
+			userPreview = userMessagePreview(readMessage(member.entryId));
+			terminalAssistant = undefined;
+			continue;
+		}
+		if (member.role !== "assistant" || userIndex === undefined) continue;
+		const preview = terminalAssistantPreview(readMessage(member.entryId));
+		if (preview !== undefined) terminalAssistant = { entryId: member.entryId, preview };
+	}
+	if (completeLastTurn) completeTurn();
+	return completedMembers;
+}
 
 function walkAssistantRenderAtoms<T>(
 	atoms: readonly AssistantRenderAtom[],
@@ -329,8 +417,36 @@ function sameMessageRenderProjectionMembers(
 				member.groupOrder === other.groupOrder
 			);
 		}
-		return member.role === "user" || member.role === "assistant";
+		if (member.role === "user" && other.role === "user") {
+			return sameCompletedTurn(member.completedTurn, other.completedTurn);
+		}
+		return member.role === "assistant";
 	});
+}
+
+function sameCompletedTurn(
+	left: Readonly<MessageRenderCompletedTurnV1> | undefined,
+	right: Readonly<MessageRenderCompletedTurnV1> | undefined,
+): boolean {
+	return (
+		left === right ||
+		(left !== undefined &&
+			right !== undefined &&
+			left.assistantEntryId === right.assistantEntryId &&
+			left.userPreview === right.userPreview &&
+			left.assistantPreview === right.assistantPreview)
+	);
+}
+
+function isMessageRenderProjectionAppendMember(
+	previous: MessageRenderProjectionMemberV1,
+	next: MessageRenderProjectionMemberV1,
+): boolean {
+	if (previous.entryId !== next.entryId || previous.role !== next.role) return false;
+	if (previous.role === "user" && next.role === "user") {
+		return previous.completedTurn === undefined || sameCompletedTurn(previous.completedTurn, next.completedTurn);
+	}
+	return sameMessageRenderProjectionMembers([previous], [next]);
 }
 
 function closeToolGroups(
@@ -398,7 +514,13 @@ function isMessageRenderProjectionPrefix(
 	prefix: readonly MessageRenderProjectionMemberV1[],
 	members: readonly MessageRenderProjectionMemberV1[],
 ): boolean {
-	return sameMessageRenderProjectionMembers(prefix, members.slice(0, prefix.length));
+	return (
+		prefix.length <= members.length &&
+		prefix.every((member, index) => {
+			const next = members[index];
+			return next !== undefined && isMessageRenderProjectionAppendMember(member, next);
+		})
+	);
 }
 
 function assistantRenderAtoms(
@@ -2436,8 +2558,18 @@ export class InteractiveMode {
 		members: readonly MessageRenderProjectionMemberV1[],
 		requestedMode: "append" | "replace",
 		finalized?: MessageRenderFinalizedEntryV1,
+		completeLastTurn = false,
 	): Readonly<MessageRenderProjectionV1> {
-		const canonicalMembers = canonicalMessageRenderProjectionMembers(members);
+		const readMessage = (entryId: string): AgentMessage | undefined => {
+			if (finalized?.entryId === entryId) return finalized.message;
+			const entry = this.sessionManager.getEntry(entryId);
+			return entry?.type === "message" ? entry.message : undefined;
+		};
+		const canonicalMembers = attachCompletedTurns(
+			canonicalMessageRenderProjectionMembers(members),
+			readMessage,
+			completeLastTurn,
+		);
 		const previousMembers = this.publishedCanonicalMessageRenderMembers;
 		const mode =
 			requestedMode === "append" &&
@@ -2449,7 +2581,16 @@ export class InteractiveMode {
 		this.publishedCanonicalMessageRenderMembers = canonicalMembers;
 		const observers = this.session.extensionRunner.getMessageRenderProjectionObserversV1();
 		const projection = Object.freeze({
-			members: Object.freeze(canonicalMembers.map((member) => Object.freeze({ ...member }))),
+			members: Object.freeze(
+				canonicalMembers.map((member) =>
+					Object.freeze({
+						...member,
+						...(member.role === "user" && member.completedTurn
+							? { completedTurn: Object.freeze({ ...member.completedTurn }) }
+							: {}),
+					}),
+				),
+			),
 			mode,
 			...(finalized ? { finalized: Object.freeze({ ...finalized }) } : {}),
 		});
@@ -2494,13 +2635,14 @@ export class InteractiveMode {
 		this.messageRenderOpenToolGroup = undefined;
 	}
 
-	private closeOpenMessageRenderGroup(): void {
-		if (!this.messageRenderOpenToolGroup) return;
+	private closeOpenMessageRenderGroup(completeLastTurn = false): boolean {
+		if (!this.messageRenderOpenToolGroup) return false;
 		const closedGroupId = this.messageRenderOpenToolGroup.groupId;
 		this.messageRenderOpenToolGroup = undefined;
 		this.messageRenderMembers = closeToolGroups(this.messageRenderMembers, [closedGroupId]);
-		this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+		this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", undefined, completeLastTurn);
 		this.renderLiveAssistantEntries();
+		return true;
 	}
 
 	/**
@@ -3892,7 +4034,9 @@ export class InteractiveMode {
 			}
 
 			case "agent_settled":
-				this.closeOpenMessageRenderGroup();
+				if (!this.closeOpenMessageRenderGroup(true)) {
+					this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", undefined, true);
+				}
 				this.releaseActiveAgentRunRendering();
 				this.releaseSettledMessageRendering();
 				await this.checkShutdownRequested();
@@ -4022,12 +4166,7 @@ export class InteractiveMode {
 
 	/** Extract text content from a user message */
 	private getUserMessageText(message: Message): string {
-		if (message.role !== "user") return "";
-		const textBlocks =
-			typeof message.content === "string"
-				? [{ type: "text", text: message.content }]
-				: message.content.filter((c: { type: string }) => c.type === "text");
-		return textBlocks.map((c) => (c as { text: string }).text).join("");
+		return userMessageText(message) ?? "";
 	}
 
 	/** Show a managed-tool status update in the chat. */
@@ -4223,7 +4362,7 @@ export class InteractiveMode {
 
 	private async renderSessionItems(
 		items: readonly RenderSessionItem[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
+		options: { updateFooter?: boolean; populateHistory?: boolean; completeLastTurn?: boolean } = {},
 	): Promise<void> {
 		this.pendingTools.clear();
 		let messageMembers: MessageRenderProjectionMemberV1[] = [];
@@ -4260,7 +4399,11 @@ export class InteractiveMode {
 		this.messageRenderMembers = messageMembers;
 		this.messageRenderOpenToolGroup = undefined;
 		this.publishedStreamingMessageRenderMembers = undefined;
-		this.publishMessageRenderProjectionV1(messageMembers, "replace");
+		if (options.completeLastTurn) {
+			this.publishMessageRenderProjectionV1(messageMembers, "replace", undefined, true);
+		} else {
+			this.publishMessageRenderProjectionV1(messageMembers, "replace");
+		}
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
 		// list and re-inject them after the assistant messages that paid for them.
@@ -4371,7 +4514,7 @@ export class InteractiveMode {
 	 */
 	private async renderSessionEntries(
 		entries: SessionEntry[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
+		options: { updateFooter?: boolean; populateHistory?: boolean; completeLastTurn?: boolean } = {},
 	): Promise<void> {
 		const items = entries.flatMap((entry): RenderSessionItem[] => {
 			if (entry.type === "custom") {
@@ -4440,6 +4583,7 @@ export class InteractiveMode {
 		await this.renderSessionEntries(entries, {
 			updateFooter: true,
 			populateHistory: true,
+			completeLastTurn: this.session.isIdle,
 		});
 		this.renderProjectTrustWarningIfNeeded();
 
@@ -4493,7 +4637,9 @@ export class InteractiveMode {
 	private async rebuildChatFromMessages(options?: { freshTranscriptRender?: boolean }): Promise<void> {
 		if (options?.freshTranscriptRender) this.startFreshMessageRenderScope();
 		this.chatContainer.clear();
-		await this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
+		await this.renderSessionEntries(this.sessionManager.buildTranscriptEntries(), {
+			completeLastTurn: this.session.isIdle,
+		});
 	}
 
 	// =========================================================================

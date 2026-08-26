@@ -34,6 +34,11 @@ type RenderSessionItemsWithResults = (
 type RenderMember = {
 	entryId: string;
 	role: "user" | "assistant" | "tool-group" | "tool";
+	completedTurn?: {
+		assistantEntryId: string;
+		userPreview: string;
+		assistantPreview: string | null;
+	};
 	ownerEntryId?: string;
 	groupId?: string;
 	groupOrder?: number;
@@ -66,9 +71,10 @@ type RenderProjectionContext = {
 	sessionManager: {
 		getEntries(): SessionEntry[];
 		getCwd(): string;
+		getEntry?(entryId: string): SessionEntry | undefined;
 		buildTranscriptEntries?(): SessionEntry[];
 	};
-	session: { modelRuntime: undefined };
+	session: { modelRuntime: undefined; isIdle?: boolean };
 	outputPad: number;
 	toolOutputExpanded: boolean;
 	updateEditorBorderColor(): void;
@@ -150,7 +156,11 @@ function createRenderProjectionContext(options: {
 			getShowImages: () => false,
 			getImageWidthCells: () => 60,
 		},
-		sessionManager: { getEntries: () => [], getCwd: () => process.cwd() },
+		sessionManager: {
+			getEntries: () => [],
+			getCwd: () => process.cwd(),
+			getEntry: (_entryId: string): SessionEntry | undefined => undefined,
+		},
 		session: { modelRuntime: undefined },
 		outputPad: 1,
 		toolOutputExpanded: false,
@@ -194,7 +204,10 @@ function createLiveEventMode(chatContainer = new Container()) {
 			getShowTerminalProgress: () => false,
 			setOutputPad: vi.fn(),
 		},
-		sessionManager: { getCwd: () => process.cwd() },
+		sessionManager: {
+			getCwd: () => process.cwd(),
+			getEntry: (_entryId: string): SessionEntry | undefined => undefined,
+		},
 		getMarkdownThemeWithSettings: vi.fn(),
 		getMarkdownTransformers: () => [],
 		getMessageRenderBoundaryDecoratorsV1: () => [],
@@ -210,6 +223,33 @@ function createLiveEventMode(chatContainer = new Container()) {
 	};
 	Object.setPrototypeOf(mode, InteractiveMode.prototype);
 	return mode;
+}
+
+function observeCompletedTurnProjections(mode: RenderProjectionContext, sessionManager: SessionManager) {
+	const projections: Array<{ members: readonly RenderMember[]; mode: "append" | "replace" }> = [];
+	mode.sessionManager = sessionManager;
+	mode.chatContainer = new Container();
+	mode.session = {
+		modelRuntime: undefined,
+		isIdle: true,
+		retryAttempt: 0,
+		extensionRunner: {
+			getMessageRenderProjectionObserversV1: () => [
+				(projection: (typeof projections)[number]) => projections.push(projection),
+			],
+		},
+	} as never;
+	mode.publishMessageRenderProjectionV1 = (
+		InteractiveMode.prototype as unknown as {
+			publishMessageRenderProjectionV1: typeof mode.publishMessageRenderProjectionV1;
+		}
+	).publishMessageRenderProjectionV1;
+	Object.assign(mode, {
+		renderProjectTrustWarningIfNeeded: vi.fn(),
+		showStatus: vi.fn(),
+	});
+	Object.setPrototypeOf(mode, InteractiveMode.prototype);
+	return projections;
 }
 
 function representativeToolResponses() {
@@ -297,6 +337,299 @@ function expectedRepresentativeGroupFacts(): RenderMember[] {
 
 describe("InteractiveMode message render projection", () => {
 	beforeAll(() => initTheme("dark"));
+
+	it("publishes a completed terminal turn during quiescent cold restore", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const userId = sessionManager.appendMessage({ role: "user", content: "Question", timestamp: 1 });
+		const assistantId = sessionManager.appendMessage(fauxAssistantMessage("Answer"));
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+
+		expect(projections.at(-1)?.members.find((member) => member.entryId === userId)?.completedTurn).toEqual({
+			assistantEntryId: assistantId,
+			userPreview: "Question",
+			assistantPreview: "Answer",
+		});
+	});
+
+	it("collects every user text block around non-text content", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const userId = sessionManager.appendMessage({
+			role: "user",
+			content: [
+				{ type: "text", text: "Before attachment" },
+				{ type: "image", data: "AA==", mimeType: "image/png" },
+				{ type: "text", text: " after attachment" },
+			],
+			timestamp: 1,
+		});
+		sessionManager.appendMessage(fauxAssistantMessage("Answer"));
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+
+		expect(projections.at(-1)?.members.find((member) => member.entryId === userId)?.completedTurn?.userPreview).toBe(
+			"Before attachment after attachment",
+		);
+	});
+
+	it("uses an empty preview when a user has no displayed text", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const imageOnlyUserId = sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+			timestamp: 1,
+		});
+		sessionManager.appendMessage(fauxAssistantMessage("First answer"));
+		const emptyTextUserId = sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "" }],
+			timestamp: 2,
+		});
+		sessionManager.appendMessage(fauxAssistantMessage("Second answer"));
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+
+		const userMembers = projections
+			.at(-1)
+			?.members.filter((member) => member.entryId === imageOnlyUserId || member.entryId === emptyTextUserId);
+		expect(userMembers?.map((member) => member.completedTurn?.userPreview)).toEqual(["", ""]);
+	});
+
+	it("publishes all compacted selected-branch turns while model context retains no user", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const turns = [
+			["First question", "First answer"],
+			["Second question", "Second answer"],
+			["Third question", "Third answer"],
+		].map(([question, answer], index) => {
+			const userId = sessionManager.appendMessage({ role: "user", content: question!, timestamp: index + 1 });
+			const assistantId = sessionManager.appendMessage(fauxAssistantMessage(answer!));
+			return { userId, assistantId, question, answer };
+		});
+		sessionManager.appendCompaction("Three completed turns", turns[2]!.assistantId, 100);
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+
+		expect(sessionManager.buildContextEntries().filter((entry) => entry.type === "message")).toEqual([
+			sessionManager.getEntry(turns[2]!.assistantId),
+		]);
+		expect(
+			projections
+				.at(-1)
+				?.members.filter((member) => member.role === "user")
+				.map((member) => member.completedTurn),
+		).toEqual(
+			turns.map(({ assistantId, question, answer }) => ({
+				assistantEntryId: assistantId,
+				userPreview: question,
+				assistantPreview: answer,
+			})),
+		);
+	});
+
+	it("uses the last terminal assistant when a later user completes the prior turn", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const firstUserId = sessionManager.appendMessage({ role: "user", content: "First question", timestamp: 1 });
+		sessionManager.appendMessage(fauxAssistantMessage("Earlier answer"));
+		const lastAssistantId = sessionManager.appendMessage(fauxAssistantMessage("Final answer"));
+		const nextUserId = sessionManager.appendMessage({ role: "user", content: "Next question", timestamp: 2 });
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+		mode.session.isIdle = false;
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+
+		expect(projections.at(-1)?.members.find((member) => member.entryId === firstUserId)?.completedTurn).toEqual({
+			assistantEntryId: lastAssistantId,
+			userPreview: "First question",
+			assistantPreview: "Final answer",
+		});
+		expect(
+			projections.at(-1)?.members.find((member) => member.entryId === nextUserId)?.completedTurn,
+		).toBeUndefined();
+	});
+
+	it("keeps the compacted live tail incomplete during transcript rebuild", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const firstUserId = sessionManager.appendMessage({ role: "user", content: "First question", timestamp: 1 });
+		const firstAssistantId = sessionManager.appendMessage(fauxAssistantMessage("First answer"));
+		const tailUserId = sessionManager.appendMessage({ role: "user", content: "Tail question", timestamp: 2 });
+		const tailAssistantId = sessionManager.appendMessage(fauxAssistantMessage("Tail answer"));
+		sessionManager.appendCompaction("Compacted live run", tailAssistantId, 100);
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+		mode.session.isIdle = false;
+
+		await (
+			InteractiveMode.prototype as unknown as {
+				rebuildChatFromMessages(this: RenderProjectionContext): Promise<void>;
+			}
+		).rebuildChatFromMessages.call(mode);
+
+		expect(projections.at(-1)?.members.find((member) => member.entryId === firstUserId)?.completedTurn).toEqual({
+			assistantEntryId: firstAssistantId,
+			userPreview: "First question",
+			assistantPreview: "First answer",
+		});
+		expect(
+			projections.at(-1)?.members.find((member) => member.entryId === tailUserId)?.completedTurn,
+		).toBeUndefined();
+	});
+
+	it("completes the last live turn only after terminal settlement", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const user = { role: "user" as const, content: "Question", timestamp: 1 };
+		const userId = sessionManager.appendMessage(user);
+		const observed: Array<{ members: readonly RenderMember[]; mode: "append" | "replace" }> = [];
+		const mode = createLiveEventMode();
+		mode.sessionManager = sessionManager;
+		mode.session = {
+			retryAttempt: 0,
+			isStreaming: true,
+			extensionRunner: {
+				getMessageRenderProjectionObserversV1: () => [
+					(projection: (typeof observed)[number]) => observed.push(projection),
+				],
+			},
+		} as never;
+		mode.publishMessageRenderProjectionV1 = (
+			InteractiveMode.prototype as unknown as {
+				publishMessageRenderProjectionV1: typeof mode.publishMessageRenderProjectionV1;
+			}
+		).publishMessageRenderProjectionV1;
+		Object.assign(mode, { addMessageToChat: vi.fn(), updatePendingMessagesDisplay: vi.fn() });
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof mode, event: object): Promise<void>;
+			}
+		).handleEvent;
+		const started = fauxAssistantMessage("");
+		const toolUse = {
+			...started,
+			content: [{ type: "toolCall" as const, id: "tool-1", name: "read", arguments: {} }],
+			stopReason: "toolUse" as const,
+		};
+		const terminal = fauxAssistantMessage("Final answer");
+		const toolEntryId = sessionManager.reserveEntryId();
+		const terminalEntryId = sessionManager.reserveEntryId();
+
+		await handleEvent.call(mode, { type: "message_start", message: user, entryId: userId });
+		await handleEvent.call(mode, { type: "message_start", message: started, entryId: toolEntryId });
+		await handleEvent.call(mode, {
+			type: "message_update",
+			message: toolUse,
+			entryId: toolEntryId,
+			assistantMessageEvent: {},
+		});
+		expect(observed.at(-1)?.members.find((member) => member.entryId === userId)?.completedTurn).toBeUndefined();
+		await handleEvent.call(mode, { type: "message_end", message: toolUse, entryId: toolEntryId });
+		sessionManager.appendMessage(toolUse, toolEntryId);
+		await handleEvent.call(mode, { type: "agent_end" });
+		await handleEvent.call(mode, { type: "agent_start" });
+		await handleEvent.call(mode, { type: "message_start", message: started, entryId: terminalEntryId });
+		await handleEvent.call(mode, { type: "message_end", message: terminal, entryId: terminalEntryId });
+		sessionManager.appendMessage(terminal, terminalEntryId);
+		expect(observed.at(-1)?.members.find((member) => member.entryId === userId)?.completedTurn).toBeUndefined();
+
+		await handleEvent.call(mode, { type: "agent_settled" });
+
+		expect(observed.at(-1)?.mode).toBe("append");
+		expect(observed.at(-1)?.members.find((member) => member.entryId === userId)?.completedTurn).toEqual({
+			assistantEntryId: terminalEntryId,
+			userPreview: "Question",
+			assistantPreview: "Final answer",
+		});
+	});
+
+	it("publishes null assistant preview for a terminal assistant without text", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const userId = sessionManager.appendMessage({ role: "user", content: "Question", timestamp: 1 });
+		const terminal = {
+			...fauxAssistantMessage(""),
+			content: [{ type: "toolCall" as const, id: "tool-1", name: "read", arguments: {} }],
+			stopReason: "stop" as const,
+		};
+		const assistantId = sessionManager.appendMessage(terminal);
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+
+		expect(projections.at(-1)?.members.find((member) => member.entryId === userId)?.completedTurn).toEqual({
+			assistantEntryId: assistantId,
+			userPreview: "Question",
+			assistantPreview: null,
+		});
+	});
+
+	it("bounds completed-turn previews at a Unicode boundary", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const oversizeText = `${"a".repeat(4094)}🙂`;
+		const expectedPreview = `${"a".repeat(4093)}…`;
+		const userId = sessionManager.appendMessage({ role: "user", content: oversizeText, timestamp: 1 });
+		sessionManager.appendMessage(fauxAssistantMessage(oversizeText));
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+
+		const completedTurn = projections.at(-1)?.members.find((member) => member.entryId === userId)?.completedTurn;
+		expect(completedTurn).toMatchObject({
+			userPreview: expectedPreview,
+			assistantPreview: expectedPreview,
+		});
+		expect(Object.isFrozen(completedTurn)).toBe(true);
+	});
+
+	it("replaces completed turns with only the selected branch after rewind", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const rootUser = sessionManager.appendMessage({ role: "user", content: "Root question", timestamp: 1 });
+		const rootAssistant = sessionManager.appendMessage(fauxAssistantMessage("Root answer"));
+		const branchAUser = sessionManager.appendMessage({ role: "user", content: "Branch A question", timestamp: 2 });
+		const branchAAssistant = sessionManager.appendMessage(fauxAssistantMessage("Branch A answer"));
+		sessionManager.branch(rootAssistant);
+		const branchBUser = sessionManager.appendMessage({ role: "user", content: "Branch B question", timestamp: 3 });
+		const branchBAssistant = sessionManager.appendMessage(fauxAssistantMessage("Branch B answer"));
+		const mode = createRenderProjectionContext({});
+		const projections = observeCompletedTurnProjections(mode, sessionManager);
+
+		await InteractiveMode.prototype.renderInitialMessages.call(mode as never);
+		expect(
+			projections
+				.at(-1)
+				?.members.flatMap((member) =>
+					member.completedTurn ? [[member.entryId, member.completedTurn.assistantEntryId]] : [],
+				),
+		).toEqual([
+			[rootUser, rootAssistant],
+			[branchBUser, branchBAssistant],
+		]);
+
+		sessionManager.branch(branchAAssistant);
+		await (
+			InteractiveMode.prototype as unknown as {
+				rebuildChatFromMessages(this: RenderProjectionContext): Promise<void>;
+			}
+		).rebuildChatFromMessages.call(mode);
+		expect(
+			projections
+				.at(-1)
+				?.members.flatMap((member) =>
+					member.completedTurn ? [[member.entryId, member.completedTurn.assistantEntryId]] : [],
+				),
+		).toEqual([
+			[rootUser, rootAssistant],
+			[branchAUser, branchAAssistant],
+		]);
+	});
 
 	it("rebuilds a compacted session from every original selected-branch message", async () => {
 		const user = (id: string, parentId: string | null, text: string): SessionEntry => ({

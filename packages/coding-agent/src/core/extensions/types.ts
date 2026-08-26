@@ -1347,8 +1347,15 @@ export interface MessageRenderFinalizedEntryV1 {
 	message: AgentMessage;
 }
 
+export interface MessageRenderCompletedTurnV1 {
+	assistantEntryId: string;
+	userPreview: string;
+	assistantPreview: string | null;
+}
+
 export type MessageRenderProjectionMemberV1 =
-	| { entryId: string; role: "user" | "assistant" }
+	| { entryId: string; role: "user"; completedTurn?: Readonly<MessageRenderCompletedTurnV1> }
+	| { entryId: string; role: "assistant" }
 	| { entryId: string; role: "tool-group"; groupId: string; groupClosed: boolean }
 	| {
 			entryId: string;
