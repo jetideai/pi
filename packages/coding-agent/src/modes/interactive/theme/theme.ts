@@ -68,6 +68,7 @@ const ThemeJsonSchema = Type.Object({
 		mdCode: ColorValueSchema,
 		mdCodeBg: Type.Optional(ColorValueSchema),
 		mdCodeBlock: ColorValueSchema,
+		mdCodeBlockBg: Type.Optional(ColorValueSchema),
 		mdCodeBlockBorder: ColorValueSchema,
 		mdQuote: ColorValueSchema,
 		mdQuoteBorder: ColorValueSchema,
@@ -177,7 +178,8 @@ export type ThemeBg =
 	| "toolDiffRemovedBg"
 	| "toolDiffAddedSoftBg"
 	| "toolDiffRemovedSoftBg"
-	| "mdCodeBg";
+	| "mdCodeBg"
+	| "mdCodeBlockBg";
 
 type OptionalThemeColor = "thinkingMax" | "searchMatchText";
 type OptionalThemeBg =
@@ -187,7 +189,8 @@ type OptionalThemeBg =
 	| "toolDiffRemovedBg"
 	| "toolDiffAddedSoftBg"
 	| "toolDiffRemovedSoftBg"
-	| "mdCodeBg";
+	| "mdCodeBg"
+	| "mdCodeBlockBg";
 
 type ColorMode = "truecolor" | "256color";
 
@@ -689,6 +692,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 		"toolDiffAddedSoftBg",
 		"toolDiffRemovedSoftBg",
 		"mdCodeBg",
+		"mdCodeBlockBg",
 	]);
 	for (const [key, value] of Object.entries(resolvedColors)) {
 		if (bgColorKeys.has(key)) {
@@ -1319,14 +1323,16 @@ export function getLanguageFromPath(filePath: string): string | undefined {
 }
 
 export function getMarkdownTheme(): MarkdownTheme {
+	// Optional block background. Absent token keeps foreground-only lines.
+	const blockBg = (text: string): string => (theme.hasBg("mdCodeBlockBg") ? theme.bg("mdCodeBlockBg", text) : text);
 	return {
 		heading: (text: string) => theme.fg("mdHeading", text),
 		link: (text: string) => theme.fg("mdLink", text),
 		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
 		code: (text: string) =>
 			theme.hasBg("mdCodeBg") ? theme.bg("mdCodeBg", theme.fg("mdCode", text)) : theme.fg("mdCode", text),
-		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
-		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
+		codeBlock: (text: string) => blockBg(theme.fg("mdCodeBlock", text)),
+		codeBlockBorder: (text: string) => blockBg(theme.fg("mdCodeBlockBorder", text)),
 		quote: (text: string) => theme.fg("mdQuote", text),
 		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
 		hr: (text: string) => theme.fg("mdHr", text),
@@ -1342,7 +1348,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 			// auto-detection is unreliable and can misidentify prose as AppleScript,
 			// LiveCodeServer, etc., coloring random English words as keywords.
 			if (!validLang) {
-				return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
+				return code.split("\n").map((line) => blockBg(theme.fg("mdCodeBlock", line)));
 			}
 			const opts = {
 				language: validLang,
@@ -1350,9 +1356,11 @@ export function getMarkdownTheme(): MarkdownTheme {
 				theme: getCliHighlightTheme(theme),
 			};
 			try {
-				return highlight(code, opts).split("\n");
+				return highlight(code, opts)
+					.split("\n")
+					.map((line) => blockBg(line));
 			} catch {
-				return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
+				return code.split("\n").map((line) => blockBg(theme.fg("mdCodeBlock", line)));
 			}
 		},
 	};
