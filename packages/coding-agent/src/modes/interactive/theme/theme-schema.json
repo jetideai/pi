@@ -201,6 +201,10 @@
 					"$ref": "#/$defs/colorValue",
 					"description": "Markdown link URL"
 				},
+				"mdCodeBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Optional background chip for inline code spans (omitted = no background)"
+				},
 				"mdCode": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Markdown inline code"

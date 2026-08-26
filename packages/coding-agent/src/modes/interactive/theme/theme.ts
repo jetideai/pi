@@ -66,6 +66,7 @@ const ThemeJsonSchema = Type.Object({
 		mdLink: ColorValueSchema,
 		mdLinkUrl: ColorValueSchema,
 		mdCode: ColorValueSchema,
+		mdCodeBg: Type.Optional(ColorValueSchema),
 		mdCodeBlock: ColorValueSchema,
 		mdCodeBlockBorder: ColorValueSchema,
 		mdQuote: ColorValueSchema,
@@ -175,7 +176,8 @@ export type ThemeBg =
 	| "toolDiffAddedBg"
 	| "toolDiffRemovedBg"
 	| "toolDiffAddedSoftBg"
-	| "toolDiffRemovedSoftBg";
+	| "toolDiffRemovedSoftBg"
+	| "mdCodeBg";
 
 type OptionalThemeColor = "thinkingMax" | "searchMatchText";
 type OptionalThemeBg =
@@ -184,7 +186,8 @@ type OptionalThemeBg =
 	| "toolDiffAddedBg"
 	| "toolDiffRemovedBg"
 	| "toolDiffAddedSoftBg"
-	| "toolDiffRemovedSoftBg";
+	| "toolDiffRemovedSoftBg"
+	| "mdCodeBg";
 
 type ColorMode = "truecolor" | "256color";
 
@@ -685,6 +688,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 		"toolDiffRemovedBg",
 		"toolDiffAddedSoftBg",
 		"toolDiffRemovedSoftBg",
+		"mdCodeBg",
 	]);
 	for (const [key, value] of Object.entries(resolvedColors)) {
 		if (bgColorKeys.has(key)) {
@@ -1319,7 +1323,8 @@ export function getMarkdownTheme(): MarkdownTheme {
 		heading: (text: string) => theme.fg("mdHeading", text),
 		link: (text: string) => theme.fg("mdLink", text),
 		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
-		code: (text: string) => theme.fg("mdCode", text),
+		code: (text: string) =>
+			theme.hasBg("mdCodeBg") ? theme.bg("mdCodeBg", theme.fg("mdCode", text)) : theme.fg("mdCode", text),
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
 		quote: (text: string) => theme.fg("mdQuote", text),
