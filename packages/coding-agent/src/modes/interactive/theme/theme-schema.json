@@ -209,10 +209,6 @@
 					"$ref": "#/$defs/colorValue",
 					"description": "Markdown inline code"
 				},
-				"mdCodeBlockBg": {
-					"$ref": "#/$defs/colorValue",
-					"description": "Optional background for fenced code block lines and fences (omitted = no background)"
-				},
 				"mdCodeBlock": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Markdown code block content"
