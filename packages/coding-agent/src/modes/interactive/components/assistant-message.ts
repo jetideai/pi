@@ -108,6 +108,7 @@ export class AssistantMessageComponent extends Container {
 			width,
 			"assistant",
 			this.isStreaming ? "streaming" : "final",
+			this.outputPad,
 			this.renderBoundaryOptions,
 		);
 	}

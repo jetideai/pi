@@ -90,11 +90,11 @@ export class ToolGroupComponent extends Container {
 				"…",
 			);
 			const body = this.children.flatMap((child) => ["", ...child.render(width)]);
-			let lines = decorateMessageRenderV2([header, ...body], 1, width, "tool-group", "expanded", {
+			let lines = decorateMessageRenderV2([header, ...body], 1, width, "tool-group", "expanded", this.outputPad, {
 				entryId: this.groupId,
 				decorators: this.semanticDecoratorsV2,
 			});
-			lines = decorateMessageRender(lines, width, "tool-group", "expanded", {
+			lines = decorateMessageRender(lines, width, "tool-group", "expanded", this.outputPad, {
 				entryId: this.groupId,
 				decorators: this.semanticDecorators,
 			});

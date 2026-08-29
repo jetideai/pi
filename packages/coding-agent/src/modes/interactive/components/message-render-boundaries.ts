@@ -58,6 +58,7 @@ export function decorateMessageRenderV2(
 	width: number,
 	role: MessageRenderRoleV1,
 	state: "streaming" | "final" | "collapsed" | "expanded",
+	outputPad: number,
 	options?: {
 		entryId: string;
 		ownerEntryId?: string;
@@ -71,6 +72,7 @@ export function decorateMessageRenderV2(
 		...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
 		role,
 		state,
+		outputPad,
 		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
 		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
 	});
@@ -104,6 +106,7 @@ export function decorateMessageRender(
 	width: number,
 	role: MessageRenderRoleV1,
 	state: "streaming" | "final" | "collapsed" | "expanded",
+	outputPad: number,
 	options?: MessageRenderBoundaryOptionsV1,
 ): string[] {
 	if (!options || options.decorators.length === 0 || lines.length === 0) return lines;
@@ -113,6 +116,7 @@ export function decorateMessageRender(
 		...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
 		role,
 		state,
+		outputPad,
 		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
 		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
 	});

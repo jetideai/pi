@@ -50,6 +50,7 @@ describe("UserMessageComponent", () => {
 				entryId: "user-entry-1",
 				role: "user",
 				state: "final",
+				outputPad: 1,
 				allocatedColumns: { start: 0, end: 20 },
 				stockRows: { start: 0, end: 3 },
 			},

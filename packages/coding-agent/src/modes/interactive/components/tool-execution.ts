@@ -372,7 +372,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		if (!this.ownerEntryId) return lines;
 		if (this.isSectioned()) {
-			lines = decorateMessageRenderV2(lines, this.getBodyRow(), width, "tool", "expanded", {
+			lines = decorateMessageRenderV2(lines, this.getBodyRow(), width, "tool", "expanded", 0, {
 				entryId: this.toolCallId,
 				ownerEntryId: this.ownerEntryId,
 				beginRow: this.getHeaderRow(),
@@ -384,6 +384,7 @@ export class ToolExecutionComponent extends Container {
 			width,
 			"tool",
 			this.presentation?.state ?? (this.expanded ? "expanded" : "collapsed"),
+			0,
 			{
 				entryId: this.toolCallId,
 				ownerEntryId: this.ownerEntryId,

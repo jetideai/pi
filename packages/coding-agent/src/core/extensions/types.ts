@@ -1265,6 +1265,8 @@ export interface MessageRenderBoundaryContextV1 {
 	role: MessageRenderRoleV1;
 	state: "streaming" | "final" | "collapsed" | "expanded";
 	ownerEntryId?: string;
+	/** Horizontal padding configured by the outputPad setting for this render. */
+	outputPad: number;
 	allocatedColumns: Readonly<MessageRenderRangeV1>;
 	stockRows: Readonly<MessageRenderRangeV1>;
 }

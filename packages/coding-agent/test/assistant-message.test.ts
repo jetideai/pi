@@ -283,6 +283,7 @@ describe("AssistantMessageComponent", () => {
 				entryId: "persisted-entry",
 				role: "assistant",
 				state: "streaming",
+				outputPad: 1,
 				allocatedColumns: { start: 0, end: 40 },
 				stockRows: { start: 0, end: rendered.length },
 			},
@@ -311,6 +312,7 @@ describe("AssistantMessageComponent", () => {
 			entryId: "persisted-entry",
 			role: "assistant",
 			state: "streaming",
+			outputPad: 1,
 			allocatedColumns: { start: 0, end: 24 },
 			stockRows: { start: 0, end: resized.length },
 		});
@@ -339,6 +341,7 @@ describe("AssistantMessageComponent", () => {
 			entryId: "persisted-entry",
 			role: "assistant",
 			state: "final",
+			outputPad: 1,
 			allocatedColumns: { start: 0, end: 40 },
 			stockRows: { start: 0, end: final.length },
 		});
