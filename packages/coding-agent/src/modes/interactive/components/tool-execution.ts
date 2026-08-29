@@ -710,7 +710,7 @@ export class ToolExecutionComponent extends Container {
 				const selection = selector(candidate);
 				if (
 					selection?.liveToolCall === "compact-stock-header" &&
-					selection.liveToolGroup === "stock" &&
+					selection.liveToolGroup === "compact-stock-header" &&
 					selection.header === "exact-one-row" &&
 					selection.settled === "canonical-initial-collapsed"
 				) {

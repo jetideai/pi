@@ -47,7 +47,7 @@ function createFakeTui(): TUI {
 
 const admitCompactLiveToolCall: ToolExecutionPresentationSelectorV1 = () => ({
 	liveToolCall: "compact-stock-header",
-	liveToolGroup: "stock",
+	liveToolGroup: "compact-stock-header",
 	header: "exact-one-row",
 	settled: "canonical-initial-collapsed",
 });
