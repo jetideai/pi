@@ -1275,6 +1275,8 @@ export interface MessageRenderBoundaryContextV1 {
 export interface MessageRenderBoundariesV1 {
 	prefix?: string;
 	suffix?: string;
+	/** Specifies the number of blank terminal rows to reserve for host actions. */
+	reservedRows?: number;
 }
 
 /** Exact zero-column boundaries for a complete canonical render with an optional body seam. */

@@ -62,6 +62,38 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered.includes(OSC133_ZONE_FINAL)).toBe(false);
 	});
 
+	test("reserves an action row only after a terminal assistant response", () => {
+		initTheme("dark");
+		const boundaryOptions = {
+			entryId: "assistant-entry",
+			decorators: [() => ({ reservedRows: 1 })],
+		};
+		const terminal = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: "final answer" }], { stopReason: "stop" }),
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[],
+			boundaryOptions,
+		);
+		const intermediate = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: "I will inspect it" }], { stopReason: "toolUse" }),
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[],
+			boundaryOptions,
+		);
+
+		const terminalLines = terminal.render(40);
+		const intermediateLines = intermediate.render(40);
+
+		expect(stripAnsi(terminalLines.at(-1) ?? "")).toBe(" ".repeat(40));
+		expect(stripAnsi(intermediateLines.at(-1) ?? "")).not.toBe(" ".repeat(40));
+	});
+
 	test("renders a hidden Thinking placeholder only while thinking streams alone", () => {
 		initTheme("dark");
 

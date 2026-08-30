@@ -36,6 +36,7 @@ export class AssistantMessageComponent extends Container {
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
 	private isStreaming = false;
+	private isTerminalResponse = false;
 
 	constructor(
 		message?: AssistantMessage,
@@ -110,12 +111,18 @@ export class AssistantMessageComponent extends Container {
 			this.isStreaming ? "streaming" : "final",
 			this.outputPad,
 			this.renderBoundaryOptions,
+			this.isTerminalResponse ? 1 : 0,
 		);
 	}
 
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
 		this.lastMessage = message;
 		this.isStreaming = isStreaming;
+		this.isTerminalResponse =
+			!isStreaming &&
+			message.stopReason !== "pending" &&
+			message.stopReason !== "toolUse" &&
+			message.stopReason !== "deferred";
 
 		// Clear content container
 		this.contentContainer.clear();

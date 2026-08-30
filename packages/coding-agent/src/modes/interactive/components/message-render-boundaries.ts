@@ -108,6 +108,7 @@ export function decorateMessageRender(
 	state: "streaming" | "final" | "collapsed" | "expanded",
 	outputPad: number,
 	options?: MessageRenderBoundaryOptionsV1,
+	maximumReservedRows = 0,
 ): string[] {
 	if (!options || options.decorators.length === 0 || lines.length === 0) return lines;
 
@@ -122,12 +123,14 @@ export function decorateMessageRender(
 	});
 	const prefixes: string[] = [];
 	const suffixes: string[] = [];
+	let reservedRows = 0;
 	for (const decorate of options.decorators) {
 		try {
 			const boundaries = decorate(context);
 			if (!hasValidBoundaries(boundaries)) continue;
 			if (boundaries.prefix) prefixes.push(boundaries.prefix);
 			if (boundaries.suffix) suffixes.unshift(boundaries.suffix);
+			reservedRows = Math.max(reservedRows, boundaries.reservedRows ?? 0);
 		} catch {
 			// A decorator cannot change or block a built-in message render.
 		}
@@ -135,6 +138,9 @@ export function decorateMessageRender(
 
 	lines[0] = prefixes.join("") + lines[0];
 	lines[lines.length - 1] += suffixes.join("");
+	for (let row = 0; row < Math.min(reservedRows, maximumReservedRows); row++) {
+		lines.push(" ".repeat(width));
+	}
 	return lines;
 }
 
@@ -151,5 +157,12 @@ function hasValidBoundariesV2(boundaries: unknown): boundaries is MessageRenderB
 function hasValidBoundaries(boundaries: unknown): boundaries is MessageRenderBoundariesV1 {
 	if (boundaries === undefined || typeof boundaries !== "object" || boundaries === null) return false;
 	const candidate = boundaries as MessageRenderBoundariesV1;
-	return hasValidControl(candidate.prefix) && hasValidControl(candidate.suffix);
+	return (
+		hasValidControl(candidate.prefix) &&
+		hasValidControl(candidate.suffix) &&
+		(candidate.reservedRows === undefined ||
+			(typeof candidate.reservedRows === "number" &&
+				Number.isSafeInteger(candidate.reservedRows) &&
+				candidate.reservedRows >= 0))
+	);
 }
