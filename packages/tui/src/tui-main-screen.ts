@@ -368,6 +368,15 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			return;
 		}
 
+		const renderedContentUnchanged =
+			newLines.length === this.previousLines.length &&
+			newLines.every((line, index) => line === this.previousLines[index]);
+		if (heightChanged && !widthChanged && renderedContentUnchanged) {
+			this.previousViewportTop = prevViewportTop;
+			this.previousWidth = width;
+			this.previousHeight = height;
+			return;
+		}
 		if (widthChanged || heightChanged) {
 			repaintActiveTailAfterResize();
 			return;

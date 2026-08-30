@@ -737,6 +737,11 @@ describe("TUI resize handling", () => {
 				terminal.getScrollBuffer().filter((line) => line.includes("HEIGHT-HISTORY-ANCHOR")).length,
 				1,
 			);
+			assert.strictEqual(
+				terminal.getScrollBuffer().filter((line) => line.includes("History 20")).length,
+				1,
+				"Height growth must not duplicate active-tail rows",
+			);
 
 			terminal.clearWrites();
 			component.lines[component.lines.length - 1] = "UPDATED-HEIGHT-TAIL";
@@ -748,6 +753,47 @@ describe("TUI resize handling", () => {
 
 			tui.stop();
 		});
+	});
+
+	it("does not duplicate tail rows when a scrolled terminal shrinks and grows", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 29);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		component.lines = Array.from({ length: 60 }, (_, index) => `Resize ${index.toString().padStart(2, "0")}`);
+		tui.addChild(component);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.scrollLines(-16);
+		await terminal.flush();
+		assert.strictEqual(
+			terminal.getViewport().findIndex((line) => line.includes("Resize 25")),
+			10,
+		);
+
+		terminal.resize(40, 15);
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewportOffset() > 0);
+		terminal.scrollLines(-14);
+		await terminal.flush();
+		assert.strictEqual(
+			terminal.getViewport().findIndex((line) => line.includes("Resize 25")),
+			10,
+		);
+
+		terminal.clearWrites();
+		terminal.resize(40, 29);
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport().some((line) => line.includes("Resize 25")));
+		assert.strictEqual(terminal.getWrites(), "", "Unchanged height growth must use terminal-native reflow");
+		for (let index = 0; index < 60; index++) {
+			const marker = `Resize ${index.toString().padStart(2, "0")}`;
+			assert.ok(
+				terminal.getScrollBuffer().filter((line) => line.includes(marker)).length <= 1,
+				`${marker} must not be duplicated`,
+			);
+		}
+
+		tui.stop();
 	});
 
 	it("keeps following the active tail when width and height change", async () => {
