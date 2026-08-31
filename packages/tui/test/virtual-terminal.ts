@@ -125,17 +125,6 @@ export class VirtualTerminal implements Terminal {
 		}
 	}
 
-	/** Simulate a user scrolling by the given number of lines. */
-	scrollLines(amount: number): void {
-		this.xterm.scrollLines(amount);
-	}
-
-	/** Get the number of lines between the viewport and the active tail. */
-	getViewportOffset(): number {
-		const buffer = this.xterm.buffer.active;
-		return buffer.baseY - buffer.viewportY;
-	}
-
 	/**
 	 * Wait for all pending writes to complete. Viewport and scroll buffer will be updated.
 	 */

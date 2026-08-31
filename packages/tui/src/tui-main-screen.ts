@@ -105,6 +105,10 @@ function extractKittyImageRows(line: string): number {
 	return parseKittyImageHeader(line)?.rows ?? 1;
 }
 
+function isTermuxSession(): boolean {
+	return Boolean(process.env.TERMUX_VERSION);
+}
+
 export interface TuiMainScreenRenderState {
 	previousLines: string[];
 	previousWidth: number;
@@ -243,9 +247,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		if (this.stopped) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
-		const forcedFullRedraw = this.previousWidth < 0 || this.previousHeight < 0;
-		const widthChanged = this.previousWidth > 0 && this.previousWidth !== width;
-		const heightChanged = this.previousHeight > 0 && this.previousHeight !== height;
+		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
+		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
 		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
 		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
 		let viewportTop = prevViewportTop;
@@ -314,38 +317,6 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			this.previousHeight = height;
 		};
 
-		const repaintActiveTailAfterResize = (): void => {
-			const output = new BoundedTerminalWriter((data) => this.terminal.write(data));
-			const previousTailTop = Math.max(0, this.previousLines.length - this.previousHeight);
-			const previousTailImageIds = this.collectKittyImageIds(this.previousLines.slice(previousTailTop));
-			const tailTop = Math.max(0, newLines.length - height);
-
-			output.append("\x1b[?2026h");
-			output.append(this.deleteKittyImages(previousTailImageIds));
-			for (let screenRow = 0; screenRow < height; screenRow++) {
-				output.append(`\x1b[${screenRow + 1};1H\x1b[2K`);
-			}
-			let finalScreenRow = height - 1;
-			for (let screenRow = 0; screenRow < height; screenRow++) {
-				const line = newLines[tailTop + screenRow];
-				if (line === undefined) continue;
-				output.append(`\x1b[${screenRow + 1};1H${line}`);
-				finalScreenRow = screenRow;
-			}
-			output.append("\x1b[?2026l");
-			output.flush();
-
-			this.cursorRow = Math.max(0, newLines.length - 1);
-			this.hardwareCursorRow = tailTop + finalScreenRow;
-			this.maxLinesRendered = newLines.length;
-			this.previousViewportTop = tailTop;
-			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousLines = newLines;
-			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
-			this.previousWidth = width;
-			this.previousHeight = height;
-		};
-
 		const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
 		const logRedraw = (reason: string): void => {
 			if (!debugRedraw) return;
@@ -355,12 +326,6 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			fs.appendFileSync(logPath, msg);
 		};
 
-		if (forcedFullRedraw) {
-			logRedraw("requested full redraw");
-			fullRender(true);
-			return;
-		}
-
 		// First render - just output everything without clearing (assumes clean screen)
 		if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
 			logRedraw("first render");
@@ -368,8 +333,19 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			return;
 		}
 
-		if (widthChanged || heightChanged) {
-			repaintActiveTailAfterResize();
+		// Width changes always need a full re-render because wrapping changes.
+		if (widthChanged) {
+			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
+			fullRender(true);
+			return;
+		}
+
+		// Height changes normally need a full re-render to keep the visible viewport aligned,
+		// but Termux changes height when the software keyboard shows or hides.
+		// In that environment, a full redraw causes the entire history to replay on every toggle.
+		if (heightChanged && !isTermuxSession()) {
+			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
+			fullRender(true);
 			return;
 		}
 

@@ -13,7 +13,7 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
-import { type Component, CURSOR_MARKER, type TUI } from "../src/tui.ts";
+import type { Component, TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -22,34 +22,6 @@ class TestComponent implements Component {
 	render(_width: number): string[] {
 		return this.lines;
 	}
-	invalidate(): void {}
-}
-
-class WrappingCursorComponent implements Component {
-	readonly text: string;
-	readonly cursor: number;
-	readonly history: string[];
-
-	constructor(text: string, cursor: number, history: string[]) {
-		this.text = text;
-		this.cursor = cursor;
-		this.history = history;
-	}
-
-	render(width: number): string[] {
-		const lines = [...this.history];
-		for (let offset = 0; offset < this.text.length; offset += width) {
-			const chunk = this.text.slice(offset, offset + width);
-			if (this.cursor >= offset && this.cursor < offset + width) {
-				const column = this.cursor - offset;
-				lines.push(chunk.slice(0, column) + CURSOR_MARKER + chunk.slice(column));
-			} else {
-				lines.push(chunk);
-			}
-		}
-		return lines;
-	}
-
 	invalidate(): void {}
 }
 
@@ -575,37 +547,6 @@ describe("TUI Kitty image cleanup", () => {
 		tui.stop();
 	});
 
-	it("replaces only active-tail image placements during resize", async () => {
-		const terminal = new LoggingVirtualTerminal(40, 8);
-		const tui: TUI = new TuiMainScreen(terminal);
-		const component = new TestComponent();
-		const historicalImage = encodeKitty("AAAA", { columns: 2, rows: 1, imageId: 90, moveCursor: false });
-		const activeImage = encodeKitty("BBBB", { columns: 2, rows: 1, imageId: 91, moveCursor: false });
-		component.lines = [
-			historicalImage,
-			...Array.from({ length: 20 }, (_, index) => `History ${index}`),
-			activeImage,
-			"After",
-		];
-		tui.addChild(component);
-		tui.start();
-		await terminal.waitForRender();
-		terminal.clearWrites();
-
-		terminal.resize(35, 8);
-		await terminal.waitForRender();
-
-		const writes = terminal.getWrites();
-		assert.ok(!writes.includes(deleteKittyImage(90)), "Resize must retain committed image history");
-		const deleteIndex = writes.indexOf(deleteKittyImage(91));
-		const drawIndex = writes.indexOf(activeImage);
-		assert.ok(deleteIndex >= 0, "Resize should delete the previous active image placement");
-		assert.ok(drawIndex > deleteIndex, "Resize should redraw the active image after clearing its rows");
-		assert.ok(!writes.includes("\n"), "Image resize must not scroll at the bottom margin");
-
-		tui.stop();
-	});
-
 	it("deletes previously rendered image ids during full redraws", async () => {
 		const terminal = new LoggingVirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);
@@ -633,7 +574,7 @@ describe("TUI Kitty image cleanup", () => {
 });
 
 describe("TUI resize handling", () => {
-	it("repaints the active tail without a full redraw when terminal height changes", async () => {
+	it("triggers full re-render when terminal height changes", async () => {
 		await withEnv({ TERMUX_VERSION: undefined }, async () => {
 			const terminal = new VirtualTerminal(40, 10);
 			const tui: TUI = new TuiMainScreen(terminal);
@@ -650,7 +591,8 @@ describe("TUI resize handling", () => {
 			terminal.resize(40, 15);
 			await terminal.waitForRender();
 
-			assert.strictEqual(tui.fullRedraws, initialRedraws, "Height change should not trigger full redraw");
+			// Should have triggered a full redraw
+			assert.ok(tui.fullRedraws > initialRedraws, "Height change should trigger full redraw");
 
 			const viewport = terminal.getViewport();
 			assert.ok(viewport[0]?.includes("Line 0"), "Content preserved after height change");
@@ -659,193 +601,36 @@ describe("TUI resize handling", () => {
 		});
 	});
 
-	it("preserves retained history and a scrolled viewport when width changes", async () => {
-		await withEnv({ TERMUX_VERSION: undefined }, async () => {
-			const terminal = new LoggingVirtualTerminal(40, 8);
+	it("skips full re-render on height changes in Termux", async () => {
+		await withEnv({ TERMUX_VERSION: "1" }, async () => {
+			const terminal = new LoggingVirtualTerminal(40, 10);
 			const tui: TUI = new TuiMainScreen(terminal);
 			const component = new TestComponent();
-			component.lines = Array.from({ length: 30 }, (_, index) =>
-				index === 14 ? "WIDTH-HISTORY-ANCHOR" : `History ${index.toString().padStart(2, "0")}`,
-			);
 			tui.addChild(component);
+
+			component.lines = Array.from({ length: 20 }, (_, i) => `Line ${i}`);
 			tui.start();
 			await terminal.waitForRender();
-			terminal.scrollLines(-8);
-			await terminal.flush();
-			assert.ok(terminal.getViewport().join("\n").includes("WIDTH-HISTORY-ANCHOR"));
 			terminal.clearWrites();
 
-			terminal.resize(30, 8);
-			await terminal.waitForRender();
+			const initialRedraws = tui.fullRedraws;
+			for (const height of [15, 8, 14, 11]) {
+				terminal.resize(40, height);
+				await terminal.waitForRender();
+			}
 
-			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Width resize must not clear retained history");
-			assert.ok(!terminal.getWrites().includes("\n"), "Width resize must not scroll at the bottom margin");
-			assert.ok(!terminal.getWrites().includes("History 00"), "Width resize must not replay committed history");
-			assert.ok(terminal.getViewportOffset() > 0, "Width resize must keep the viewport above the tail");
-			assert.ok(terminal.getViewport().join("\n").includes("WIDTH-HISTORY-ANCHOR"));
-			assert.strictEqual(
-				terminal.getScrollBuffer().filter((line) => line.includes("WIDTH-HISTORY-ANCHOR")).length,
-				1,
-			);
+			assert.strictEqual(tui.fullRedraws, initialRedraws, "Height change should not trigger full redraw");
+			assert.ok(!terminal.getWrites().includes("\x1b[2J"), "Height change should not clear the screen");
+			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Height change should not clear scrollback");
 
-			terminal.clearWrites();
-			component.lines[component.lines.length - 1] = "UPDATED-WIDTH-TAIL";
-			tui.requestRender();
-			await terminal.waitForRender();
-			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Update after width resize must stay bounded");
-			assert.ok(terminal.getViewportOffset() > 0);
-			assert.ok(terminal.getViewport().join("\n").includes("WIDTH-HISTORY-ANCHOR"));
-
-			terminal.resize(40, 8);
-			await terminal.waitForRender();
-			assert.ok(terminal.getViewportOffset() > 0);
-			assert.ok(terminal.getViewport().join("\n").includes("WIDTH-HISTORY-ANCHOR"));
-			assert.strictEqual(
-				terminal.getScrollBuffer().filter((line) => line.includes("WIDTH-HISTORY-ANCHOR")).length,
-				1,
-			);
+			const viewport = terminal.getViewport();
+			assert.ok(viewport.join("\n").includes("Line 19"), "Latest content remains visible after resize");
 
 			tui.stop();
 		});
 	});
 
-	it("preserves retained history and a scrolled viewport when height changes", async () => {
-		await withEnv({ TERMUX_VERSION: undefined }, async () => {
-			const terminal = new LoggingVirtualTerminal(40, 8);
-			const tui: TUI = new TuiMainScreen(terminal);
-			const component = new TestComponent();
-			component.lines = Array.from({ length: 30 }, (_, index) =>
-				index === 14 ? "HEIGHT-HISTORY-ANCHOR" : `History ${index.toString().padStart(2, "0")}`,
-			);
-			tui.addChild(component);
-			tui.start();
-			await terminal.waitForRender();
-			terminal.scrollLines(-8);
-			await terminal.flush();
-			assert.ok(terminal.getViewport().join("\n").includes("HEIGHT-HISTORY-ANCHOR"));
-			terminal.clearWrites();
-
-			terminal.resize(40, 10);
-			await terminal.waitForRender();
-
-			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Height resize must not clear retained history");
-			assert.ok(!terminal.getWrites().includes("\n"), "Height resize must not scroll at the bottom margin");
-			assert.ok(!terminal.getWrites().includes("History 00"), "Height resize must not replay committed history");
-			assert.ok(terminal.getViewportOffset() > 0, "Height resize must keep the viewport above the tail");
-			assert.ok(terminal.getViewport().join("\n").includes("HEIGHT-HISTORY-ANCHOR"));
-			assert.strictEqual(
-				terminal.getScrollBuffer().filter((line) => line.includes("HEIGHT-HISTORY-ANCHOR")).length,
-				1,
-			);
-
-			terminal.clearWrites();
-			component.lines[component.lines.length - 1] = "UPDATED-HEIGHT-TAIL";
-			tui.requestRender();
-			await terminal.waitForRender();
-			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Update after height resize must stay bounded");
-			assert.ok(terminal.getViewportOffset() > 0);
-			assert.ok(terminal.getViewport().join("\n").includes("HEIGHT-HISTORY-ANCHOR"));
-
-			tui.stop();
-		});
-	});
-
-	it("keeps following the active tail when width and height change", async () => {
-		const terminal = new LoggingVirtualTerminal(40, 8);
-		const tui: TUI = new TuiMainScreen(terminal);
-		const component = new TestComponent();
-		component.lines = [...Array.from({ length: 29 }, (_, index) => `History ${index}`), "ACTIVE-TAIL"];
-		tui.addChild(component);
-		tui.start();
-		await terminal.waitForRender();
-		assert.strictEqual(terminal.getViewportOffset(), 0);
-		terminal.clearWrites();
-
-		terminal.resize(30, 10);
-		await terminal.waitForRender();
-
-		assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Tail resize must not clear retained history");
-		assert.strictEqual(terminal.getViewportOffset(), 0);
-		assert.ok(terminal.getViewport().join("\n").includes("ACTIVE-TAIL"));
-
-		tui.stop();
-	});
-
-	it("moves an active overlay without leaving stale rows after height changes", async () => {
-		const terminal = new LoggingVirtualTerminal(40, 8);
-		const tui: TUI = new TuiMainScreen(terminal);
-		const component = new TestComponent();
-		component.lines = ["Line 0", "Line 1"];
-		const overlay = new TestComponent();
-		overlay.lines = ["RESIZE-OVERLAY"];
-		tui.addChild(component);
-		tui.showOverlay(overlay, { width: 16 });
-		tui.start();
-		await terminal.waitForRender();
-		terminal.clearWrites();
-
-		terminal.resize(40, 10);
-		await terminal.waitForRender();
-
-		assert.strictEqual(terminal.getViewport().filter((line) => line.includes("RESIZE-OVERLAY")).length, 1);
-		assert.ok(!terminal.getWrites().includes("\n"), "Overlay resize must not scroll at the bottom margin");
-
-		tui.stop();
-	});
-
-	it("keeps the logical cursor position while input wraps in both directions", async () => {
-		const terminal = new VirtualTerminal(12, 5);
-		const tui: TUI = new TuiMainScreen(terminal);
-		const component = new WrappingCursorComponent("abcdefghijklmnopqrstuvwxyz1234", 20, [
-			"History 0",
-			"History 1",
-			"History 2",
-			"History 3",
-		]);
-		tui.addChild(component);
-		tui.start();
-		await terminal.waitForRender();
-		assert.deepStrictEqual(terminal.getCursorPosition(), { x: 8, y: 3 });
-
-		terminal.resize(8, 5);
-		await terminal.waitForRender();
-		assert.deepStrictEqual(terminal.getCursorPosition(), { x: 4, y: 3 });
-
-		terminal.resize(16, 5);
-		await terminal.waitForRender();
-		assert.deepStrictEqual(terminal.getCursorPosition(), { x: 4, y: 4 });
-
-		tui.stop();
-	});
-
-	it("keeps repeated height changes bounded", async () => {
-		const terminal = new LoggingVirtualTerminal(40, 10);
-		const tui: TUI = new TuiMainScreen(terminal);
-		const component = new TestComponent();
-		tui.addChild(component);
-
-		component.lines = Array.from({ length: 20 }, (_, i) => `Line ${i}`);
-		tui.start();
-		await terminal.waitForRender();
-		terminal.clearWrites();
-
-		const initialRedraws = tui.fullRedraws;
-		for (const height of [15, 8, 14, 11]) {
-			terminal.resize(40, height);
-			await terminal.waitForRender();
-		}
-
-		assert.strictEqual(tui.fullRedraws, initialRedraws, "Height change should not trigger full redraw");
-		assert.ok(!terminal.getWrites().includes("\x1b[2J"), "Height change should not clear the screen");
-		assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Height change should not clear scrollback");
-
-		const viewport = terminal.getViewport();
-		assert.ok(viewport.join("\n").includes("Line 19"), "Latest content remains visible after resize");
-
-		tui.stop();
-	});
-
-	it("repaints the active tail without a full redraw when terminal width changes", async () => {
+	it("triggers full re-render when terminal width changes", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);
 		const component = new TestComponent();
@@ -861,7 +646,8 @@ describe("TUI resize handling", () => {
 		terminal.resize(60, 10);
 		await terminal.waitForRender();
 
-		assert.strictEqual(tui.fullRedraws, initialRedraws, "Width change should not trigger full redraw");
+		// Should have triggered a full redraw
+		assert.ok(tui.fullRedraws > initialRedraws, "Width change should trigger full redraw");
 
 		tui.stop();
 	});
