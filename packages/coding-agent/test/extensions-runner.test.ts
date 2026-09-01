@@ -19,9 +19,9 @@ import type {
 	UIPromptStartEvent,
 } from "../src/core/extensions/types.ts";
 import {
-	type ConfirmPromptLifecycleSource,
 	createUIPromptId,
 	createUIPromptResponseAvailability,
+	type StandardPromptLifecycleSource,
 } from "../src/core/extensions/ui-prompt-contract.ts";
 import { KeybindingsManager, type KeyId } from "../src/core/keybindings.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
@@ -573,7 +573,7 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("UI prompt notifications", () => {
-		it("forwards exact confirmation lifecycle events without legacy duplicates", async () => {
+		it("forwards exact standard prompt lifecycle events without legacy duplicates", async () => {
 			const observed: Array<UIPromptStartEvent | UIPromptEndEvent> = [];
 			let resolveObserved: () => void = () => {};
 			const allObserved = new Promise<void>((resolve) => {
@@ -586,38 +586,97 @@ describe("ExtensionRunner", () => {
 					});
 					pi.on("ui_prompt_end", (event) => {
 						observed.push(event);
-						resolveObserved();
+						if (observed.length === 8) resolveObserved();
 					});
 				},
 			]);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
-			let sink: Parameters<ConfirmPromptLifecycleSource["connect"]>[0] = () => {};
-			const source: ConfirmPromptLifecycleSource = {
+			let sink: Parameters<StandardPromptLifecycleSource["connect"]>[0] = () => {};
+			const source: StandardPromptLifecycleSource = {
 				connect: (listener) => {
 					sink = listener;
 					return () => {};
 				},
 			};
-			const promptId = createUIPromptId();
+			const promptIds = {
+				confirm: createUIPromptId(),
+				select: createUIPromptId(),
+				input: createUIPromptId(),
+				editor: createUIPromptId(),
+			};
 			runner.setUIContext(
 				{
 					confirm: async () => {
 						sink({
 							type: "ui_prompt_start",
 							reason: "ui_prompt",
-							promptId,
+							promptId: promptIds.confirm,
 							kind: "confirm",
 							response: createUIPromptResponseAvailability("confirm"),
 						});
 						sink({
 							type: "ui_prompt_end",
 							reason: "ui_prompt",
-							promptId,
+							promptId: promptIds.confirm,
 							kind: "confirm",
 							resolution: "responded",
 							source: "local",
 						});
 						return true;
+					},
+					select: async () => {
+						sink({
+							type: "ui_prompt_start",
+							reason: "ui_prompt",
+							promptId: promptIds.select,
+							kind: "select",
+							response: createUIPromptResponseAvailability("select", ["First"]),
+						});
+						sink({
+							type: "ui_prompt_end",
+							reason: "ui_prompt",
+							promptId: promptIds.select,
+							kind: "select",
+							resolution: "responded",
+							source: "local",
+						});
+						return "First";
+					},
+					input: async () => {
+						sink({
+							type: "ui_prompt_start",
+							reason: "ui_prompt",
+							promptId: promptIds.input,
+							kind: "input",
+							response: createUIPromptResponseAvailability("input"),
+						});
+						sink({
+							type: "ui_prompt_end",
+							reason: "ui_prompt",
+							promptId: promptIds.input,
+							kind: "input",
+							resolution: "responded",
+							source: "local",
+						});
+						return "input";
+					},
+					editor: async () => {
+						sink({
+							type: "ui_prompt_start",
+							reason: "ui_prompt",
+							promptId: promptIds.editor,
+							kind: "editor",
+							response: createUIPromptResponseAvailability("editor"),
+						});
+						sink({
+							type: "ui_prompt_end",
+							reason: "ui_prompt",
+							promptId: promptIds.editor,
+							kind: "editor",
+							resolution: "responded",
+							source: "local",
+						});
+						return "editor";
 					},
 					respond: () => "unsupported",
 					dismiss: () => "unsupported",
@@ -627,24 +686,20 @@ describe("ExtensionRunner", () => {
 			);
 
 			await runner.getUIContext().confirm("Confirm", "Continue?");
+			await runner.getUIContext().select("Select", ["First"]);
+			await runner.getUIContext().input("Input");
+			await runner.getUIContext().editor("Editor");
 			await allObserved;
 
-			expect(observed).toEqual([
-				{
-					type: "ui_prompt_start",
-					reason: "ui_prompt",
-					promptId,
-					kind: "confirm",
-					response: createUIPromptResponseAvailability("confirm"),
-				},
-				{
-					type: "ui_prompt_end",
-					reason: "ui_prompt",
-					promptId,
-					kind: "confirm",
-					resolution: "responded",
-					source: "local",
-				},
+			expect(observed.map((event) => [event.type, event.kind, event.promptId])).toEqual([
+				["ui_prompt_start", "confirm", promptIds.confirm],
+				["ui_prompt_end", "confirm", promptIds.confirm],
+				["ui_prompt_start", "select", promptIds.select],
+				["ui_prompt_end", "select", promptIds.select],
+				["ui_prompt_start", "input", promptIds.input],
+				["ui_prompt_end", "input", promptIds.input],
+				["ui_prompt_start", "editor", promptIds.editor],
+				["ui_prompt_end", "editor", promptIds.editor],
 			]);
 		});
 

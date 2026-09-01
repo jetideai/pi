@@ -11,6 +11,7 @@ import { keyHint } from "./keybinding-hints.ts";
 export interface ExtensionInputOptions {
 	tui?: TUI;
 	timeout?: number;
+	onTimeout?: () => void;
 }
 
 export class ExtensionInputComponent extends Container implements Focusable {
@@ -56,7 +57,7 @@ export class ExtensionInputComponent extends Container implements Focusable {
 				opts.timeout,
 				opts.tui,
 				(s) => this.titleText.setText(theme.fg("accent", `${this.baseTitle} (${s}s)`)),
-				() => this.onCancelCallback(),
+				() => (opts.onTimeout ?? this.onCancelCallback)(),
 			);
 		}
 

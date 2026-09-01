@@ -12,8 +12,8 @@ import type {
 
 export type ExactUIPromptEvent = ExactUIPromptStartEvent | ExactUIPromptEndEvent;
 
-/** Internal source for a UI owner that emits exact confirmation prompt events. */
-export interface ConfirmPromptLifecycleSource {
+/** Internal source for a UI owner that emits exact standard prompt events. */
+export interface StandardPromptLifecycleSource {
 	connect(sink: (event: ExactUIPromptEvent) => void): () => void;
 }
 

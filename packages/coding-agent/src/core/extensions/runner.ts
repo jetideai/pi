@@ -72,7 +72,7 @@ import type {
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
-import type { ConfirmPromptLifecycleSource } from "./ui-prompt-contract.ts";
+import type { StandardPromptLifecycleSource } from "./ui-prompt-contract.ts";
 
 // Extension shortcuts compete with canonical keybinding ids from keybindings.json.
 // Only editor-global shortcuts are reserved here. Picker-specific bindings are not.
@@ -308,8 +308,8 @@ export class ExtensionRunner {
 	private uiPromptDepth = 0;
 	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
 	private uiPromptNotificationTail: Promise<void> = Promise.resolve();
-	private ownsExactConfirmPromptLifecycle = false;
-	private disconnectConfirmPromptLifecycle: (() => void) | undefined;
+	private ownsExactStandardPromptLifecycle = false;
+	private disconnectStandardPromptLifecycle: (() => void) | undefined;
 
 	constructor(
 		extensions: Extension[],
@@ -448,15 +448,15 @@ export class ExtensionRunner {
 	setUIContext(
 		uiContext?: ExtensionUIContext,
 		mode: ExtensionMode = "print",
-		confirmPromptLifecycleSource?: ConfirmPromptLifecycleSource,
+		standardPromptLifecycleSource?: StandardPromptLifecycleSource,
 	): void {
-		this.disconnectConfirmPromptLifecycle?.();
-		this.disconnectConfirmPromptLifecycle = undefined;
-		this.ownsExactConfirmPromptLifecycle = confirmPromptLifecycleSource !== undefined;
+		this.disconnectStandardPromptLifecycle?.();
+		this.disconnectStandardPromptLifecycle = undefined;
+		this.ownsExactStandardPromptLifecycle = standardPromptLifecycleSource !== undefined;
 		this.uiContext = uiContext ? this.wrapUIPromptContext(uiContext) : noOpUIContext;
 		this.mode = mode;
-		if (confirmPromptLifecycleSource) {
-			this.disconnectConfirmPromptLifecycle = confirmPromptLifecycleSource.connect((event) =>
+		if (standardPromptLifecycleSource) {
+			this.disconnectStandardPromptLifecycle = standardPromptLifecycleSource.connect((event) =>
 				this.emitUIPromptEvent(event),
 			);
 		}
@@ -465,14 +465,22 @@ export class ExtensionRunner {
 	private wrapUIPromptContext(ui: ExtensionUIContext): ExtensionUIContext {
 		return {
 			...ui,
-			select: (title, options, opts) => this.withUIPrompt("select", title, () => ui.select(title, options, opts)),
+			select: (title, options, opts) =>
+				this.ownsExactStandardPromptLifecycle
+					? ui.select(title, options, opts)
+					: this.withUIPrompt("select", title, () => ui.select(title, options, opts)),
 			confirm: (title, message, opts) =>
-				this.ownsExactConfirmPromptLifecycle
+				this.ownsExactStandardPromptLifecycle
 					? ui.confirm(title, message, opts)
 					: this.withUIPrompt("confirm", title, () => ui.confirm(title, message, opts)),
 			input: (title, placeholder, opts) =>
-				this.withUIPrompt("input", title, () => ui.input(title, placeholder, opts)),
-			editor: (title, prefill) => this.withUIPrompt("editor", title, () => ui.editor(title, prefill)),
+				this.ownsExactStandardPromptLifecycle
+					? ui.input(title, placeholder, opts)
+					: this.withUIPrompt("input", title, () => ui.input(title, placeholder, opts)),
+			editor: (title, prefill) =>
+				this.ownsExactStandardPromptLifecycle
+					? ui.editor(title, prefill)
+					: this.withUIPrompt("editor", title, () => ui.editor(title, prefill)),
 			custom: (factory, options) => this.withUIPrompt("custom", undefined, () => ui.custom(factory, options)),
 			respond: (promptId, response) => {
 				this.assertActive();
@@ -629,8 +637,8 @@ export class ExtensionRunner {
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
-			this.disconnectConfirmPromptLifecycle?.();
-			this.disconnectConfirmPromptLifecycle = undefined;
+			this.disconnectStandardPromptLifecycle?.();
+			this.disconnectStandardPromptLifecycle = undefined;
 			this.runtime.invalidate(message);
 		}
 	}

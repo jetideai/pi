@@ -16,7 +16,7 @@ type ExactPromptEvent = ExactUIPromptStartEvent | ExactUIPromptEndEvent;
 
 interface ConfirmModePrototype {
 	createExtensionUIContext(this: ConfirmModeState): ExtensionUIContext;
-	connectExtensionConfirmPromptEvents(this: ConfirmModeState, sink: (event: ExactPromptEvent) => void): () => void;
+	connectExtensionStandardPromptEvents(this: ConfirmModeState, sink: (event: ExactPromptEvent) => void): () => void;
 }
 
 interface ConfirmModeState {
@@ -24,8 +24,8 @@ interface ConfirmModeState {
 	editor: TestEditor;
 	editorContainer: Container;
 	extensionSelector?: Component;
-	activeExtensionConfirmPrompt?: unknown;
-	extensionConfirmPromptEventSink?: (event: ExactPromptEvent) => void;
+	activeExtensionStandardPrompt?: unknown;
+	extensionStandardPromptEventSink?: (event: ExactPromptEvent) => void;
 	disposeActiveSelector(): void;
 	toggleToolOutputExpansion(): void;
 }
@@ -60,14 +60,14 @@ function createConfirmHarness(onEvent?: (event: ExactPromptEvent) => void): {
 		editor,
 		editorContainer,
 		extensionSelector: undefined,
-		activeExtensionConfirmPrompt: undefined,
-		extensionConfirmPromptEventSink: undefined,
+		activeExtensionStandardPrompt: undefined,
+		extensionStandardPromptEventSink: undefined,
 		disposeActiveSelector: vi.fn(),
 		toggleToolOutputExpansion: vi.fn(),
 	}) as ConfirmModeState;
 	const prototype = InteractiveMode.prototype as unknown as ConfirmModePrototype;
 	const events: ExactPromptEvent[] = [];
-	const disconnect = prototype.connectExtensionConfirmPromptEvents.call(state, (event) => {
+	const disconnect = prototype.connectExtensionStandardPromptEvents.call(state, (event) => {
 		events.push(event);
 		onEvent?.(event);
 	});
