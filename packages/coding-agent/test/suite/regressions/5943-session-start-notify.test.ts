@@ -14,6 +14,8 @@ function createUiContext(
 		select: async () => undefined,
 		confirm: async () => false,
 		input: async () => undefined,
+		respond: () => "unsupported",
+		dismiss: () => "unsupported",
 		notify: onNotify,
 		onTerminalInput: () => () => {},
 		setStatus: () => {},

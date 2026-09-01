@@ -16,6 +16,7 @@ import type {
 	ExtensionUIContext,
 	ProviderConfig,
 } from "../src/core/extensions/types.ts";
+import { createUIPromptId } from "../src/core/extensions/ui-prompt-contract.ts";
 import { KeybindingsManager, type KeyId } from "../src/core/keybindings.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
 import type { ScopedModel } from "../src/core/model-resolver.ts";
@@ -566,6 +567,25 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("UI prompt notifications", () => {
+		it("keeps retained prompt controls unavailable and rejects them after context invalidation", async () => {
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.setUIContext(
+				{ respond: () => "unsupported", dismiss: () => "unsupported" } as unknown as ExtensionUIContext,
+				"tui",
+			);
+			const ui = runner.createContext().ui;
+			const promptId = createUIPromptId();
+
+			expect(ui.respond(promptId, { kind: "confirm", value: true })).toBe("unsupported");
+			expect(ui.dismiss(promptId)).toBe("unsupported");
+
+			runner.invalidate("Expired context");
+
+			expect(() => ui.respond(promptId, { kind: "confirm", value: true })).toThrow("Expired context");
+			expect(() => ui.dismiss(promptId)).toThrow("Expired context");
+		});
+
 		it("coalesces nested UI prompts into the outer prompt lifecycle", async () => {
 			const observed: Array<{ type: string; reason: string; kind: string; title?: string }> = [];
 			let resolveObserved: () => void = () => {};

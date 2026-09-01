@@ -55,6 +55,8 @@ export type {
 	// Message and Entry Rendering
 	EntryRenderer,
 	EntryRenderOptions,
+	ExactUIPromptEndEvent,
+	ExactUIPromptStartEvent,
 	ExecOptions,
 	ExecResult,
 	Extension,
@@ -92,6 +94,8 @@ export type {
 	InputEventResult,
 	InputSource,
 	KeybindingsManager,
+	LegacyUIPromptEndEvent,
+	LegacyUIPromptStartEvent,
 	LoadExtensionsResult,
 	LsToolCallEvent,
 	LsToolResultEvent,
@@ -189,8 +193,13 @@ export type {
 	TreePreparation,
 	TurnEndEvent,
 	TurnStartEvent,
+	UIPromptControlResult,
 	UIPromptEndEvent,
+	UIPromptId,
 	UIPromptKind,
+	UIPromptResponse,
+	UIPromptResponseAvailability,
+	UIPromptResponseSchema,
 	UIPromptStartEvent,
 	// Events - User Bash
 	UserBashEvent,
@@ -213,4 +222,13 @@ export {
 	isToolCallEventType,
 	isWriteToolResult,
 } from "./types.ts";
+export {
+	createUIPromptId,
+	createUIPromptResponseAvailability,
+	UI_PROMPT_MAX_RESPONSE_BYTES,
+	UI_PROMPT_MAX_SELECT_OPTION_BYTES,
+	UI_PROMPT_MAX_SELECT_OPTIONS,
+	UI_PROMPT_MAX_SELECT_OPTIONS_BYTES,
+	validateUIPromptResponse,
+} from "./ui-prompt-contract.ts";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";
