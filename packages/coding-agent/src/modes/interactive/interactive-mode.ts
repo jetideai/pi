@@ -892,7 +892,8 @@ export class InteractiveMode {
 				onAbort: (() => void) | undefined;
 		  }
 		| undefined = undefined;
-	private extensionStandardPromptEventSink: ((event: ExactUIPromptEvent) => void) | undefined = undefined;
+	private extensionStandardPromptEventSink: ((event: ExactUIPromptEvent) => Promise<void>) | undefined = undefined;
+	private extensionStandardPromptEventDelivery: Promise<void> = Promise.resolve();
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputSubscriptions = new Set<{
@@ -945,8 +946,8 @@ export class InteractiveMode {
 		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
 		this.options = { ...options, tuiMode };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
-		this.runtimeHost.setBeforeSessionInvalidate(() => {
-			this.resetExtensionUI();
+		this.runtimeHost.setBeforeSessionInvalidate(async () => {
+			await this.resetExtensionUI();
 		});
 		this.runtimeHost.setRebindSession(async () => {
 			await this.rebindCurrentSession({ renderReplacementState: true });
@@ -2891,7 +2892,8 @@ export class InteractiveMode {
 		this.renderWidgets();
 	}
 
-	private resetExtensionUI(): void {
+	private async resetExtensionUI(): Promise<void> {
+		const promptInvalidation = this.invalidateExtensionStandardPrompt();
 		if (this.extensionSelector) {
 			this.hideExtensionSelector();
 		}
@@ -2922,6 +2924,7 @@ export class InteractiveMode {
 			);
 		}
 		this.setHiddenThinkingLabel();
+		await promptInvalidation;
 	}
 
 	// Maximum total widget lines to prevent viewport overflow
@@ -3150,7 +3153,7 @@ export class InteractiveMode {
 			this.activeExtensionStandardPrompt = activePrompt;
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 			this.disposeActiveSelector();
-			this.extensionStandardPromptEventSink?.({
+			this.publishExtensionStandardPromptEvent({
 				type: "ui_prompt_start",
 				reason: "ui_prompt",
 				promptId,
@@ -3231,7 +3234,7 @@ export class InteractiveMode {
 			this.activeExtensionStandardPrompt = activePrompt;
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 			this.disposeActiveSelector();
-			this.extensionStandardPromptEventSink?.({
+			this.publishExtensionStandardPromptEvent({
 				type: "ui_prompt_start",
 				reason: "ui_prompt",
 				promptId,
@@ -3281,7 +3284,7 @@ export class InteractiveMode {
 		return { connect: (sink) => this.connectExtensionStandardPromptEvents(sink) };
 	}
 
-	private connectExtensionStandardPromptEvents(sink: (event: ExactUIPromptEvent) => void): () => void {
+	private connectExtensionStandardPromptEvents(sink: (event: ExactUIPromptEvent) => Promise<void>): () => void {
 		if (this.extensionStandardPromptEventSink) {
 			throw new Error("The extension standard prompt event sink is already connected");
 		}
@@ -3289,6 +3292,11 @@ export class InteractiveMode {
 		return () => {
 			if (this.extensionStandardPromptEventSink === sink) this.extensionStandardPromptEventSink = undefined;
 		};
+	}
+
+	private publishExtensionStandardPromptEvent(event: ExactUIPromptEvent): void {
+		const delivery = this.extensionStandardPromptEventSink?.(event);
+		if (delivery) this.extensionStandardPromptEventDelivery = delivery;
 	}
 
 	private respondToExtensionStandardPrompt(promptId: UIPromptId, response: UIPromptResponse): UIPromptControlResult {
@@ -3318,7 +3326,7 @@ export class InteractiveMode {
 			| { response: UIPromptResponse; resolution: "responded"; source: "local" | "external" }
 			| {
 					resolution: "dismissed";
-					source: "local" | "external" | "timeout" | "signal";
+					source: "local" | "external" | "timeout" | "signal" | "sessionInvalidated";
 			  },
 	): UIPromptControlResult {
 		const activePrompt = this.activeExtensionStandardPrompt;
@@ -3358,19 +3366,29 @@ export class InteractiveMode {
 			kind: activePrompt.kind,
 		} as const;
 		if (outcome.resolution === "responded") {
-			this.extensionStandardPromptEventSink?.({
+			this.publishExtensionStandardPromptEvent({
 				...eventBase,
 				resolution: outcome.resolution,
 				source: outcome.source,
 			});
 		} else {
-			this.extensionStandardPromptEventSink?.({
+			this.publishExtensionStandardPromptEvent({
 				...eventBase,
 				resolution: outcome.resolution,
 				source: outcome.source,
 			});
 		}
 		return "accepted";
+	}
+
+	private async invalidateExtensionStandardPrompt(): Promise<void> {
+		const promptId = this.activeExtensionStandardPrompt?.promptId;
+		if (!promptId) return;
+		this.settleExtensionStandardPrompt(promptId, {
+			resolution: "dismissed",
+			source: "sessionInvalidated",
+		});
+		await this.extensionStandardPromptEventDelivery;
 	}
 
 	private hideExtensionStandardPrompt(kind: "confirm" | "select" | "input" | "editor"): void {
@@ -3419,7 +3437,7 @@ export class InteractiveMode {
 			this.activeExtensionStandardPrompt = activePrompt;
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 			this.disposeActiveSelector();
-			this.extensionStandardPromptEventSink?.({
+			this.publishExtensionStandardPromptEvent({
 				type: "ui_prompt_start",
 				reason: "ui_prompt",
 				promptId,
@@ -3489,7 +3507,7 @@ export class InteractiveMode {
 			} as const;
 			this.activeExtensionStandardPrompt = activePrompt;
 			this.disposeActiveSelector();
-			this.extensionStandardPromptEventSink?.({
+			this.publishExtensionStandardPromptEvent({
 				type: "ui_prompt_start",
 				reason: "ui_prompt",
 				promptId,
@@ -6915,7 +6933,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		this.resetExtensionUI();
+		await this.resetExtensionUI();
 
 		const reloadBox = new Container();
 		const borderColor = (s: string) => theme.fg("border", s);

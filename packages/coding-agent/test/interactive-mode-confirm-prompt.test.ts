@@ -16,7 +16,10 @@ type ExactPromptEvent = ExactUIPromptStartEvent | ExactUIPromptEndEvent;
 
 interface ConfirmModePrototype {
 	createExtensionUIContext(this: ConfirmModeState): ExtensionUIContext;
-	connectExtensionStandardPromptEvents(this: ConfirmModeState, sink: (event: ExactPromptEvent) => void): () => void;
+	connectExtensionStandardPromptEvents(
+		this: ConfirmModeState,
+		sink: (event: ExactPromptEvent) => Promise<void>,
+	): () => void;
 }
 
 interface ConfirmModeState {
@@ -25,7 +28,7 @@ interface ConfirmModeState {
 	editorContainer: Container;
 	extensionSelector?: Component;
 	activeExtensionStandardPrompt?: unknown;
-	extensionStandardPromptEventSink?: (event: ExactPromptEvent) => void;
+	extensionStandardPromptEventSink?: (event: ExactPromptEvent) => Promise<void>;
 	disposeActiveSelector(): void;
 	toggleToolOutputExpansion(): void;
 }
@@ -67,9 +70,9 @@ function createConfirmHarness(onEvent?: (event: ExactPromptEvent) => void): {
 	}) as ConfirmModeState;
 	const prototype = InteractiveMode.prototype as unknown as ConfirmModePrototype;
 	const events: ExactPromptEvent[] = [];
-	const disconnect = prototype.connectExtensionStandardPromptEvents.call(state, (event) => {
+	const disconnect = prototype.connectExtensionStandardPromptEvents.call(state, async (event) => {
 		events.push(event);
-		onEvent?.(event);
+		await onEvent?.(event);
 	});
 
 	editorContainer.addChild(editor);

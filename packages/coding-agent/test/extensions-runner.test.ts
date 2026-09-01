@@ -591,7 +591,7 @@ describe("ExtensionRunner", () => {
 				},
 			]);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
-			let sink: Parameters<StandardPromptLifecycleSource["connect"]>[0] = () => {};
+			let sink: Parameters<StandardPromptLifecycleSource["connect"]>[0] = async () => {};
 			const source: StandardPromptLifecycleSource = {
 				connect: (listener) => {
 					sink = listener;
@@ -701,6 +701,61 @@ describe("ExtensionRunner", () => {
 				["ui_prompt_start", "editor", promptIds.editor],
 				["ui_prompt_end", "editor", promptIds.editor],
 			]);
+		});
+
+		it("resolves exact prompt delivery after ordered handlers finish", async () => {
+			let releaseEnd: () => void = () => {};
+			const endGate = new Promise<void>((resolve) => {
+				releaseEnd = resolve;
+			});
+			const observed: string[] = [];
+			const result = await createTestExtensionsResult([
+				(pi) => {
+					pi.on("ui_prompt_start", () => {
+						observed.push("start");
+					});
+					pi.on("ui_prompt_end", async () => {
+						await endGate;
+						observed.push("end");
+					});
+				},
+			]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			let sink: Parameters<StandardPromptLifecycleSource["connect"]>[0] = async () => {};
+			const source: StandardPromptLifecycleSource = {
+				connect: (listener) => {
+					sink = listener;
+					return () => {};
+				},
+			};
+			runner.setUIContext({} as ExtensionUIContext, "tui", source);
+			const promptId = createUIPromptId();
+
+			await sink({
+				type: "ui_prompt_start",
+				reason: "ui_prompt",
+				promptId,
+				kind: "input",
+				response: createUIPromptResponseAvailability("input"),
+			});
+			let endDelivered = false;
+			const endDelivery = sink({
+				type: "ui_prompt_end",
+				reason: "ui_prompt",
+				promptId,
+				kind: "input",
+				resolution: "dismissed",
+				source: "sessionInvalidated",
+			}).then(() => {
+				endDelivered = true;
+			});
+			await Promise.resolve();
+
+			expect(observed).toEqual(["start"]);
+			expect(endDelivered).toBe(false);
+			releaseEnd();
+			await endDelivery;
+			expect(observed).toEqual(["start", "end"]);
 		});
 
 		it("keeps retained prompt controls unavailable and rejects them after context invalidation", async () => {

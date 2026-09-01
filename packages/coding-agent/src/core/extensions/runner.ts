@@ -522,9 +522,12 @@ export class ExtensionRunner {
 		}
 	}
 
-	private emitUIPromptEvent(event: Extract<RunnerEmitEvent, { type: "ui_prompt_start" | "ui_prompt_end" }>): void {
-		// Keep prompt events ordered for every extension. Do not wait for this queue from the UI path.
+	private emitUIPromptEvent(
+		event: Extract<RunnerEmitEvent, { type: "ui_prompt_start" | "ui_prompt_end" }>,
+	): Promise<void> {
+		// Keep prompt events ordered for every extension. Normal UI delivery does not wait for this queue.
 		this.uiPromptNotificationTail = this.uiPromptNotificationTail.then(() => this.emit(event));
+		return this.uiPromptNotificationTail;
 	}
 
 	getUIContext(): ExtensionUIContext {

@@ -14,7 +14,7 @@ export type ExactUIPromptEvent = ExactUIPromptStartEvent | ExactUIPromptEndEvent
 
 /** Internal source for a UI owner that emits exact standard prompt events. */
 export interface StandardPromptLifecycleSource {
-	connect(sink: (event: ExactUIPromptEvent) => void): () => void;
+	connect(sink: (event: ExactUIPromptEvent) => Promise<void>): () => void;
 }
 
 export const UI_PROMPT_MAX_RESPONSE_BYTES = 32 * 1024;

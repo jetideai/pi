@@ -19,8 +19,9 @@ interface StandardPromptModePrototype {
 	createExtensionUIContext(this: StandardPromptModeState): ExtensionUIContext;
 	connectExtensionStandardPromptEvents(
 		this: StandardPromptModeState,
-		sink: (event: ExactPromptEvent) => void,
+		sink: (event: ExactPromptEvent) => Promise<void>,
 	): () => void;
+	invalidateExtensionStandardPrompt(this: StandardPromptModeState): Promise<void>;
 }
 
 interface StandardPromptModeState {
@@ -33,7 +34,7 @@ interface StandardPromptModeState {
 	extensionInput?: Component;
 	extensionEditor?: Component;
 	activeExtensionStandardPrompt?: unknown;
-	extensionStandardPromptEventSink?: (event: ExactPromptEvent) => void;
+	extensionStandardPromptEventSink?: (event: ExactPromptEvent) => Promise<void>;
 	disposeActiveSelector(): void;
 	toggleToolOutputExpansion(): void;
 }
@@ -56,13 +57,14 @@ class TestEditor implements Component, Focusable {
 }
 
 function createStandardPromptHarness(
-	onEvent?: (event: ExactPromptEvent) => void,
+	onEvent?: (event: ExactPromptEvent) => Promise<void> | void,
 	disposeActiveSelector: () => void = vi.fn(),
 ): {
 	context: ExtensionUIContext;
 	events: ExactPromptEvent[];
 	editor: TestEditor;
 	getPromptInput: () => { handleInput(data: string): void };
+	invalidate: () => Promise<void>;
 	close: () => void;
 } {
 	const terminal = new VirtualTerminal(80, 24);
@@ -85,9 +87,9 @@ function createStandardPromptHarness(
 	}) as StandardPromptModeState;
 	const prototype = InteractiveMode.prototype as unknown as StandardPromptModePrototype;
 	const events: ExactPromptEvent[] = [];
-	const disconnect = prototype.connectExtensionStandardPromptEvents.call(state, (event) => {
+	const disconnect = prototype.connectExtensionStandardPromptEvents.call(state, async (event) => {
 		events.push(event);
-		onEvent?.(event);
+		await onEvent?.(event);
 	});
 
 	editorContainer.addChild(editor);
@@ -100,11 +102,23 @@ function createStandardPromptHarness(
 		events,
 		editor,
 		getPromptInput: () => editorContainer.children[0] as { handleInput(data: string): void },
+		invalidate: () => prototype.invalidateExtensionStandardPrompt.call(state),
 		close: () => {
 			disconnect();
 			ui.stop();
 		},
 	};
+}
+
+function openStandardPrompt(
+	context: ExtensionUIContext,
+	kind: "confirm" | "select" | "input" | "editor",
+	controller: AbortController,
+): Promise<boolean | string | undefined> {
+	if (kind === "confirm") return context.confirm("Confirm", "Continue?", { signal: controller.signal, timeout: 1000 });
+	if (kind === "select") return context.select("Choose", ["First"], { signal: controller.signal, timeout: 1000 });
+	if (kind === "input") return context.input("Value", undefined, { signal: controller.signal, timeout: 1000 });
+	return context.editor("Edit");
 }
 
 describe("InteractiveMode exact standard prompts", () => {
@@ -450,6 +464,67 @@ describe("InteractiveMode exact standard prompts", () => {
 
 			expect(await result).toBe("First");
 			expect(disposeActiveSelector).toHaveBeenCalledOnce();
+		} finally {
+			harness.close();
+		}
+	});
+
+	it.each(["confirm", "select", "input", "editor"] as const)(
+		"invalidates an active %s prompt with one exact terminal event",
+		async (kind) => {
+			vi.useFakeTimers();
+			const harness = createStandardPromptHarness();
+			try {
+				const controller = new AbortController();
+				const result = openStandardPrompt(harness.context, kind, controller);
+				const start = harness.events[0] as ExactUIPromptStartEvent;
+				const stalePromptInput = harness.getPromptInput();
+
+				await harness.invalidate();
+
+				expect(await result).toBe(kind === "confirm" ? false : undefined);
+				expect(harness.editor.focused).toBe(true);
+				expect(harness.events).toHaveLength(2);
+				expect(harness.events[1]).toMatchObject({
+					type: "ui_prompt_end",
+					promptId: start.promptId,
+					kind,
+					resolution: "dismissed",
+					source: "sessionInvalidated",
+				});
+				expect(harness.context.respond(start.promptId, { kind: "confirm", value: true })).toBe("notFound");
+				expect(harness.context.dismiss(start.promptId)).toBe("notFound");
+
+				controller.abort();
+				vi.advanceTimersByTime(2000);
+				stalePromptInput.handleInput("\x1b");
+				expect(harness.events).toHaveLength(2);
+			} finally {
+				harness.close();
+			}
+		},
+	);
+
+	it("waits for the invalidation end event before lifecycle teardown continues", async () => {
+		let releaseEnd: () => void = () => {};
+		const endGate = new Promise<void>((resolve) => {
+			releaseEnd = resolve;
+		});
+		const harness = createStandardPromptHarness(async (event) => {
+			if (event.type === "ui_prompt_end") await endGate;
+		});
+		try {
+			const result = harness.context.input("Value");
+			let invalidated = false;
+			const invalidation = harness.invalidate().then(() => {
+				invalidated = true;
+			});
+			await Promise.resolve();
+
+			expect(invalidated).toBe(false);
+			releaseEnd();
+			await invalidation;
+			expect(await result).toBeUndefined();
 		} finally {
 			harness.close();
 		}

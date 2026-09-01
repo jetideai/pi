@@ -73,7 +73,7 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
  */
 export class AgentSessionRuntime {
 	private rebindSession?: (session: AgentSession) => Promise<void>;
-	private beforeSessionInvalidate?: () => void;
+	private beforeSessionInvalidate?: () => Promise<void> | void;
 	private _session: AgentSession;
 	private _services: AgentSessionServices;
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
@@ -119,14 +119,13 @@ export class AgentSessionRuntime {
 	}
 
 	/**
-	 * Set a synchronous callback that runs after `session_shutdown` handlers finish
-	 * but before the current session is invalidated.
+	 * Set a callback that runs after `session_shutdown` handlers finish but before
+	 * the current session is invalidated.
 	 *
-	 * This is for host-owned UI teardown that must not yield to the event loop,
-	 * such as detaching extension-provided TUI components before the old extension
-	 * context becomes stale.
+	 * The callback must detach host-owned UI before its first await. It can then
+	 * wait for ordered lifecycle notifications before the old context becomes stale.
 	 */
-	setBeforeSessionInvalidate(beforeSessionInvalidate?: () => void): void {
+	setBeforeSessionInvalidate(beforeSessionInvalidate?: () => Promise<void> | void): void {
 		this.beforeSessionInvalidate = beforeSessionInvalidate;
 	}
 
@@ -173,7 +172,7 @@ export class AgentSessionRuntime {
 			reason,
 			targetSessionFile,
 		});
-		this.beforeSessionInvalidate?.();
+		await this.beforeSessionInvalidate?.();
 		this.session.dispose();
 	}
 
@@ -400,7 +399,7 @@ export class AgentSessionRuntime {
 			type: "session_shutdown",
 			reason: "quit",
 		});
-		this.beforeSessionInvalidate?.();
+		await this.beforeSessionInvalidate?.();
 		this.session.dispose();
 	}
 }
