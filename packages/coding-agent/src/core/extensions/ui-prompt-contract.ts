@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
+	ExactUIPromptEndEvent,
+	ExactUIPromptStartEvent,
 	UIPromptControlResult,
 	UIPromptId,
 	UIPromptKind,
@@ -7,6 +9,13 @@ import type {
 	UIPromptResponseAvailability,
 	UIPromptResponseSchema,
 } from "./types.ts";
+
+export type ExactUIPromptEvent = ExactUIPromptStartEvent | ExactUIPromptEndEvent;
+
+/** Internal source for a UI owner that emits exact confirmation prompt events. */
+export interface ConfirmPromptLifecycleSource {
+	connect(sink: (event: ExactUIPromptEvent) => void): () => void;
+}
 
 export const UI_PROMPT_MAX_RESPONSE_BYTES = 32 * 1024;
 export const UI_PROMPT_MAX_SELECT_OPTIONS = 64;
@@ -67,6 +76,9 @@ export function validateUIPromptResponse(
 	response: UIPromptResponse,
 ): UIPromptControlResult {
 	if (schema.kind !== response.kind) return "kindMismatch";
+	if (schema.kind === "confirm" && response.kind === "confirm" && typeof response.value !== "boolean") {
+		return "invalidValue";
+	}
 	if (schema.kind === "select" && response.kind === "select" && !schema.options.includes(response.value)) {
 		return "invalidValue";
 	}

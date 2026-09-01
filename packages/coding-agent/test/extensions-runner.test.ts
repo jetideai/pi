@@ -15,8 +15,14 @@ import type {
 	ExtensionContextActions,
 	ExtensionUIContext,
 	ProviderConfig,
+	UIPromptEndEvent,
+	UIPromptStartEvent,
 } from "../src/core/extensions/types.ts";
-import { createUIPromptId } from "../src/core/extensions/ui-prompt-contract.ts";
+import {
+	type ConfirmPromptLifecycleSource,
+	createUIPromptId,
+	createUIPromptResponseAvailability,
+} from "../src/core/extensions/ui-prompt-contract.ts";
 import { KeybindingsManager, type KeyId } from "../src/core/keybindings.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
 import type { ScopedModel } from "../src/core/model-resolver.ts";
@@ -567,6 +573,81 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("UI prompt notifications", () => {
+		it("forwards exact confirmation lifecycle events without legacy duplicates", async () => {
+			const observed: Array<UIPromptStartEvent | UIPromptEndEvent> = [];
+			let resolveObserved: () => void = () => {};
+			const allObserved = new Promise<void>((resolve) => {
+				resolveObserved = resolve;
+			});
+			const result = await createTestExtensionsResult([
+				(pi) => {
+					pi.on("ui_prompt_start", (event) => {
+						observed.push(event);
+					});
+					pi.on("ui_prompt_end", (event) => {
+						observed.push(event);
+						resolveObserved();
+					});
+				},
+			]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			let sink: Parameters<ConfirmPromptLifecycleSource["connect"]>[0] = () => {};
+			const source: ConfirmPromptLifecycleSource = {
+				connect: (listener) => {
+					sink = listener;
+					return () => {};
+				},
+			};
+			const promptId = createUIPromptId();
+			runner.setUIContext(
+				{
+					confirm: async () => {
+						sink({
+							type: "ui_prompt_start",
+							reason: "ui_prompt",
+							promptId,
+							kind: "confirm",
+							response: createUIPromptResponseAvailability("confirm"),
+						});
+						sink({
+							type: "ui_prompt_end",
+							reason: "ui_prompt",
+							promptId,
+							kind: "confirm",
+							resolution: "responded",
+							source: "local",
+						});
+						return true;
+					},
+					respond: () => "unsupported",
+					dismiss: () => "unsupported",
+				} as unknown as ExtensionUIContext,
+				"tui",
+				source,
+			);
+
+			await runner.getUIContext().confirm("Confirm", "Continue?");
+			await allObserved;
+
+			expect(observed).toEqual([
+				{
+					type: "ui_prompt_start",
+					reason: "ui_prompt",
+					promptId,
+					kind: "confirm",
+					response: createUIPromptResponseAvailability("confirm"),
+				},
+				{
+					type: "ui_prompt_end",
+					reason: "ui_prompt",
+					promptId,
+					kind: "confirm",
+					resolution: "responded",
+					source: "local",
+				},
+			]);
+		});
+
 		it("keeps retained prompt controls unavailable and rejects them after context invalidation", async () => {
 			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);

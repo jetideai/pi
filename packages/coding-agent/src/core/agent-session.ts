@@ -96,6 +96,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import type { ConfirmPromptLifecycleSource } from "./extensions/ui-prompt-contract.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -240,6 +241,7 @@ export interface AgentSessionConfig {
 
 export interface ExtensionBindings {
 	uiContext?: ExtensionUIContext;
+	confirmPromptLifecycleSource?: ConfirmPromptLifecycleSource;
 	mode?: ExtensionMode;
 	commandContextActions?: ExtensionCommandContextActions;
 	abortHandler?: () => void;
@@ -371,6 +373,7 @@ export class AgentSession {
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
+	private _confirmPromptLifecycleSource?: ConfirmPromptLifecycleSource;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionAbortHandler?: () => void;
@@ -2489,6 +2492,9 @@ export class AgentSession {
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
 		}
+		if (bindings.confirmPromptLifecycleSource !== undefined) {
+			this._confirmPromptLifecycleSource = bindings.confirmPromptLifecycleSource;
+		}
 		if (bindings.mode !== undefined) {
 			this._extensionMode = bindings.mode;
 		}
@@ -2564,7 +2570,7 @@ export class AgentSession {
 	}
 
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
-		runner.setUIContext(this._extensionUIContext, this._extensionMode);
+		runner.setUIContext(this._extensionUIContext, this._extensionMode, this._confirmPromptLifecycleSource);
 		runner.bindCommandContext(this._extensionCommandContextActions);
 
 		this._extensionErrorUnsubscriber?.();

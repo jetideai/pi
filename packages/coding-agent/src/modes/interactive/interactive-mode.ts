@@ -87,8 +87,18 @@ import type {
 	ProjectTrustContext,
 	ToolExecutionPresentationSelectorV1,
 	ToolPresentationOverrideV1,
+	UIPromptControlResult,
+	UIPromptId,
+	UIPromptResponse,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import {
+	type ConfirmPromptLifecycleSource,
+	createUIPromptId,
+	createUIPromptResponseAvailability,
+	type ExactUIPromptEvent,
+	validateUIPromptResponse,
+} from "../../core/extensions/ui-prompt-contract.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
@@ -863,6 +873,15 @@ export class InteractiveMode {
 
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
+	private activeExtensionConfirmPrompt:
+		| {
+				promptId: UIPromptId;
+				resolve: (value: boolean) => void;
+				signal: AbortSignal | undefined;
+				onAbort: () => void;
+		  }
+		| undefined = undefined;
+	private extensionConfirmPromptEventSink: ((event: ExactUIPromptEvent) => void) | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputSubscriptions = new Set<{
@@ -2255,6 +2274,7 @@ export class InteractiveMode {
 		const uiContext = this.createExtensionUIContext();
 		await this.session.bindExtensions({
 			uiContext,
+			confirmPromptLifecycleSource: this.createExtensionConfirmPromptLifecycleSource(),
 			mode: "tui",
 			abortHandler: () => {
 				this.restoreQueuedMessagesToEditor({ abort: true });
@@ -3046,8 +3066,8 @@ export class InteractiveMode {
 			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
 			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
 			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
-			respond: () => "unsupported",
-			dismiss: () => "unsupported",
+			respond: (promptId, response) => this.respondToExtensionConfirmPrompt(promptId, response),
+			dismiss: (promptId) => this.dismissExtensionConfirmPrompt(promptId),
 			notify: (message, type) => this.showExtensionNotify(message, type),
 			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
 			setStatus: (key, text) => this.setExtensionStatus(key, text),
@@ -3161,8 +3181,145 @@ export class InteractiveMode {
 		message: string,
 		opts?: ExtensionUIDialogOptions,
 	): Promise<boolean> {
-		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts);
-		return result === "Yes";
+		if (opts?.signal?.aborted) return false;
+		if (this.activeExtensionConfirmPrompt) {
+			throw new Error("An extension confirmation prompt is already active");
+		}
+
+		const promptId = createUIPromptId();
+		return new Promise((resolve) => {
+			const onAbort = () => {
+				this.settleExtensionConfirmPrompt(promptId, {
+					value: false,
+					resolution: "dismissed",
+					source: "signal",
+				});
+			};
+			const activePrompt = { promptId, resolve, signal: opts?.signal, onAbort };
+			this.activeExtensionConfirmPrompt = activePrompt;
+			opts?.signal?.addEventListener("abort", onAbort, { once: true });
+			this.extensionConfirmPromptEventSink?.({
+				type: "ui_prompt_start",
+				reason: "ui_prompt",
+				promptId,
+				kind: "confirm",
+				title,
+				response: createUIPromptResponseAvailability("confirm"),
+			});
+			if (this.activeExtensionConfirmPrompt !== activePrompt) return;
+
+			this.extensionSelector = new ExtensionSelectorComponent(
+				`${title}\n${message}`,
+				["Yes", "No"],
+				(option) => {
+					this.settleExtensionConfirmPrompt(promptId, {
+						value: option === "Yes",
+						resolution: "responded",
+						source: "local",
+					});
+				},
+				() => {
+					this.settleExtensionConfirmPrompt(promptId, {
+						value: false,
+						resolution: "dismissed",
+						source: "local",
+					});
+				},
+				{
+					tui: this.ui,
+					timeout: opts?.timeout,
+					onTimeout: () => {
+						this.settleExtensionConfirmPrompt(promptId, {
+							value: false,
+							resolution: "dismissed",
+							source: "timeout",
+						});
+					},
+					onToggleToolsExpanded: () => this.toggleToolOutputExpansion(),
+				},
+			);
+
+			this.disposeActiveSelector();
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.extensionSelector);
+			this.ui.setFocus(this.extensionSelector);
+			this.ui.requestRender();
+		});
+	}
+
+	private createExtensionConfirmPromptLifecycleSource(): ConfirmPromptLifecycleSource {
+		return { connect: (sink) => this.connectExtensionConfirmPromptEvents(sink) };
+	}
+
+	private connectExtensionConfirmPromptEvents(sink: (event: ExactUIPromptEvent) => void): () => void {
+		if (this.extensionConfirmPromptEventSink) {
+			throw new Error("The extension confirmation prompt event sink is already connected");
+		}
+		this.extensionConfirmPromptEventSink = sink;
+		return () => {
+			if (this.extensionConfirmPromptEventSink === sink) this.extensionConfirmPromptEventSink = undefined;
+		};
+	}
+
+	private respondToExtensionConfirmPrompt(promptId: UIPromptId, response: UIPromptResponse): UIPromptControlResult {
+		const activePrompt = this.activeExtensionConfirmPrompt;
+		if (!activePrompt || activePrompt.promptId !== promptId) return "notFound";
+		if (response.kind !== "confirm") return "kindMismatch";
+		const schema = createUIPromptResponseAvailability("confirm").schema;
+		const validation = validateUIPromptResponse(schema, response);
+		if (validation !== "accepted") return validation;
+		return this.settleExtensionConfirmPrompt(promptId, {
+			value: response.value,
+			resolution: "responded",
+			source: "external",
+		});
+	}
+
+	private dismissExtensionConfirmPrompt(promptId: UIPromptId): UIPromptControlResult {
+		return this.settleExtensionConfirmPrompt(promptId, {
+			value: false,
+			resolution: "dismissed",
+			source: "external",
+		});
+	}
+
+	private settleExtensionConfirmPrompt(
+		promptId: UIPromptId,
+		outcome:
+			| { value: boolean; resolution: "responded"; source: "local" | "external" }
+			| {
+					value: false;
+					resolution: "dismissed";
+					source: "local" | "external" | "timeout" | "signal";
+			  },
+	): UIPromptControlResult {
+		const activePrompt = this.activeExtensionConfirmPrompt;
+		if (!activePrompt || activePrompt.promptId !== promptId) return "notFound";
+
+		this.activeExtensionConfirmPrompt = undefined;
+		activePrompt.signal?.removeEventListener("abort", activePrompt.onAbort);
+		this.hideExtensionSelector();
+		activePrompt.resolve(outcome.value);
+		const eventBase = {
+			type: "ui_prompt_end",
+			reason: "ui_prompt",
+			promptId,
+			kind: "confirm",
+		} as const;
+		if (outcome.resolution === "responded") {
+			this.extensionConfirmPromptEventSink?.({
+				...eventBase,
+				resolution: outcome.resolution,
+				source: outcome.source,
+			});
+		} else {
+			this.extensionConfirmPromptEventSink?.({
+				...eventBase,
+				resolution: outcome.resolution,
+				source: outcome.source,
+			});
+		}
+		return "accepted";
 	}
 
 	private async promptForMissingSessionCwd(error: MissingSessionCwdError): Promise<string | undefined> {
