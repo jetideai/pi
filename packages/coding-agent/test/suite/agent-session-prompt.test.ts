@@ -5,10 +5,10 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ExtensionAPI, InputEvent } from "../../src/core/extensions/index.ts";
+import type { ExtensionAPI, ExtensionContext, InputEvent } from "../../src/core/extensions/index.ts";
 import type { PromptTemplate } from "../../src/core/prompt-templates.ts";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
-import { createTestResourceLoader } from "../utilities.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "../utilities.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
 describe("AgentSession prompt characterization", () => {
@@ -308,6 +308,166 @@ describe("AgentSession prompt characterization", () => {
 		await expect(commandRun).resolves.toBe("hello world");
 		expect(harness.session.messages).toEqual([]);
 		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("extension sendUserMessage can keep commands and prompt templates literal", async () => {
+		const template: PromptTemplate = {
+			name: "review",
+			description: "Review template",
+			content: "expanded: $1",
+			filePath: "/virtual/review.md",
+			sourceInfo: createSyntheticSourceInfo("/virtual/review.md", {
+				source: "local",
+				scope: "temporary",
+				origin: "top-level",
+			}),
+		};
+		let extensionApi: ExtensionAPI | undefined;
+		const commandRuns: string[] = [];
+		const extensionsResult = await createTestExtensionsResult([
+			(pi) => {
+				extensionApi = pi;
+				pi.registerCommand("testcmd", {
+					description: "Test command",
+					handler: async (args) => {
+						commandRuns.push(args);
+					},
+				});
+			},
+		]);
+		const resourceLoader = {
+			...createTestResourceLoader({ extensionsResult }),
+			getPrompts: () => ({ prompts: [template], diagnostics: [] }),
+		};
+		const harness = await createHarness({
+			resourceLoader,
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("literal")]);
+
+		const firstSettled = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type !== "agent_settled") return;
+				unsubscribe();
+				resolve();
+			});
+		});
+		extensionApi?.sendUserMessage("/review src/index.ts", { expandPromptTemplates: false });
+		await firstSettled;
+		const secondSettled = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type !== "agent_settled") return;
+				unsubscribe();
+				resolve();
+			});
+		});
+		extensionApi?.sendUserMessage("/testcmd hello", { expandPromptTemplates: false });
+		await secondSettled;
+
+		expect(commandRuns).toEqual([]);
+		expect(harness.session.messages.filter((message) => message.role === "user").map(getMessageText)).toEqual([
+			"/review src/index.ts",
+			"/testcmd hello",
+		]);
+	});
+
+	it("retained extension context aborts the current run and reaches settlement", async () => {
+		let retainedContext: ExtensionContext | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_start", (_event, ctx) => {
+						retainedContext = ctx;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
+		const sawMessageUpdate = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type !== "message_update") return;
+				unsubscribe();
+				resolve();
+			});
+		});
+
+		const promptPromise = harness.session.prompt("abort this run");
+		await sawMessageUpdate;
+		retainedContext?.abort();
+		await promptPromise;
+
+		const assistant = harness.session.messages.at(-1);
+		expect(assistant?.role).toBe("assistant");
+		if (assistant?.role === "assistant") {
+			expect(assistant.stopReason).toBe("aborted");
+		}
+		expect(harness.events.at(-1)?.type).toBe("agent_settled");
+	});
+
+	it("extension input and semantic message entries preserve exact turn boundaries", async () => {
+		let extensionApi: ExtensionAPI | undefined;
+		const inputEvents: InputEvent[] = [];
+		const messageEvents: Array<{ type: "start" | "end"; role: string; entryId: string }> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					extensionApi = pi;
+					pi.on("input", (event) => {
+						inputEvents.push(event);
+					});
+					pi.on("message_start", (event) => {
+						messageEvents.push({ type: "start", role: event.message.role, entryId: event.entryId });
+					});
+					pi.on("message_end", (event) => {
+						messageEvents.push({ type: "end", role: event.message.role, entryId: event.entryId });
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer")]);
+		const firstSettled = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type !== "agent_settled") return;
+				unsubscribe();
+				resolve();
+			});
+		});
+
+		extensionApi?.sendUserMessage("first command", { expandPromptTemplates: false });
+		await firstSettled;
+		const secondSettled = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type !== "agent_settled") return;
+				unsubscribe();
+				resolve();
+			});
+		});
+		extensionApi?.sendUserMessage("second command", { expandPromptTemplates: false });
+		await secondSettled;
+
+		expect(inputEvents.map(({ text, source, streamingBehavior }) => ({ text, source, streamingBehavior }))).toEqual([
+			{ text: "first command", source: "extension", streamingBehavior: undefined },
+			{ text: "second command", source: "extension", streamingBehavior: undefined },
+		]);
+		expect(messageEvents.map(({ type, role }) => `${type}:${role}`)).toEqual([
+			"start:user",
+			"end:user",
+			"start:assistant",
+			"end:assistant",
+			"start:user",
+			"end:user",
+			"start:assistant",
+			"end:assistant",
+		]);
+		for (let index = 0; index < messageEvents.length; index += 2) {
+			expect(messageEvents[index]?.entryId).toBeTruthy();
+			expect(messageEvents[index + 1]?.entryId).toBe(messageEvents[index]?.entryId);
+		}
+		expect(new Set(messageEvents.filter(({ type }) => type === "start").map(({ entryId }) => entryId))).toHaveLength(
+			4,
+		);
 	});
 
 	it("sendUserMessage while idle triggers a turn", async () => {
