@@ -304,6 +304,7 @@ export class ExtensionRunner {
 	private staleMessage: string | undefined;
 	private uiPromptDepth = 0;
 	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
+	private uiPromptNotificationTail: Promise<void> = Promise.resolve();
 
 	constructor(
 		extensions: Extension[],
@@ -486,9 +487,8 @@ export class ExtensionRunner {
 	}
 
 	private emitUIPromptEvent(event: Extract<RunnerEmitEvent, { type: "ui_prompt_start" | "ui_prompt_end" }>): void {
-		queueMicrotask(() => {
-			void this.emit(event);
-		});
+		// Keep prompt events ordered for every extension. Do not wait for this queue from the UI path.
+		this.uiPromptNotificationTail = this.uiPromptNotificationTail.then(() => this.emit(event));
 	}
 
 	getUIContext(): ExtensionUIContext {
