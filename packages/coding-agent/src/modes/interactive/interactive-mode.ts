@@ -4362,6 +4362,7 @@ export class InteractiveMode {
 					if (entries[0]?.type !== "compaction") {
 						throw new Error("Completed compaction is missing from the session context");
 					}
+					this.releaseSettledMessageRendering();
 					this.startFreshMessageRenderScope();
 					this.chatContainer.clear();
 					// The latest compaction is prepended for model context; append it below at its chronological position.

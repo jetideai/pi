@@ -112,7 +112,7 @@ describe("InteractiveMode compaction events", () => {
 		);
 	});
 
-	test("renders retained entries and appends the latest summary cost at the bottom", async () => {
+	test("releases live rendering before rebuilding retained entries after compaction", async () => {
 		const usage: Usage = {
 			input: 10,
 			output: 20,
@@ -154,6 +154,7 @@ describe("InteractiveMode compaction events", () => {
 			addMessageToChat: vi.fn(),
 			addCompactionCostNotice: vi.fn(),
 			startFreshMessageRenderScope: vi.fn(),
+			releaseSettledMessageRendering: vi.fn(),
 			showError: vi.fn(),
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
@@ -186,6 +187,7 @@ describe("InteractiveMode compaction events", () => {
 			willRetry: false,
 		});
 
+		expect(fakeThis.releaseSettledMessageRendering).toHaveBeenCalledTimes(1);
 		expect(fakeThis.startFreshMessageRenderScope).toHaveBeenCalledTimes(1);
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
 		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousCompaction]);
