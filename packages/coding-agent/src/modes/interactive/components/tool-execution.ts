@@ -163,6 +163,10 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	getToolCallId(): string {
+		return this.toolCallId;
+	}
+
 	private getCallRenderer(): ToolDefinition<any, any>["renderCall"] | undefined {
 		if (!this.builtInToolDefinition) {
 			return this.toolDefinition?.renderCall;

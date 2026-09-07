@@ -1375,6 +1375,9 @@ export type MessageRenderBoundaryDecoratorV1 = (
 	context: Readonly<MessageRenderBoundaryContextV1>,
 ) => MessageRenderBoundariesV1 | undefined;
 
+/** @deprecated Use MessageRenderBoundaryDecoratorV1. This alias only receives assistant renders. */
+export type AssistantRenderBoundaryDecoratorV1 = MessageRenderBoundaryDecoratorV1;
+
 /** Decorate one selected V2 canonical render using its actual layout ranges. */
 export type MessageRenderBoundaryDecoratorV2 = (
 	context: Readonly<MessageRenderBoundaryContextV1>,
@@ -1459,6 +1462,14 @@ export interface MessageRenderProjectionV1 {
 
 /** Synchronous observation of one complete interactive supported-message projection. */
 export type MessageRenderProjectionObserverV1 = (projection: Readonly<MessageRenderProjectionV1>) => void;
+
+/** @deprecated Use MessageRenderProjectionV1 for complete transcript membership. */
+export interface AssistantRenderProjectionV1 {
+	entryIds: readonly string[];
+}
+
+/** @deprecated Use MessageRenderProjectionObserverV1. */
+export type AssistantRenderProjectionObserverV1 = (projection: Readonly<AssistantRenderProjectionV1>) => void;
 
 export interface EntryRenderOptions {
 	expanded: boolean;
@@ -1611,6 +1622,9 @@ export interface ExtensionAPI {
 	/** Decorate built-in user and assistant render boundaries with zero-column terminal controls. */
 	registerMessageRenderBoundaryDecoratorV1(decorator: MessageRenderBoundaryDecoratorV1): void;
 
+	/** @deprecated Use registerMessageRenderBoundaryDecoratorV1. Only assistant renders are passed to this alias. */
+	registerAssistantRenderBoundaryDecoratorV1(decorator: AssistantRenderBoundaryDecoratorV1): void;
+
 	/** Select canonical rendering and its V2 boundary decorator before Pi constructs the render. */
 	registerMessageRenderBoundarySelectorV2(selector: MessageRenderBoundarySelectorV2): void;
 	registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void;
@@ -1621,6 +1635,9 @@ export interface ExtensionAPI {
 
 	/** Observe complete supported-message membership selected by the interactive render owner. */
 	registerMessageRenderProjectionObserverV1(observer: MessageRenderProjectionObserverV1): void;
+
+	/** @deprecated Use registerMessageRenderProjectionObserverV1. */
+	registerAssistantRenderProjectionObserverV1(observer: AssistantRenderProjectionObserverV1): void;
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;

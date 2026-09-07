@@ -131,15 +131,12 @@ describe("InteractiveMode compaction events", () => {
 			tokensBefore: 123,
 			usage,
 		};
-		const previousCompaction: SessionEntry = {
-			type: "compaction",
+		const previousMessage: SessionEntry = {
+			type: "message",
 			id: "previous",
 			parentId: null,
 			timestamp: "2025-01-01T00:00:00Z",
-			summary: "previous summary",
-			firstKeptEntryId: "kept",
-			tokensBefore: 100,
-			usage,
+			message: { role: "user", content: "original prompt", timestamp: 1 },
 		};
 		const fakeThis = {
 			isInitialized: true,
@@ -149,12 +146,21 @@ describe("InteractiveMode compaction events", () => {
 			defaultEditor: {},
 			statusContainer: { clear: vi.fn() },
 			chatContainer: { clear: vi.fn() },
-			sessionManager: { buildContextEntries: vi.fn().mockReturnValue([latestCompaction, previousCompaction]) },
+			session: { isIdle: false },
+			sessionManager: {
+				buildContextEntries: vi.fn().mockReturnValue([latestCompaction]),
+				buildTranscriptEntries: vi.fn().mockReturnValue([previousMessage]),
+			},
 			renderSessionEntries: vi.fn(),
 			addMessageToChat: vi.fn(),
 			addCompactionCostNotice: vi.fn(),
 			startFreshMessageRenderScope: vi.fn(),
 			releaseSettledMessageRendering: vi.fn(),
+			rebuildChatFromMessages: Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages"),
+			liveRenderContainer: undefined,
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			transcriptRebuildPending: false,
 			showError: vi.fn(),
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
@@ -190,7 +196,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(fakeThis.releaseSettledMessageRendering).toHaveBeenCalledTimes(1);
 		expect(fakeThis.startFreshMessageRenderScope).toHaveBeenCalledTimes(1);
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
-		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousCompaction]);
+		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousMessage], { completeLastTurn: false });
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -205,6 +211,93 @@ describe("InteractiveMode compaction events", () => {
 			usage,
 		});
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+	});
+
+	test("defers a transcript rebuild until live assistant rendering settles", async () => {
+		const liveRenderContainer = new Container();
+		const fakeThis = {
+			liveRenderContainer,
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			transcriptRebuildPending: false,
+			chatContainer: { clear: vi.fn() },
+			sessionManager: { buildTranscriptEntries: vi.fn().mockReturnValue([]) },
+			renderSessionEntries: vi.fn(),
+			startFreshMessageRenderScope: vi.fn(),
+			session: { isIdle: false },
+		};
+		const rebuildChatFromMessages = Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages") as (
+			this: typeof fakeThis,
+		) => Promise<void>;
+
+		await rebuildChatFromMessages.call(fakeThis);
+
+		expect(fakeThis.transcriptRebuildPending).toBe(true);
+		expect(fakeThis.liveRenderContainer).toBe(liveRenderContainer);
+		expect(fakeThis.chatContainer.clear).not.toHaveBeenCalled();
+		expect(fakeThis.renderSessionEntries).not.toHaveBeenCalled();
+	});
+
+	test("runs a deferred transcript rebuild after agent settlement", async () => {
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			transcriptRebuildPending: true,
+			liveRenderContainer: new Container() as Container | undefined,
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			messageRenderMembers: [],
+			chatContainer: { clear: vi.fn() },
+			sessionManager: { buildTranscriptEntries: vi.fn().mockReturnValue([]) },
+			renderSessionEntries: vi.fn(),
+			startFreshMessageRenderScope: vi.fn(),
+			session: { isIdle: true },
+			closeOpenMessageRenderGroup: vi.fn().mockReturnValue(true),
+			releaseActiveAgentRunRendering: vi.fn(),
+			releaseSettledMessageRendering: vi.fn(function (this: typeof fakeThis) {
+				this.liveRenderContainer = undefined;
+			}),
+			rebuildChatFromMessages: Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages"),
+			checkShutdownRequested: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event: { type: "agent_settled" },
+		) => Promise<void>;
+
+		await handleEvent.call(fakeThis, { type: "agent_settled" });
+
+		expect(fakeThis.releaseSettledMessageRendering).toHaveBeenCalledOnce();
+		expect(fakeThis.chatContainer.clear).toHaveBeenCalledOnce();
+		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([], { completeLastTurn: true });
+		expect(fakeThis.transcriptRebuildPending).toBe(false);
+	});
+
+	test("releases live rendering before replacing the current session transcript", async () => {
+		const order: string[] = [];
+		const fakeThis = {
+			transcriptRebuildPending: true,
+			startFreshMessageRenderScope: vi.fn(),
+			loadedResourcesContainer: { clear: vi.fn() },
+			chatContainer: { clear: vi.fn(() => order.push("clear")) },
+			pendingMessagesContainer: { clear: vi.fn() },
+			compactionQueuedMessages: ["queued"],
+			streamingComponent: {},
+			streamingMessage: {},
+			pendingTools: new Map([["tool", {}]]),
+			releaseActiveAgentRunRendering: vi.fn(() => order.push("release-run")),
+			releaseSettledMessageRendering: vi.fn(() => order.push("release-live")),
+			renderInitialMessages: vi.fn(async () => order.push("render")),
+		};
+		const renderCurrentSessionState = Reflect.get(InteractiveMode.prototype, "renderCurrentSessionState") as (
+			this: typeof fakeThis,
+		) => Promise<void>;
+
+		await renderCurrentSessionState.call(fakeThis);
+
+		expect(order).toEqual(["release-run", "release-live", "clear", "render"]);
+		expect(fakeThis.transcriptRebuildPending).toBe(false);
 	});
 
 	test("updates the working state when the same agent run resumes after compaction", async () => {

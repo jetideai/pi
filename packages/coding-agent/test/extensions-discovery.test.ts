@@ -411,6 +411,40 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].messageRenderBoundaryDecoratorV1).toBeDefined();
 	});
 
+	it("loads the documented assistant render compatibility APIs", async () => {
+		const extCode = `
+			export default function(pi) {
+				pi.registerAssistantRenderBoundaryDecoratorV1(() => ({ prefix: "\\u001b[0m" }));
+				pi.registerAssistantRenderProjectionObserverV1(({ entryIds }) => {
+					globalThis.__documentedAssistantEntryIds = entryIds;
+				});
+			}
+		`;
+		fs.writeFileSync(path.join(extensionsDir, "with-documented-assistant-render.ts"), extCode);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+		const extension = result.extensions[0];
+		extension?.messageRenderProjectionObserverV1?.({
+			mode: "replace",
+			members: [
+				{ entryId: "user-1", role: "user" },
+				{ entryId: "assistant-1", role: "assistant" },
+				{ entryId: "tool-1", ownerEntryId: "assistant-1", role: "tool" },
+			],
+		});
+
+		expect(result.errors).toEqual([]);
+		expect(extension?.messageRenderBoundaryDecoratorV1?.({ role: "assistant" } as never)).toEqual({
+			prefix: "\u001b[0m",
+		});
+		expect(extension?.messageRenderBoundaryDecoratorV1?.({ role: "user" } as never)).toBeUndefined();
+		expect(
+			(globalThis as typeof globalThis & { __documentedAssistantEntryIds?: string[] }).__documentedAssistantEntryIds,
+		).toEqual(["assistant-1"]);
+		delete (globalThis as typeof globalThis & { __documentedAssistantEntryIds?: string[] })
+			.__documentedAssistantEntryIds;
+	});
+
 	it("keeps the latest Tool Execution presentation selector from one extension", async () => {
 		const extCode = `
 			export default function(pi) {

@@ -436,6 +436,50 @@ describe("ToolGroupComponent", () => {
 		expect(rows.slice(firstEnd + 1, secondBegin)).toEqual([""]);
 	});
 
+	it("owns one external separator when a V2 group contains real selected Tool Calls", () => {
+		const createChild = (toolCallId: string) => {
+			const child = new ToolExecutionComponent(
+				"custom_tool",
+				toolCallId,
+				{},
+				{
+					ownerEntryId: "assistant-entry",
+					producerSessionId: "session",
+					renderScopeId: "scope",
+					semanticSelectorsV3: [() => () => ({ begin: "", body: "", end: "" })],
+				},
+				{
+					name: "custom_tool",
+					label: "custom tool",
+					description: "custom tool",
+					parameters: Type.Any(),
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+					renderCall: () => new Text(`${toolCallId} call`, 0, 0),
+					renderResult: () => new Text(`${toolCallId} result`, 0, 0),
+				},
+				{ requestRender: vi.fn() } as unknown as TUI,
+				process.cwd(),
+			);
+			child.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+			return child;
+		};
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:v2",
+			closed: true,
+			semanticSelectorsV2: [() => () => ({ begin: "", body: "", end: "" })],
+		});
+		group.addTool(createChild("tool-1"), { toolName: "read", toolCallId: "tool-1" });
+		group.addTool(createChild("tool-2"), { toolName: "read", toolCallId: "tool-2" });
+
+		const rows = group.render(80);
+		const headerRow = rows.findIndex((line) => stripAnsi(line).includes("$ Read files"));
+		const firstToolRow = rows.findIndex((line) => stripAnsi(line).includes("tool-1 call"));
+
+		expect(headerRow).toBe(1);
+		expect(rows.slice(0, headerRow)).toEqual([""]);
+		expect(rows.slice(headerRow + 1, firstToolRow)).toEqual([""]);
+	});
+
 	it("nests complete Tool Call sections inside the canonical Tool Group body", () => {
 		const groupControls = {
 			begin: "\x1b]777;group-begin\x07",

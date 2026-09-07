@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import {
 	getMarkdownTheme,
 	loadThemeFromPath,
@@ -11,6 +12,7 @@ import {
 
 const CODE_FG = "\x1b[38;2;0;255;255m";
 const CODE_BG = "\x1b[48;2;46;49;54m";
+const USER_BG = "\x1b[48;2;17;34;51m";
 const FG_RESET = "\x1b[39m";
 const BG_RESET = "\x1b[49m";
 
@@ -24,6 +26,7 @@ function themeJson(name: string, withCodeBg: boolean): ThemeJsonFile {
 	) as ThemeJsonFile;
 	json.name = name;
 	json.colors.mdCode = "#00ffff";
+	json.colors.userMessageBg = "#112233";
 	if (withCodeBg) {
 		json.colors.mdCodeBg = "#2e3136";
 	}
@@ -51,6 +54,17 @@ describe("optional inline code background token", () => {
 		const styled = getMarkdownTheme().code("greeting");
 
 		expect(styled).toBe(`${CODE_BG}${CODE_FG}greeting${FG_RESET}${BG_RESET}`);
+	});
+
+	it("restores the enclosing user-message background after an inline code chip", () => {
+		setThemeInstance(loadTheme(themeJson("md-code-user-message", true)));
+		const component = new UserMessageComponent("before `greeting` after", getMarkdownTheme(), 0);
+
+		const contentRow = component.render(80).find((line) => line.includes("greeting"));
+		const codeEnd = contentRow?.indexOf(BG_RESET, contentRow.indexOf("greeting"));
+
+		expect(codeEnd).toBeGreaterThanOrEqual(0);
+		expect(contentRow?.slice(codeEnd! + BG_RESET.length).startsWith(USER_BG)).toBe(true);
 	});
 
 	it("keeps foreground-only inline code when mdCodeBg is absent", () => {

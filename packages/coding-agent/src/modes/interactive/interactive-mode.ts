@@ -133,7 +133,11 @@ import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
-import { AssistantMessageComponent, shouldRenderHiddenThinkingPlaceholder } from "./components/assistant-message.ts";
+import {
+	AssistantMessageComponent,
+	type AssistantMessageRenderFacts,
+	shouldRenderHiddenThinkingPlaceholder,
+} from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
@@ -203,6 +207,12 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
+function visitComponentTree(component: Component, visitor: (component: Component) => void): void {
+	visitor(component);
+	if (!(component instanceof Container)) return;
+	for (const child of component.children) visitComponentTree(child, visitor);
+}
+
 class ExpandableText extends Text implements Expandable {
 	private readonly getCollapsedText: () => string;
 	private readonly getExpandedText: () => string;
@@ -237,12 +247,28 @@ type CompactionCostNotice = {
 
 type RenderMessageItem = { message: AgentMessage; entryId?: string };
 type RenderSessionItem = RenderMessageItem | Extract<SessionEntry, { type: "custom" }> | CompactionCostNotice;
+type RenderSessionOptions = {
+	updateFooter?: boolean;
+	populateHistory?: boolean;
+	completeLastTurn?: boolean;
+	reusableToolComponents?: ReadonlyMap<string, ToolExecutionComponent>;
+};
 type LiveAssistantRenderEntry = { entryId: string; message: AssistantMessage; streaming: boolean };
+type LiveAssistantRenderSegment = {
+	container: Container;
+	entries: LiveAssistantRenderEntry[];
+	startsAfterVisibleBoundary: boolean;
+};
 type AssistantContent = AssistantMessage["content"][number];
 type AssistantToolCall = Extract<AssistantContent, { type: "toolCall" }>;
 type AssistantRenderAtom =
-	| { type: "visual"; content: Exclude<AssistantContent, { type: "toolCall" }>[] }
-	| { type: "tools"; calls: AssistantToolCall[] };
+	| {
+			type: "visual";
+			content: Exclude<AssistantContent, { type: "toolCall" }>[];
+			ownsTerminalResponse: boolean;
+	  }
+	| { type: "tools"; calls: AssistantToolCall[] }
+	| { type: "terminal" };
 type OpenToolGroupProjection = { groupId: string; nextOrder: number };
 const MAX_COMPLETED_TURN_PREVIEW_BYTES = 4 * 1024;
 const COMPLETED_TURN_PREVIEW_ELLIPSIS = "…";
@@ -338,15 +364,18 @@ function walkAssistantRenderAtoms<T>(
 	handlers: {
 		open(firstCall: AssistantToolCall): T;
 		tool(openToolGroup: T, call: AssistantToolCall): void;
-		visual(content: Exclude<AssistantContent, { type: "toolCall" }>[]): void;
+		visual(content: Exclude<AssistantContent, { type: "toolCall" }>[], ownsTerminalResponse: boolean): void;
 		close(openToolGroup: T): void;
 	},
 ): T | undefined {
 	for (const atom of atoms) {
-		if (atom.type === "visual") {
+		if (atom.type !== "tools") {
 			if (openToolGroup) handlers.close(openToolGroup);
 			openToolGroup = undefined;
-			handlers.visual(atom.content);
+			handlers.visual(
+				atom.type === "visual" ? atom.content : [],
+				atom.type === "terminal" || atom.ownsTerminalResponse,
+			);
 			continue;
 		}
 
@@ -543,6 +572,7 @@ function assistantRenderAtoms(
 	const showHiddenThinkingPlaceholder = shouldRenderHiddenThinkingPlaceholder(message, streaming, hideThinkingBlock);
 	for (const content of message.content) {
 		if (content.type === "text" && !content.text.trim()) continue;
+		if (content.type === "thinking" && !content.thinking.trim()) continue;
 		if (content.type === "thinking" && hideThinkingBlock && !showHiddenThinkingPlaceholder) continue;
 		if (content.type === "toolCall") {
 			const previous = atoms.at(-1);
@@ -556,7 +586,7 @@ function assistantRenderAtoms(
 			if (previous?.type === "visual") {
 				previous.content.push(content);
 			} else {
-				atoms.push({ type: "visual", content: [content] });
+				atoms.push({ type: "visual", content: [content], ownsTerminalResponse: false });
 			}
 		}
 	}
@@ -566,7 +596,20 @@ function assistantRenderAtoms(
 		(message.stopReason === "length" ||
 			(!hasToolCalls && (message.stopReason === "aborted" || message.stopReason === "error")))
 	) {
-		atoms.push({ type: "visual", content: [] });
+		atoms.push({ type: "visual", content: [], ownsTerminalResponse: false });
+	}
+	const ownsTerminalResponse =
+		!streaming &&
+		message.stopReason !== "pending" &&
+		message.stopReason !== "toolUse" &&
+		message.stopReason !== "deferred";
+	if (ownsTerminalResponse) {
+		const lastAtom = atoms.at(-1);
+		if (lastAtom?.type === "tools") {
+			atoms.push({ type: "terminal" });
+		} else if (lastAtom?.type === "visual") {
+			lastAtom.ownsTerminalResponse = true;
+		}
 	}
 	return atoms;
 }
@@ -822,6 +865,10 @@ export class InteractiveMode {
 	private streamingMessage: AssistantMessage | undefined = undefined;
 	private liveRenderContainer: Container | undefined = undefined;
 	private liveAssistantRenderEntries: LiveAssistantRenderEntry[] = [];
+	private liveAssistantRenderSegments: LiveAssistantRenderSegment[] = [];
+	private liveMessageRenderBaseMembers: MessageRenderProjectionMemberV1[] = [];
+	private liveMessageRenderBaseOpenToolGroup: OpenToolGroupProjection | undefined = undefined;
+	private transcriptRebuildPending = false;
 	private liveToolComponents = new Map<string, ToolExecutionComponent>();
 	private messageRenderMembers: MessageRenderProjectionMemberV1[] = [];
 	private publishedCanonicalMessageRenderMembers: MessageRenderProjectionMemberV1[] | undefined = undefined;
@@ -2430,13 +2477,15 @@ export class InteractiveMode {
 
 	private async renderCurrentSessionState(): Promise<void> {
 		this.startFreshMessageRenderScope();
+		this.releaseActiveAgentRunRendering();
+		this.releaseSettledMessageRendering();
+		this.transcriptRebuildPending = false;
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
-		this.pendingTools.clear();
 		await this.renderInitialMessages();
 	}
 
@@ -2477,10 +2526,12 @@ export class InteractiveMode {
 		entryId: string | undefined,
 		streaming: boolean,
 		openToolGroup: ToolGroupComponent | undefined,
-		renderVisual: (message: AssistantMessage, streaming: boolean) => void,
+		renderVisual: (message: AssistantMessage, streaming: boolean, facts: AssistantMessageRenderFacts) => void,
 		getToolComponent: (content: AssistantToolCall) => ToolExecutionComponent,
 	): ToolGroupComponent | undefined {
-		return walkAssistantRenderAtoms(assistantRenderAtoms(message, streaming, this.hideThinkingBlock), openToolGroup, {
+		const atoms = assistantRenderAtoms(message, streaming, this.hideThinkingBlock);
+		const hasToolCalls = message.content.some((content) => content.type === "toolCall");
+		return walkAssistantRenderAtoms(atoms, openToolGroup, {
 			open: (firstCall) => {
 				const groupId = toolGroupId(firstCall.id);
 				const group = new ToolGroupComponent({
@@ -2505,7 +2556,8 @@ export class InteractiveMode {
 					...(entryId ? { ownerEntryId: entryId } : {}),
 				});
 			},
-			visual: (content) => renderVisual({ ...message, content }, streaming),
+			visual: (content, ownsTerminalResponse) =>
+				renderVisual({ ...message, content }, streaming, { hasToolCalls, ownsTerminalResponse }),
 			close: () => {},
 		});
 	}
@@ -2542,19 +2594,28 @@ export class InteractiveMode {
 		return component;
 	}
 
-	private renderLiveAssistantEntries(): void {
-		const container = this.liveRenderContainer;
-		if (!container) return;
-		container.clear();
+	private startLiveAssistantRenderSegment(
+		entries: LiveAssistantRenderEntry[] = [],
+		startsAfterVisibleBoundary = false,
+	): void {
+		const container = new Container();
+		this.chatContainer.addChild(container);
+		this.liveRenderContainer = container;
+		this.liveAssistantRenderEntries = entries;
+		this.liveAssistantRenderSegments.push({ container, entries, startsAfterVisibleBoundary });
+	}
+
+	private renderLiveAssistantSegment(segment: LiveAssistantRenderSegment): void {
+		segment.container.clear();
 		let openToolGroup: ToolGroupComponent | undefined;
-		for (const { entryId, message, streaming } of this.liveAssistantRenderEntries) {
+		for (const { entryId, message, streaming } of segment.entries) {
 			openToolGroup = this.renderAssistantAtoms(
-				container,
+				segment.container,
 				message,
 				entryId,
 				streaming,
 				openToolGroup,
-				(visualMessage, isStreaming) => {
+				(visualMessage, isStreaming, facts) => {
 					const component = new AssistantMessageComponent(
 						undefined,
 						this.hideThinkingBlock,
@@ -2567,12 +2628,65 @@ export class InteractiveMode {
 							decorators: this.getMessageRenderBoundaryDecoratorsV1(),
 						},
 					);
-					component.updateContent(visualMessage, isStreaming);
-					container.addChild(component);
+					component.updateContent(visualMessage, isStreaming, facts);
+					segment.container.addChild(component);
 				},
 				(content) => this.getLiveToolComponent(content, entryId),
 			);
 		}
+	}
+
+	private renderLiveAssistantEntries(): void {
+		for (const segment of this.liveAssistantRenderSegments) this.renderLiveAssistantSegment(segment);
+	}
+
+	private recomposeLiveAssistantRendering(): void {
+		let committedMembers = [...this.liveMessageRenderBaseMembers];
+		let committedOpenToolGroup = this.liveMessageRenderBaseOpenToolGroup
+			? { ...this.liveMessageRenderBaseOpenToolGroup }
+			: undefined;
+		let renderedMembers = committedMembers;
+		let renderedOpenToolGroup = committedOpenToolGroup;
+		let finalized: MessageRenderFinalizedEntryV1 | undefined;
+		let hasStreamingEntry = false;
+		for (const segment of this.liveAssistantRenderSegments) {
+			if (segment.startsAfterVisibleBoundary) {
+				if (committedOpenToolGroup) {
+					committedMembers = closeToolGroups(committedMembers, [committedOpenToolGroup.groupId]);
+					committedOpenToolGroup = undefined;
+				}
+				if (renderedOpenToolGroup) {
+					renderedMembers = closeToolGroups(renderedMembers, [renderedOpenToolGroup.groupId]);
+					renderedOpenToolGroup = undefined;
+				}
+			}
+			for (const entry of segment.entries) {
+				const projection = messageRenderProjectionMembers(
+					entry.entryId,
+					entry.message,
+					renderedOpenToolGroup,
+					entry.streaming,
+					this.hideThinkingBlock,
+				);
+				renderedMembers = closeToolGroups(
+					[...renderedMembers, ...projection.members],
+					projection.closedToolGroupIds,
+				);
+				renderedOpenToolGroup = projection.openToolGroup;
+				if (entry.streaming) {
+					hasStreamingEntry = true;
+				} else {
+					committedMembers = renderedMembers;
+					committedOpenToolGroup = renderedOpenToolGroup;
+					finalized = { entryId: entry.entryId, message: entry.message };
+				}
+			}
+		}
+		this.messageRenderMembers = committedMembers;
+		this.messageRenderOpenToolGroup = committedOpenToolGroup;
+		this.publishedStreamingMessageRenderMembers = hasStreamingEntry ? renderedMembers : undefined;
+		this.publishMessageRenderProjectionV1(renderedMembers, "replace", finalized);
+		this.renderLiveAssistantEntries();
 	}
 
 	private updateLiveAssistantEntry(entryId: string, message: AssistantMessage, streaming: boolean): void {
@@ -2663,6 +2777,9 @@ export class InteractiveMode {
 	private releaseSettledMessageRendering(): void {
 		this.liveRenderContainer = undefined;
 		this.liveAssistantRenderEntries = [];
+		this.liveAssistantRenderSegments = [];
+		this.liveMessageRenderBaseMembers = [];
+		this.liveMessageRenderBaseOpenToolGroup = undefined;
 		this.liveToolComponents.clear();
 		this.messageRenderOpenToolGroup = undefined;
 	}
@@ -2797,11 +2914,11 @@ export class InteractiveMode {
 
 	private setHiddenThinkingLabel(label?: string): void {
 		this.hiddenThinkingLabel = label ?? this.defaultHiddenThinkingLabel;
-		for (const child of this.chatContainer.children) {
-			if (child instanceof AssistantMessageComponent) {
-				child.setHiddenThinkingLabel(this.hiddenThinkingLabel);
+		this.visitRenderedComponents((component) => {
+			if (component instanceof AssistantMessageComponent) {
+				component.setHiddenThinkingLabel(this.hiddenThinkingLabel);
 			}
-		}
+		});
 		if (this.streamingComponent) {
 			this.streamingComponent.setHiddenThinkingLabel(this.hiddenThinkingLabel);
 		}
@@ -4120,14 +4237,19 @@ export class InteractiveMode {
 				if (event.entry.type === "custom") {
 					const component = this.createCustomEntryComponent(event.entry);
 					if (component) {
-						if (this.messageRenderOpenToolGroup) {
-							const closedGroupId = this.messageRenderOpenToolGroup.groupId;
-							this.messageRenderOpenToolGroup = undefined;
-							this.messageRenderMembers = closeToolGroups(this.messageRenderMembers, [closedGroupId]);
-							this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
-							this.renderLiveAssistantEntries();
+						if (this.liveRenderContainer) {
+							this.insertCustomEntryDuringLiveAssistant(component);
+							this.recomposeLiveAssistantRendering();
+						} else {
+							if (this.messageRenderOpenToolGroup) {
+								const closedGroupId = this.messageRenderOpenToolGroup.groupId;
+								this.messageRenderOpenToolGroup = undefined;
+								this.messageRenderMembers = closeToolGroups(this.messageRenderMembers, [closedGroupId]);
+								this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+								this.renderLiveAssistantEntries();
+							}
+							this.addCustomEntryComponent(component);
 						}
-						this.addCustomEntryComponent(component);
 					}
 					this.ui.requestRender();
 				}
@@ -4163,6 +4285,9 @@ export class InteractiveMode {
 						this.renderLiveAssistantEntries();
 						this.liveRenderContainer = undefined;
 						this.liveAssistantRenderEntries = [];
+						this.liveAssistantRenderSegments = [];
+						this.liveMessageRenderBaseMembers = [];
+						this.liveMessageRenderBaseOpenToolGroup = undefined;
 						this.liveToolComponents.clear();
 					}
 					this.addMessageToChat(event.message, { entryId: event.entryId });
@@ -4171,8 +4296,13 @@ export class InteractiveMode {
 					else this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
 					if (!this.liveRenderContainer) {
-						this.liveRenderContainer = new Container();
-						this.chatContainer.addChild(this.liveRenderContainer);
+						if (this.liveAssistantRenderSegments.length === 0) {
+							this.liveMessageRenderBaseMembers = [...this.messageRenderMembers];
+							this.liveMessageRenderBaseOpenToolGroup = this.messageRenderOpenToolGroup
+								? { ...this.messageRenderOpenToolGroup }
+								: undefined;
+						}
+						this.startLiveAssistantRenderSegment();
 					}
 					this.streamingMessage = event.message;
 					this.publishStreamingMessageRenderProjectionV1(event.entryId, this.streamingMessage);
@@ -4325,6 +4455,7 @@ export class InteractiveMode {
 				}
 				this.releaseActiveAgentRunRendering();
 				this.releaseSettledMessageRendering();
+				if (this.transcriptRebuildPending) await this.rebuildChatFromMessages();
 				await this.checkShutdownRequested();
 				break;
 
@@ -4358,29 +4489,27 @@ export class InteractiveMode {
 						this.showStatus("Auto-compaction cancelled");
 					}
 				} else if (event.result) {
-					const entries = this.sessionManager.buildContextEntries();
-					if (entries[0]?.type !== "compaction") {
+					const result = event.result;
+					const contextEntries = this.sessionManager.buildContextEntries();
+					if (contextEntries[0]?.type !== "compaction") {
 						throw new Error("Completed compaction is missing from the session context");
 					}
 					this.releaseSettledMessageRendering();
-					this.startFreshMessageRenderScope();
-					this.chatContainer.clear();
-					// The latest compaction is prepended for model context; append it below at its chronological position.
-					await this.renderSessionEntries(entries.slice(1));
-					this.addMessageToChat(
-						createCompactionSummaryMessage(
-							event.result.summary,
-							event.result.tokensBefore,
-							new Date().toISOString(),
-						),
-					);
-					if (event.result.usage) {
-						this.addCompactionCostNotice({
-							type: "compaction_cost",
-							kind: "compaction",
-							usage: event.result.usage,
-						});
-					}
+					await this.rebuildChatFromMessages({
+						freshTranscriptRender: true,
+						afterRender: () => {
+							this.addMessageToChat(
+								createCompactionSummaryMessage(result.summary, result.tokensBefore, new Date().toISOString()),
+							);
+							if (result.usage) {
+								this.addCompactionCostNotice({
+									type: "compaction_cost",
+									kind: "compaction",
+									usage: result.usage,
+								});
+							}
+						},
+					});
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
 					if (event.reason === "manual") {
@@ -4511,6 +4640,28 @@ export class InteractiveMode {
 		return component;
 	}
 
+	private insertCustomEntryDuringLiveAssistant(component: CustomEntryComponent): void {
+		const container = this.liveRenderContainer;
+		const activeSegment = this.liveAssistantRenderSegments.at(-1);
+		if (!container || activeSegment?.container !== container) {
+			this.addCustomEntryComponent(component);
+			return;
+		}
+
+		const streamingEntries = activeSegment.entries.filter((entry) => entry.streaming);
+		activeSegment.entries = activeSegment.entries.filter((entry) => !entry.streaming);
+		this.renderLiveAssistantSegment(activeSegment);
+		if (activeSegment.entries.length === 0) {
+			this.chatContainer.removeChild(container);
+			this.liveAssistantRenderSegments.pop();
+		}
+
+		this.liveRenderContainer = undefined;
+		this.liveAssistantRenderEntries = [];
+		this.addCustomEntryComponent(component);
+		this.startLiveAssistantRenderSegment(streamingEntries, true);
+	}
+
 	private addCustomEntryComponent(component: CustomEntryComponent): void {
 		if (this.streamingComponent) {
 			const streamingIndex = this.chatContainer.children.indexOf(this.streamingComponent);
@@ -4524,11 +4675,21 @@ export class InteractiveMode {
 		if (this.liveRenderContainer && !this.streamingMessage) {
 			this.liveRenderContainer = undefined;
 			this.liveAssistantRenderEntries = [];
+			this.liveAssistantRenderSegments = [];
+			this.liveMessageRenderBaseMembers = [];
+			this.liveMessageRenderBaseOpenToolGroup = undefined;
 			this.liveToolComponents.clear();
 		}
 	}
 
-	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean; entryId?: string }): void {
+	private addMessageToChat(
+		message: AgentMessage,
+		options?: {
+			populateHistory?: boolean;
+			entryId?: string;
+			assistantRenderFacts?: AssistantMessageRenderFacts;
+		},
+	): void {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
@@ -4621,7 +4782,7 @@ export class InteractiveMode {
 			}
 			case "assistant": {
 				const assistantComponent = new AssistantMessageComponent(
-					message,
+					options?.assistantRenderFacts ? undefined : message,
 					this.hideThinkingBlock,
 					this.getMarkdownThemeWithSettings(),
 					this.hiddenThinkingLabel,
@@ -4634,6 +4795,9 @@ export class InteractiveMode {
 							}
 						: undefined,
 				);
+				if (options?.assistantRenderFacts) {
+					assistantComponent.updateContent(message, false, options.assistantRenderFacts);
+				}
 				this.chatContainer.addChild(assistantComponent);
 				break;
 			}
@@ -4649,7 +4813,7 @@ export class InteractiveMode {
 
 	private async renderSessionItems(
 		items: readonly RenderSessionItem[],
-		options: { updateFooter?: boolean; populateHistory?: boolean; completeLastTurn?: boolean } = {},
+		options: RenderSessionOptions = {},
 	): Promise<void> {
 		this.pendingTools.clear();
 		let messageMembers: MessageRenderProjectionMemberV1[] = [];
@@ -4727,28 +4891,33 @@ export class InteractiveMode {
 					entryId,
 					false,
 					openToolGroupComponent,
-					(visualMessage) => this.addMessageToChat(visualMessage, { entryId }),
+					(visualMessage, _streaming, facts) =>
+						this.addMessageToChat(visualMessage, { entryId, assistantRenderFacts: facts }),
 					(content) => {
-						const component = new ToolExecutionComponent(
-							content.name,
-							content.id,
-							content.arguments,
-							{
-								showImages: this.settingsManager.getShowImages(),
-								imageWidthCells: this.settingsManager.getImageWidthCells(),
-								ownerEntryId: entryId,
-								semanticDecorators: this.getMessageRenderBoundaryDecoratorsV1(),
-								semanticSelectorsV2: this.getMessageRenderBoundarySelectorsV2?.() ?? [],
-								semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3?.() ?? [],
-								producerSessionId: this.sessionManager.getSessionId?.() ?? "unknown-session",
-								renderScopeId: this.messageRenderScopeId,
-								presentationOverrides: this.getToolPresentationOverridesV1(),
-								toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
-							},
-							this.getRegisteredToolDefinition(content.name),
-							this.ui,
-							this.sessionManager.getCwd(),
-						);
+						const reusableComponent = options.reusableToolComponents?.get(content.id);
+						const component =
+							reusableComponent ??
+							new ToolExecutionComponent(
+								content.name,
+								content.id,
+								content.arguments,
+								{
+									showImages: this.settingsManager.getShowImages(),
+									imageWidthCells: this.settingsManager.getImageWidthCells(),
+									ownerEntryId: entryId,
+									semanticDecorators: this.getMessageRenderBoundaryDecoratorsV1(),
+									semanticSelectorsV2: this.getMessageRenderBoundarySelectorsV2?.() ?? [],
+									semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3?.() ?? [],
+									producerSessionId: this.sessionManager.getSessionId?.() ?? "unknown-session",
+									renderScopeId: this.messageRenderScopeId,
+									presentationOverrides: this.getToolPresentationOverridesV1(),
+									toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
+								},
+								this.getRegisteredToolDefinition(content.name),
+								this.ui,
+								this.sessionManager.getCwd(),
+							);
+						if (reusableComponent) reusableComponent.updateArgs(content.arguments);
 						component.setExpanded(this.toolOutputExpanded);
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
@@ -4799,10 +4968,7 @@ export class InteractiveMode {
 	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
 	 */
-	private async renderSessionEntries(
-		entries: SessionEntry[],
-		options: { updateFooter?: boolean; populateHistory?: boolean; completeLastTurn?: boolean } = {},
-	): Promise<void> {
+	private async renderSessionEntries(entries: SessionEntry[], options: RenderSessionOptions = {}): Promise<void> {
 		const items = entries.flatMap((entry): RenderSessionItem[] => {
 			if (entry.type === "custom") {
 				return [entry];
@@ -4921,12 +5087,23 @@ export class InteractiveMode {
 		this.messageRenderScopeId = crypto.randomUUID();
 	}
 
-	private async rebuildChatFromMessages(options?: { freshTranscriptRender?: boolean }): Promise<void> {
+	private async rebuildChatFromMessages(options?: {
+		freshTranscriptRender?: boolean;
+		afterRender?: () => void;
+		reusableToolComponents?: ReadonlyMap<string, ToolExecutionComponent>;
+	}): Promise<void> {
+		if (this.liveRenderContainer || this.streamingComponent || this.streamingMessage) {
+			this.transcriptRebuildPending = true;
+			return;
+		}
 		if (options?.freshTranscriptRender) this.startFreshMessageRenderScope();
 		this.chatContainer.clear();
 		await this.renderSessionEntries(this.sessionManager.buildTranscriptEntries(), {
 			completeLastTurn: this.session.isIdle,
+			reusableToolComponents: options?.reusableToolComponents,
 		});
+		options?.afterRender?.();
+		this.transcriptRebuildPending = false;
 	}
 
 	// =========================================================================
@@ -5212,33 +5389,56 @@ export class InteractiveMode {
 		this.setToolsExpanded(!this.toolOutputExpanded);
 	}
 
+	private visitRenderedComponents(visitor: (component: Component) => void): void {
+		for (const root of [this.loadedResourcesContainer, this.chatContainer]) {
+			for (const child of root.children) visitComponentTree(child, visitor);
+		}
+	}
+
+	private collectRenderedToolComponents(): Map<string, ToolExecutionComponent> {
+		const components = new Map<string, ToolExecutionComponent>();
+		for (const child of this.chatContainer.children) {
+			visitComponentTree(child, (component) => {
+				if (component instanceof ToolExecutionComponent) {
+					components.set(component.getToolCallId(), component);
+				}
+			});
+		}
+		return components;
+	}
+
+	private setRenderedToolImagesVisible(visible: boolean): void {
+		this.visitRenderedComponents((component) => {
+			if (component instanceof ToolExecutionComponent) component.setShowImages(visible);
+		});
+	}
+
+	private setRenderedToolImageWidth(width: number): void {
+		this.visitRenderedComponents((component) => {
+			if (component instanceof ToolExecutionComponent) component.setImageWidthCells(width);
+		});
+	}
+
 	private setToolsExpanded(expanded: boolean): void {
 		if (expanded === this.toolOutputExpanded) return;
 
 		this.toolOutputExpanded = expanded;
 		const activeHeader = this.customHeader ?? this.builtInHeader;
-		if (isExpandable(activeHeader)) {
-			activeHeader.setExpanded(expanded);
-		}
-		for (const container of [this.loadedResourcesContainer, this.chatContainer]) {
-			for (const child of container.children) {
-				if (isExpandable(child)) {
-					child.setExpanded(expanded);
-				}
-			}
-		}
+		if (isExpandable(activeHeader)) activeHeader.setExpanded(expanded);
+		this.visitRenderedComponents((component) => {
+			if (isExpandable(component)) component.setExpanded(expanded);
+		});
 		this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
 	}
 
-	/** Update rendered assistant messages without rebuilding live tool components. */
-	private updateThinkingBlockVisibility(): void {
-		for (const child of this.chatContainer.children) {
-			if (child instanceof AssistantMessageComponent) {
-				child.setHideThinkingBlock(this.hideThinkingBlock);
-			}
-		}
+	/** Recompose assistant atoms because thinking visibility defines Tool Group boundaries. */
+	private async updateThinkingBlockVisibility(): Promise<void> {
 		if (this.liveRenderContainer) {
-			this.renderLiveAssistantEntries();
+			this.recomposeLiveAssistantRendering();
+		} else if (this.streamingComponent) {
+			this.streamingComponent.setHideThinkingBlock(this.hideThinkingBlock);
+		} else {
+			await this.rebuildChatFromMessages({ reusableToolComponents: this.collectRenderedToolComponents() });
 		}
 		this.ui.requestRender();
 	}
@@ -5246,7 +5446,7 @@ export class InteractiveMode {
 	private toggleThinkingBlockVisibility(): void {
 		this.hideThinkingBlock = !this.hideThinkingBlock;
 		this.settingsManager.setHideThinkingBlock(this.hideThinkingBlock);
-		this.updateThinkingBlockVisibility();
+		void this.updateThinkingBlockVisibility();
 		this.showStatus(`Thinking blocks: ${this.hideThinkingBlock ? "hidden" : "visible"}`);
 	}
 
@@ -5613,19 +5813,11 @@ export class InteractiveMode {
 					},
 					onShowImagesChange: (enabled) => {
 						this.settingsManager.setShowImages(enabled);
-						for (const child of this.chatContainer.children) {
-							if (child instanceof ToolExecutionComponent) {
-								child.setShowImages(enabled);
-							}
-						}
+						this.setRenderedToolImagesVisible(enabled);
 					},
 					onImageWidthCellsChange: (width) => {
 						this.settingsManager.setImageWidthCells(width);
-						for (const child of this.chatContainer.children) {
-							if (child instanceof ToolExecutionComponent) {
-								child.setImageWidthCells(width);
-							}
-						}
+						this.setRenderedToolImageWidth(width);
 					},
 					onAutoResizeImagesChange: (enabled) => {
 						this.settingsManager.setImageAutoResize(enabled);
@@ -5681,7 +5873,7 @@ export class InteractiveMode {
 					onHideThinkingBlockChange: (hidden) => {
 						this.hideThinkingBlock = hidden;
 						this.settingsManager.setHideThinkingBlock(hidden);
-						this.updateThinkingBlockVisibility();
+						void this.updateThinkingBlockVisibility();
 					},
 					onMermaidRenderingModeChange: (mode) => {
 						this.settingsManager.setMermaidRenderingMode(mode);

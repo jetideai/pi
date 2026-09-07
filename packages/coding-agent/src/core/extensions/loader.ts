@@ -33,6 +33,8 @@ import { readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type {
+	AssistantRenderBoundaryDecoratorV1,
+	AssistantRenderProjectionObserverV1,
 	EntryRenderer,
 	Extension,
 	ExtensionAPI,
@@ -356,6 +358,12 @@ function createExtensionAPI(
 			extension.messageRenderBoundaryDecoratorV1 = decorator;
 		},
 
+		registerAssistantRenderBoundaryDecoratorV1(decorator: AssistantRenderBoundaryDecoratorV1): void {
+			runtime.assertActive();
+			extension.messageRenderBoundaryDecoratorV1 = (context) =>
+				context.role === "assistant" ? decorator(context) : undefined;
+		},
+
 		registerMessageRenderBoundarySelectorV2(selector: MessageRenderBoundarySelectorV2): void {
 			runtime.assertActive();
 			extension.messageRenderBoundarySelectorV2 = selector;
@@ -379,6 +387,19 @@ function createExtensionAPI(
 		registerMessageRenderProjectionObserverV1(observer: MessageRenderProjectionObserverV1): void {
 			runtime.assertActive();
 			extension.messageRenderProjectionObserverV1 = observer;
+		},
+
+		registerAssistantRenderProjectionObserverV1(observer: AssistantRenderProjectionObserverV1): void {
+			runtime.assertActive();
+			extension.messageRenderProjectionObserverV1 = (projection) => {
+				observer(
+					Object.freeze({
+						entryIds: Object.freeze(
+							projection.members.filter((member) => member.role === "assistant").map((member) => member.entryId),
+						),
+					}),
+				);
+			};
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {

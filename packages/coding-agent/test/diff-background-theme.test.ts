@@ -1,10 +1,14 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { renderDiff } from "../src/modes/interactive/components/diff.ts";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { loadThemeFromPath, setThemeInstance, type Theme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 const ADDED_BG = "\x1b[48;2;10;58;10m";
 const REMOVED_BG = "\x1b[48;2;58;10;10m";
@@ -190,6 +194,36 @@ describe("renderDiff with diff background tokens", () => {
 			expect(content).not.toContain("\x1b[38;");
 			expect(content).not.toContain("\x1b[39m");
 		}
+	});
+});
+
+describe("diff backgrounds inside a Tool Call", () => {
+	it("restores the enclosing success background after each nested diff tint", () => {
+		const loadedTheme = loadTheme(backgroundThemeJson("diff-bg-tool-component"));
+		setThemeInstance(loadedTheme);
+		const component = new ToolExecutionComponent(
+			"edit",
+			"tool-edit-background",
+			{ path: "notes.txt", edits: [{ oldText: "before", newText: "after" }] },
+			{},
+			createEditToolDefinition(process.cwd()),
+			{ requestRender: () => {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "edited" }],
+				details: { diff: "-1 before\n+1 after", patch: "", firstChangedLine: 1 },
+				isError: false,
+			},
+			false,
+		);
+
+		const diffRows = component.render(80).filter((line) => stripAnsi(line).includes("after"));
+		const successBg = loadedTheme.getBgAnsi("toolSuccessBg");
+
+		expect(diffRows).toHaveLength(1);
+		expect(diffRows[0]).toContain(`${BG_RESET}${successBg}`);
 	});
 });
 

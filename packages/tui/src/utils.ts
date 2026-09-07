@@ -1034,8 +1034,18 @@ export function applyBackgroundToLine(line: string, width: number, bgFn: (text: 
 	const paddingNeeded = Math.max(0, width - visibleLen);
 	const padding = " ".repeat(paddingNeeded);
 
-	// Apply background to content + padding
+	// Apply background to content + padding. If nested content resets only its
+	// background, restore the Box background before subsequent text/padding.
 	const withPadding = line + padding;
+	const backgroundReset = "\x1b[49m";
+	const emptySample = bgFn("");
+	const resetIndex = emptySample.lastIndexOf(backgroundReset);
+	if (resetIndex >= 0 && resetIndex + backgroundReset.length === emptySample.length) {
+		const backgroundPrefix = emptySample.slice(0, resetIndex);
+		if (backgroundPrefix) {
+			return bgFn(withPadding.replaceAll(backgroundReset, `${backgroundReset}${backgroundPrefix}`));
+		}
+	}
 	return bgFn(withPadding);
 }
 

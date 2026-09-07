@@ -1619,26 +1619,32 @@ pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
 
 If a transformer throws, Pi keeps the Markdown produced so far and continues with the next transformer. The hook is display-only: the original message remains unchanged in the session and model context. It runs for new user messages, assistant streaming updates, restored session messages, and terminal width changes, so transformers should remain synchronous and inexpensive.
 
-### pi.registerAssistantRenderBoundaryDecoratorV1(decorator)
+### pi.registerMessageRenderBoundaryDecoratorV1(decorator)
 
-Register synchronous terminal controls around the completed built-in assistant render. This
-hook observes stock rendering. It cannot replace text, add rows, or change the session.
+Register synchronous terminal controls around built-in user, assistant, Tool Call, and Tool Group
+renders. This hook observes stock rendering. It cannot replace text or change the session. A terminal assistant
+response may reserve host-owned rows for actions without changing its stock content.
 
 The context contains:
 
-- `entryId` — the persisted message entry ID;
-- `state` — `"streaming"` or `"final"`;
+- `entryId` — the persisted message entry ID, Tool Call ID, or synthetic Tool Group ID;
+- `role` — `"user"`, `"assistant"`, `"tool"`, or `"tool-group"`;
+- `state` — `"streaming"`, `"final"`, `"collapsed"`, or `"expanded"`, according to the rendered component;
+- `ownerEntryId` — the optional persisted assistant entry ID that owns a Tool Call render;
+- `outputPad` — the horizontal output padding configured for this render;
 - `allocatedColumns` — the half-open range `[0, width)` passed to the stock component;
 - `stockRows` — the half-open range `[0, rowCount)` returned by the stock component.
 
-Return optional `prefix` and `suffix` strings. Each string must contain only supported ANSI
-OSC or CSI controls. Pi rejects text, line breaks, combining characters, and unsupported
-controls. It adds the prefix to the first stock row and the suffix to the last stock row.
-Empty assistant output is not decorated.
+Return optional `prefix` and `suffix` strings and `reservedRows`. Each control string must contain
+only supported ANSI OSC or CSI controls. Pi rejects text, line breaks, combining characters, and
+unsupported controls. It adds the prefix to the first stock row and the suffix to the last stock
+row. `reservedRows` must be a non-negative safe integer; Pi currently permits at most one reserved
+row owned by a terminal assistant response. For empty assistant stock output, Pi does not apply
+`prefix` or `suffix`, but `reservedRows` may still create that terminal-owned row.
 
 ```typescript
-pi.registerAssistantRenderBoundaryDecoratorV1(({ entryId, state, allocatedColumns, stockRows }) => {
-  const metadata = JSON.stringify({ entryId, state, allocatedColumns, stockRows });
+pi.registerMessageRenderBoundaryDecoratorV1(({ entryId, role, state, allocatedColumns, stockRows }) => {
+  const metadata = JSON.stringify({ entryId, role, state, allocatedColumns, stockRows });
   return {
     prefix: `\u001b]7799;begin;${metadata}\u0007`,
     suffix: `\u001b]7799;end;${metadata}\u0007`,
@@ -1649,24 +1655,30 @@ pi.registerAssistantRenderBoundaryDecoratorV1(({ entryId, state, allocatedColumn
 Decorators run in extension load order. Suffixes close in reverse order. If one decorator
 throws or returns invalid controls, Pi ignores that result and preserves the stock render.
 The hook runs during streaming, resize, repaint, and restored-session rendering. Keep it
-fast and do not perform blocking work.
+fast and do not perform blocking work. The deprecated
+`registerAssistantRenderBoundaryDecoratorV1()` alias remains available and filters out user renders.
 
-### pi.registerAssistantRenderProjectionObserverV1(observer)
+### pi.registerMessageRenderProjectionObserverV1(observer)
 
-Register a synchronous observer for the complete assistant membership selected by one
-interactive transcript render. The observer receives the persisted `entryIds` in render
-order after Pi has built the complete active set. Pi does not infer this set from terminal
-controls or from session history.
+Register a synchronous observer for the complete supported-message membership selected by one
+interactive transcript render. The observer receives `members` in render order, the projection
+`mode` (`"append"` or `"replace"`), and an optional finalized entry. Members identify user,
+assistant, Tool Group, and Tool Call renders. Pi does not infer this set from terminal controls
+or from session history.
 
 ```typescript
-pi.registerAssistantRenderProjectionObserverV1(({ entryIds }) => {
-  publishProjection(entryIds);
+pi.registerMessageRenderProjectionObserverV1(({ members, mode, finalized }) => {
+  publishProjection({ members, mode, finalized });
 });
 ```
 
 Observers run in extension load order. Pi isolates observer failures and preserves stock
-transcript rendering. Keep the observer synchronous and non-blocking. Use the assistant
-boundary decorator to correlate terminal controls with a published entry ID.
+transcript rendering. Keep the observer synchronous and non-blocking. Use the message boundary
+decorator to correlate terminal controls with published entry IDs.
+
+The deprecated `registerAssistantRenderProjectionObserverV1()` alias remains available for
+extensions using the previous documented shape. It receives `{ entryIds }` containing assistant
+message IDs only.
 
 ### pi.registerEntryRenderer(customType, renderer)
 

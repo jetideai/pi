@@ -110,7 +110,7 @@ export function decorateMessageRender(
 	options?: MessageRenderBoundaryOptionsV1,
 	maximumReservedRows = 0,
 ): string[] {
-	if (!options || options.decorators.length === 0 || lines.length === 0) return lines;
+	if (!options || options.decorators.length === 0) return lines;
 
 	const context = Object.freeze({
 		entryId: options.entryId,
@@ -136,8 +136,10 @@ export function decorateMessageRender(
 		}
 	}
 
-	lines[0] = prefixes.join("") + lines[0];
-	lines[lines.length - 1] += suffixes.join("");
+	if (lines.length > 0) {
+		lines[0] = prefixes.join("") + lines[0];
+		lines[lines.length - 1] += suffixes.join("");
+	}
 	for (let row = 0; row < Math.min(reservedRows, maximumReservedRows); row++) {
 		lines.push(" ".repeat(width));
 	}

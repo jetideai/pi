@@ -9,6 +9,11 @@ const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
+export interface AssistantMessageRenderFacts {
+	hasToolCalls: boolean;
+	ownsTerminalResponse: boolean;
+}
+
 export function shouldRenderHiddenThinkingPlaceholder(
 	message: AssistantMessage,
 	streaming: boolean,
@@ -37,6 +42,7 @@ export class AssistantMessageComponent extends Container {
 	private hasToolCalls = false;
 	private isStreaming = false;
 	private isTerminalResponse = false;
+	private renderFacts: AssistantMessageRenderFacts | undefined;
 
 	constructor(
 		message?: AssistantMessage,
@@ -95,11 +101,14 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): string[] {
 		const lines = super.render(width);
-		if (lines.length === 0) {
+		if (
+			lines.length === 0 &&
+			!(this.renderFacts?.ownsTerminalResponse && this.hasToolCalls && this.isTerminalResponse)
+		) {
 			return lines;
 		}
 
-		if (!this.hasToolCalls) {
+		if (!this.hasToolCalls && lines.length > 0) {
 			lines[0] = OSC133_ZONE_START + lines[0];
 			lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
 		}
@@ -115,10 +124,17 @@ export class AssistantMessageComponent extends Container {
 		);
 	}
 
-	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
+	updateContent(
+		message: AssistantMessage,
+		isStreaming = this.isStreaming,
+		renderFacts: AssistantMessageRenderFacts | undefined = this.renderFacts,
+	): void {
 		this.lastMessage = message;
 		this.isStreaming = isStreaming;
+		this.renderFacts = renderFacts;
+		const ownsTerminalResponse = renderFacts?.ownsTerminalResponse ?? true;
 		this.isTerminalResponse =
+			ownsTerminalResponse &&
 			!isStreaming &&
 			message.stopReason !== "pending" &&
 			message.stopReason !== "toolUse" &&
@@ -216,8 +232,9 @@ export class AssistantMessageComponent extends Container {
 		// Check if incomplete/failed - show after partial content.
 		// For aborted/error tool calls, tool execution components show the error.
 		// Length stops can happen before a tool call is complete, so surface them here too.
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
+		const hasToolCalls = renderFacts?.hasToolCalls ?? message.content.some((c) => c.type === "toolCall");
 		this.hasToolCalls = hasToolCalls;
+		if (!ownsTerminalResponse) return;
 		if (message.stopReason === "length") {
 			this.contentContainer.addChild(new Spacer(1));
 			this.contentContainer.addChild(
