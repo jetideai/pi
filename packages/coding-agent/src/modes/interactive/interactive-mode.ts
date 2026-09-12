@@ -76,6 +76,11 @@ import type {
 	ExtensionWidgetOptions,
 	MarkdownTransformer,
 	MessageRenderBoundaryDecoratorV1,
+	MessageRenderBoundarySelectorV3,
+	MessageRenderFinalizedEntryV1,
+	MessageRenderProjectionMemberV1,
+	MessageRenderProjectionObserverV1,
+	MessageRenderProjectionV1,
 	ProjectTrustContext,
 	ToolExecutionPresentationSelectorV1,
 	WorkingIndicatorOptions,
@@ -115,6 +120,7 @@ import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-
 import { createChatViewport } from "./chat-viewport.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
+import { type AssistantToolCall, composeAssistantResponse } from "./components/assistant-response.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
@@ -151,6 +157,8 @@ import {
 } from "./components/status-indicator.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
+import { ToolGroupComponent } from "./components/tool-group.ts";
+import { buildMessageRenderProjection, publishMessageRenderProjection } from "./components/transcript-projection.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -249,6 +257,52 @@ function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionE
 
 function isCompactionCostNotice(item: RenderSessionItem): item is CompactionCostNotice {
 	return "type" in item && item.type === "compaction_cost";
+}
+
+function sameProjectionMember(
+	left: Readonly<MessageRenderProjectionMemberV1>,
+	right: Readonly<MessageRenderProjectionMemberV1>,
+): boolean {
+	return (
+		left.entryId === right.entryId &&
+		left.blockId === right.blockId &&
+		left.role === right.role &&
+		("ownerEntryId" in left ? left.ownerEntryId : undefined) ===
+			("ownerEntryId" in right ? right.ownerEntryId : undefined) &&
+		("groupId" in left ? left.groupId : undefined) === ("groupId" in right ? right.groupId : undefined) &&
+		("groupOrder" in left ? left.groupOrder : undefined) === ("groupOrder" in right ? right.groupOrder : undefined) &&
+		("groupClosed" in left ? left.groupClosed : undefined) ===
+			("groupClosed" in right ? right.groupClosed : undefined)
+	);
+}
+
+function isProjectionPrefix(
+	prefix: readonly Readonly<MessageRenderProjectionMemberV1>[],
+	members: readonly MessageRenderProjectionMemberV1[],
+): boolean {
+	return (
+		prefix.length <= members.length && prefix.every((member, index) => sameProjectionMember(member, members[index]!))
+	);
+}
+
+function isTerminalAssistant(message: AssistantMessage): boolean {
+	return message.stopReason !== "pending" && message.stopReason !== "toolUse" && message.stopReason !== "deferred";
+}
+
+function sameProjection(
+	left: Readonly<MessageRenderProjectionV1> | undefined,
+	right: Readonly<MessageRenderProjectionV1>,
+): boolean {
+	return (
+		left !== undefined &&
+		left.members.length === right.members.length &&
+		left.members.every((member, index) => {
+			const other = right.members[index]!;
+			if (!sameProjectionMember(member, other)) return false;
+			if (member.role !== "user" || other.role !== "user") return true;
+			return JSON.stringify(member.completedTurn) === JSON.stringify(other.completedTurn);
+		})
+	);
 }
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
@@ -440,6 +494,11 @@ export class InteractiveMode {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
+	private semanticStreamingContainer: Container | undefined;
+	private semanticStreamingBaseMemberCount = 0;
+	private messageRenderMembers: MessageRenderProjectionMemberV1[] = [];
+	private publishedMessageRenderProjection: Readonly<MessageRenderProjectionV1> | undefined;
+	private messageRenderScopeId = crypto.randomUUID();
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -2017,7 +2076,11 @@ export class InteractiveMode {
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
+		this.semanticStreamingContainer = undefined;
 		this.pendingTools.clear();
+		this.messageRenderMembers = [];
+		this.publishedMessageRenderProjection = undefined;
+		this.messageRenderScopeId = crypto.randomUUID();
 		this.renderInitialMessages();
 	}
 
@@ -2042,6 +2105,116 @@ export class InteractiveMode {
 
 	private getToolExecutionPresentationSelectorsV1(): ToolExecutionPresentationSelectorV1[] {
 		return this.session.extensionRunner.getToolExecutionPresentationSelectorsV1();
+	}
+
+	private getMessageRenderBoundarySelectorsV3(): MessageRenderBoundarySelectorV3[] {
+		return this.session.extensionRunner?.getMessageRenderBoundarySelectorsV3?.() ?? [];
+	}
+
+	private getMessageRenderProjectionObserversV1(): MessageRenderProjectionObserverV1[] {
+		return this.session.extensionRunner?.getMessageRenderProjectionObserversV1?.() ?? [];
+	}
+
+	private createSemanticToolComponent(content: AssistantToolCall, ownerEntryId: string): ToolExecutionComponent {
+		let component = this.pendingTools.get(content.id);
+		if (component) {
+			component.updateArgs(content.arguments);
+			return component;
+		}
+		component = new ToolExecutionComponent(
+			content.name,
+			content.id,
+			content.arguments,
+			{
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+				ownerEntryId,
+				producerSessionId: this.sessionManager.getSessionId(),
+				renderScopeId: this.messageRenderScopeId,
+				semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
+				toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
+			},
+			this.getRegisteredToolDefinition(content.name),
+			this.ui,
+			this.sessionManager.getCwd(),
+		);
+		component.setExpanded(this.toolOutputExpanded);
+		this.pendingTools.set(content.id, component);
+		return component;
+	}
+
+	private renderSemanticAssistantResponse(
+		container: Container,
+		entryId: string,
+		message: AssistantMessage,
+		streaming: boolean,
+	): MessageRenderProjectionMemberV1[] {
+		const composition = composeAssistantResponse(entryId, message, streaming, this.hideThinkingBlock);
+		container.clear();
+		for (const atom of composition.atoms) {
+			if (atom.type === "visual") {
+				container.addChild(
+					new AssistantMessageComponent(
+						{ ...message, content: atom.content },
+						this.hideThinkingBlock,
+						this.getMarkdownThemeWithSettings(),
+						this.hiddenThinkingLabel,
+						this.outputPad,
+						this.getMarkdownTransformers(),
+					),
+				);
+				continue;
+			}
+			const components = atom.calls.map((call) => this.createSemanticToolComponent(call, entryId));
+			if (!atom.groupId) {
+				container.addChild(components[0]!);
+				continue;
+			}
+			const group = new ToolGroupComponent({
+				groupId: atom.groupId,
+				ownerEntryId: entryId,
+				closed: !streaming,
+				outputPad: this.outputPad,
+				producerSessionId: this.sessionManager.getSessionId(),
+				renderScopeId: this.messageRenderScopeId,
+				semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
+			});
+			for (const [index, component] of components.entries()) {
+				const call = atom.calls[index]!;
+				group.addTool(component, { toolName: call.name, toolCallId: call.id });
+			}
+			container.addChild(group);
+		}
+		return composition.members;
+	}
+
+	private publishMessageRenderProjectionV1(
+		members: readonly MessageRenderProjectionMemberV1[],
+		requestedMode: "append" | "replace",
+		finalized?: MessageRenderFinalizedEntryV1,
+		completeLastTurn = false,
+	): void {
+		const observers = this.getMessageRenderProjectionObserversV1();
+		if (observers.length === 0) return;
+		const previous = this.publishedMessageRenderProjection?.members;
+		const mode =
+			requestedMode === "append" && previous && !isProjectionPrefix(previous, members) ? "replace" : requestedMode;
+		const projection = buildMessageRenderProjection({
+			producerSessionId: this.sessionManager.getSessionId(),
+			renderScopeId: this.messageRenderScopeId,
+			members,
+			mode,
+			...(finalized ? { finalized } : {}),
+			completeLastTurn,
+			readMessage: (entryId) => {
+				if (finalized?.entryId === entryId) return finalized.message;
+				const entry = this.sessionManager.getEntry(entryId);
+				return entry?.type === "message" ? entry.message : undefined;
+			},
+		});
+		if (sameProjection(this.publishedMessageRenderProjection, projection) && !finalized) return;
+		this.publishedMessageRenderProjection = projection;
+		publishMessageRenderProjection(projection, observers);
 	}
 
 	/**
@@ -3241,33 +3414,97 @@ export class InteractiveMode {
 					this.addMessageToChat(event.message);
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
+					if (this.getMessageRenderProjectionObserversV1().length > 0) {
+						this.messageRenderMembers.push({ entryId: event.entryId, blockId: event.entryId, role: "user" });
+						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
+							entryId: event.entryId,
+							message: event.message,
+						});
+					}
 					this.addMessageToChat(event.message, { entryId: event.entryId });
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
-					this.streamingComponent = new AssistantMessageComponent(
-						undefined,
-						this.hideThinkingBlock,
-						this.getMarkdownThemeWithSettings(),
-						this.hiddenThinkingLabel,
-						this.outputPad,
-						this.getMarkdownTransformers(),
-						{
-							entryId: event.entryId,
-							decorators: this.getMessageRenderBoundaryDecoratorsV1(),
-						},
-					);
 					this.streamingMessage = event.message;
-					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage, true);
+					this.messageRenderMembers ??= [];
+					this.semanticStreamingBaseMemberCount = this.messageRenderMembers.length;
+					const hasProjectionObservers = this.getMessageRenderProjectionObserversV1().length > 0;
+					const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
+					if (hasProjectionObservers) {
+						const composition = composeAssistantResponse(
+							event.entryId,
+							event.message,
+							true,
+							this.hideThinkingBlock,
+						);
+						this.messageRenderMembers = [
+							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
+							...composition.members,
+						];
+						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+					}
+					if (semanticSelectors.length > 0) {
+						this.semanticStreamingContainer = new Container();
+						this.chatContainer.addChild(this.semanticStreamingContainer);
+						this.renderSemanticAssistantResponse(
+							this.semanticStreamingContainer,
+							event.entryId,
+							event.message,
+							true,
+						);
+					} else {
+						this.streamingComponent = new AssistantMessageComponent(
+							undefined,
+							this.hideThinkingBlock,
+							this.getMarkdownThemeWithSettings(),
+							this.hiddenThinkingLabel,
+							this.outputPad,
+							this.getMarkdownTransformers(),
+							{
+								entryId: event.entryId,
+								decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+							},
+						);
+						this.chatContainer.addChild(this.streamingComponent);
+						this.streamingComponent.updateContent(this.streamingMessage, true);
+					}
 					this.ui.requestRender();
 				}
 				break;
 
 			case "message_update":
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if (this.semanticStreamingContainer && event.message.role === "assistant") {
+					this.streamingMessage = event.message;
+					const members = this.renderSemanticAssistantResponse(
+						this.semanticStreamingContainer,
+						event.entryId,
+						event.message,
+						true,
+					);
+					if (this.getMessageRenderProjectionObserversV1().length > 0) {
+						this.messageRenderMembers = [
+							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
+							...members,
+						];
+						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+					}
+					this.ui.requestRender();
+				} else if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
+					if (this.getMessageRenderProjectionObserversV1().length > 0) {
+						const composition = composeAssistantResponse(
+							event.entryId,
+							event.message,
+							true,
+							this.hideThinkingBlock,
+						);
+						this.messageRenderMembers = [
+							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
+							...composition.members,
+						];
+						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+					}
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
@@ -3302,8 +3539,68 @@ export class InteractiveMode {
 
 			case "message_end":
 				if (event.message.role === "user") break;
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if (this.semanticStreamingContainer && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
+					const composition = composeAssistantResponse(
+						event.entryId,
+						event.message,
+						false,
+						this.hideThinkingBlock,
+					);
+					if (this.getMessageRenderProjectionObserversV1().length > 0) {
+						this.messageRenderMembers = [
+							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
+							...composition.members,
+						];
+						this.publishMessageRenderProjectionV1(
+							this.messageRenderMembers,
+							"append",
+							{ entryId: event.entryId, message: event.message },
+							isTerminalAssistant(event.message),
+						);
+					}
+					this.renderSemanticAssistantResponse(
+						this.semanticStreamingContainer,
+						event.entryId,
+						event.message,
+						false,
+					);
+					if (event.message.stopReason === "aborted" || event.message.stopReason === "error") {
+						const errorMessage =
+							event.message.errorMessage ||
+							(event.message.stopReason === "aborted" ? "Operation aborted" : "Error");
+						for (const component of this.pendingTools.values()) {
+							component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
+						}
+						this.pendingTools.clear();
+					} else {
+						for (const component of this.pendingTools.values()) component.setArgsComplete();
+						this.maybeShowAssistantDiagnostics(event.message);
+						this.maybeShowCacheMissNotice(event.message);
+					}
+					this.semanticStreamingContainer = undefined;
+					this.streamingMessage = undefined;
+					this.footer.invalidate();
+				} else if (this.streamingComponent && event.message.role === "assistant") {
+					this.streamingMessage = event.message;
+					if (this.getMessageRenderProjectionObserversV1().length > 0) {
+						const composition = composeAssistantResponse(
+							event.entryId,
+							event.message,
+							false,
+							this.hideThinkingBlock,
+						);
+						this.messageRenderMembers = [
+							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
+							...composition.members,
+						];
+						this.publishMessageRenderProjectionV1(
+							this.messageRenderMembers,
+							"append",
+							{ entryId: event.entryId, message: event.message },
+							isTerminalAssistant(event.message),
+						);
+					}
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
 						const retryAttempt = this.session.retryAttempt;
@@ -3732,6 +4029,23 @@ export class InteractiveMode {
 	): void {
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
+		const projectionObservers = this.getMessageRenderProjectionObserversV1();
+		if (projectionObservers.length > 0) {
+			const members: MessageRenderProjectionMemberV1[] = [];
+			for (const item of items) {
+				if (!isRenderMessageItem(item)) continue;
+				if (item.message.role === "user") {
+					members.push({ entryId: item.entryId, blockId: item.entryId, role: "user" });
+				} else if (item.message.role === "assistant") {
+					members.push(
+						...composeAssistantResponse(item.entryId, item.message, false, this.hideThinkingBlock).members,
+					);
+				}
+			}
+			this.messageRenderMembers = members;
+			this.publishMessageRenderProjectionV1(members, "replace", undefined, true);
+		}
+		const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
 		// list and re-inject them after the assistant messages that paid for them.
 		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
@@ -3756,40 +4070,59 @@ export class InteractiveMode {
 			const { message, entryId } = isRenderMessageItem(item) ? item : { message: item, entryId: undefined };
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
-				this.addMessageToChat(message, { entryId });
-				// Render tool call components
-				for (const content of message.content) {
-					if (content.type === "toolCall") {
-						const component = new ToolExecutionComponent(
-							content.name,
-							content.id,
-							content.arguments,
-							{
-								showImages: this.settingsManager.getShowImages(),
-								imageWidthCells: this.settingsManager.getImageWidthCells(),
-								toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
-							},
-							this.getRegisteredToolDefinition(content.name),
-							this.ui,
-							this.sessionManager.getCwd(),
-						);
-						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
-
+				if (entryId && semanticSelectors.length > 0) {
+					const container = new Container();
+					this.chatContainer.addChild(container);
+					this.renderSemanticAssistantResponse(container, entryId, message, false);
+					for (const content of message.content) {
+						if (content.type !== "toolCall") continue;
+						const component = this.pendingTools.get(content.id);
+						if (!component) continue;
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
-							let errorMessage: string;
-							if (message.stopReason === "aborted") {
-								const retryAttempt = this.session.retryAttempt;
-								errorMessage =
-									retryAttempt > 0
-										? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-										: "Operation aborted";
-							} else {
-								errorMessage = message.errorMessage || "Error";
-							}
+							const errorMessage =
+								message.errorMessage || (message.stopReason === "aborted" ? "Operation aborted" : "Error");
 							component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
+							this.pendingTools.delete(content.id);
 						} else {
 							renderedPendingTools.set(content.id, component);
+						}
+					}
+				} else {
+					this.addMessageToChat(message, { entryId });
+					// Render tool call components
+					for (const content of message.content) {
+						if (content.type === "toolCall") {
+							const component = new ToolExecutionComponent(
+								content.name,
+								content.id,
+								content.arguments,
+								{
+									showImages: this.settingsManager.getShowImages(),
+									imageWidthCells: this.settingsManager.getImageWidthCells(),
+									toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
+								},
+								this.getRegisteredToolDefinition(content.name),
+								this.ui,
+								this.sessionManager.getCwd(),
+							);
+							component.setExpanded(this.toolOutputExpanded);
+							this.chatContainer.addChild(component);
+
+							if (message.stopReason === "aborted" || message.stopReason === "error") {
+								let errorMessage: string;
+								if (message.stopReason === "aborted") {
+									const retryAttempt = this.session.retryAttempt;
+									errorMessage =
+										retryAttempt > 0
+											? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
+											: "Operation aborted";
+								} else {
+									errorMessage = message.errorMessage || "Error";
+								}
+								component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
+							} else {
+								renderedPendingTools.set(content.id, component);
+							}
 						}
 					}
 				}
@@ -3804,6 +4137,7 @@ export class InteractiveMode {
 				if (component) {
 					component.updateResult(message);
 					renderedPendingTools.delete(message.toolCallId);
+					this.pendingTools.delete(message.toolCallId);
 				}
 			} else {
 				// All other messages use standard rendering

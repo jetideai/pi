@@ -1224,13 +1224,14 @@ export interface MessageRenderRangeV1 {
 	end: number;
 }
 
-export type MessageRenderRoleV1 = "user" | "assistant";
+export type MessageRenderRoleV1 = "user" | "assistant" | "tool-group" | "tool";
 
-/** Facts from one completed built-in user or assistant message render. */
+/** Facts from one completed built-in semantic object render. */
 export interface MessageRenderBoundaryContextV1 {
 	entryId: string;
+	ownerEntryId?: string;
 	role: MessageRenderRoleV1;
-	state: "streaming" | "final";
+	state: "streaming" | "final" | "expanded";
 	/** Horizontal padding configured by the outputPad setting for this render. */
 	outputPad: number;
 	allocatedColumns: Readonly<MessageRenderRangeV1>;
@@ -1241,7 +1242,35 @@ export interface MessageRenderBoundaryContextV1 {
 export interface MessageRenderBoundariesV1 {
 	prefix?: string;
 	suffix?: string;
+	reservedRows?: number;
 }
+
+/** Three exact zero-column boundaries for one foldable semantic object. */
+export interface MessageRenderBoundariesV2 {
+	begin?: string;
+	body?: string;
+	end?: string;
+}
+
+/** Decorate one selected canonical render using its actual layout ranges. */
+export type MessageRenderBoundaryDecoratorV2 = (
+	context: Readonly<MessageRenderBoundaryContextV1>,
+) => MessageRenderBoundariesV2;
+
+/** Stable identity facts used before Pi renders one foldable object. */
+export interface MessageRenderBoundaryCandidateV3 {
+	producerSessionId: string;
+	renderScopeId: string;
+	entryId: string;
+	blockId: string;
+	role: "tool" | "tool-group";
+	state: "expanded";
+	ownerEntryId?: string;
+}
+
+export type MessageRenderBoundarySelectorV3 = (
+	candidate: Readonly<MessageRenderBoundaryCandidateV3>,
+) => MessageRenderBoundaryDecoratorV2 | undefined;
 
 /**
  * Synchronous message render decorator. The callback must not block.
@@ -1269,6 +1298,52 @@ export interface ToolExecutionPresentationV1 {
 export type ToolExecutionPresentationSelectorV1 = (
 	candidate: Readonly<ToolExecutionPresentationCandidateV1>,
 ) => ToolExecutionPresentationV1 | undefined;
+
+export interface MessageRenderCompletedTurnV1 {
+	assistantEntryId: string;
+	userPreview: string;
+	assistantPreview: string | null;
+}
+
+export type MessageRenderProjectionMemberV1 =
+	| {
+			entryId: string;
+			blockId: string;
+			role: "user";
+			completedTurn?: Readonly<MessageRenderCompletedTurnV1>;
+	  }
+	| { entryId: string; blockId: string; role: "assistant" }
+	| {
+			entryId: string;
+			blockId: string;
+			role: "tool-group";
+			ownerEntryId: string;
+			groupId: string;
+			groupClosed: boolean;
+	  }
+	| {
+			entryId: string;
+			blockId: string;
+			role: "tool";
+			ownerEntryId: string;
+			groupId?: string;
+			groupOrder?: number;
+	  };
+
+export interface MessageRenderFinalizedEntryV1 {
+	entryId: string;
+	message: Extract<AgentMessage, { role: "user" | "assistant" }>;
+}
+
+export interface MessageRenderProjectionV1 {
+	producerSessionId: string;
+	renderScopeId: string;
+	members: readonly Readonly<MessageRenderProjectionMemberV1>[];
+	mode: "append" | "replace";
+	finalized?: Readonly<MessageRenderFinalizedEntryV1>;
+}
+
+export type MessageRenderProjectionObserverV1 = (projection: Readonly<MessageRenderProjectionV1>) => void;
 
 export interface EntryRenderOptions {
 	expanded: boolean;
@@ -1421,8 +1496,14 @@ export interface ExtensionAPI {
 	/** Decorate built-in user and assistant render boundaries with zero-column terminal controls. */
 	registerMessageRenderBoundaryDecoratorV1(decorator: MessageRenderBoundaryDecoratorV1): void;
 
+	/** Select exact boundaries for one renderer-owned Tool Call or Tool Group. */
+	registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void;
+
 	/** Select the presentation for renderer-owned Tool Call sections. */
 	registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void;
+
+	/** Observe complete membership selected by the interactive transcript composer. */
+	registerMessageRenderProjectionObserverV1(observer: MessageRenderProjectionObserverV1): void;
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
@@ -1842,7 +1923,9 @@ export interface Extension {
 	messageRenderers: Map<string, MessageRenderer>;
 	markdownTransformer?: MarkdownTransformer;
 	messageRenderBoundaryDecoratorV1?: MessageRenderBoundaryDecoratorV1;
+	messageRenderBoundarySelectorV3?: MessageRenderBoundarySelectorV3;
 	toolExecutionPresentationSelectorV1?: ToolExecutionPresentationSelectorV1;
+	messageRenderProjectionObserverV1?: MessageRenderProjectionObserverV1;
 	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

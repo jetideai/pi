@@ -41,7 +41,9 @@ import type {
 	LoadExtensionsResult,
 	MarkdownTransformer,
 	MessageRenderBoundaryDecoratorV1,
+	MessageRenderBoundarySelectorV3,
 	MessageRenderer,
+	MessageRenderProjectionObserverV1,
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
@@ -350,9 +352,19 @@ function createExtensionAPI(
 			extension.messageRenderBoundaryDecoratorV1 = decorator;
 		},
 
+		registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void {
+			assertActive();
+			extension.messageRenderBoundarySelectorV3 = selector;
+		},
+
 		registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void {
 			assertActive();
 			extension.toolExecutionPresentationSelectorV1 = selector;
+		},
+
+		registerMessageRenderProjectionObserverV1(observer: MessageRenderProjectionObserverV1): void {
+			assertActive();
+			extension.messageRenderProjectionObserverV1 = observer;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {

@@ -43,7 +43,9 @@ import type {
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderBoundaryDecoratorV1,
+	MessageRenderBoundarySelectorV3,
 	MessageRenderer,
+	MessageRenderProjectionObserverV1,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
@@ -648,9 +650,21 @@ export class ExtensionRunner {
 		);
 	}
 
+	getMessageRenderBoundarySelectorsV3(): MessageRenderBoundarySelectorV3[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderBoundarySelectorV3 ? [extension.messageRenderBoundarySelectorV3] : [],
+		);
+	}
+
 	getToolExecutionPresentationSelectorsV1(): ToolExecutionPresentationSelectorV1[] {
 		return this.extensions.flatMap((extension) =>
 			extension.toolExecutionPresentationSelectorV1 ? [extension.toolExecutionPresentationSelectorV1] : [],
+		);
+	}
+
+	getMessageRenderProjectionObserversV1(): MessageRenderProjectionObserverV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderProjectionObserverV1 ? [extension.messageRenderProjectionObserverV1] : [],
 		);
 	}
 

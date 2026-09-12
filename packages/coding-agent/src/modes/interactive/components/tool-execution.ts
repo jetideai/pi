@@ -12,6 +12,8 @@ import {
 	type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import type {
+	MessageRenderBoundaryDecoratorV2,
+	MessageRenderBoundarySelectorV3,
 	ToolDefinition,
 	ToolExecutionPresentationSelectorV1,
 	ToolRenderContext,
@@ -43,6 +45,7 @@ import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/rend
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { decorateMessageRenderV2, selectMessageRenderBoundaryDecoratorsV3 } from "./message-render-boundaries.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
 
@@ -50,6 +53,10 @@ export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
 	hasInitialCollapsedBoundaries?: boolean;
+	ownerEntryId?: string;
+	producerSessionId?: string;
+	renderScopeId?: string;
+	semanticSelectorsV3?: readonly MessageRenderBoundarySelectorV3[];
 	toolExecutionPresentationSelectorsV1?: readonly ToolExecutionPresentationSelectorV1[];
 }
 
@@ -84,6 +91,9 @@ export class ToolExecutionComponent extends Container {
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private hideComponent = false;
 	private compactLiveToolCall = false;
+	private readonly ownerEntryId?: string;
+	private readonly semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[];
+	private semanticBoundariesEnabled = true;
 
 	constructor(
 		toolName: string,
@@ -99,9 +109,25 @@ export class ToolExecutionComponent extends Container {
 		this.toolCallId = toolCallId;
 		this.args = args;
 		this.toolDefinition = toolDefinition;
+		this.ownerEntryId = options.ownerEntryId;
+		this.semanticDecoratorsV2 =
+			options.producerSessionId && options.renderScopeId
+				? selectMessageRenderBoundaryDecoratorsV3(
+						{
+							producerSessionId: options.producerSessionId,
+							renderScopeId: options.renderScopeId,
+							entryId: toolCallId,
+							blockId: toolCallId,
+							role: "tool",
+							state: "expanded",
+							...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
+						},
+						options.semanticSelectorsV3 ?? [],
+					)
+				: [];
 		this.compactLiveToolCall = this.selectCompactLiveToolCall(
 			options.toolExecutionPresentationSelectorsV1 ?? [],
-			options.hasInitialCollapsedBoundaries ?? false,
+			options.hasInitialCollapsedBoundaries ?? this.semanticDecoratorsV2.length > 0,
 		);
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
@@ -259,6 +285,11 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	setSemanticBoundariesEnabled(enabled: boolean): void {
+		this.semanticBoundariesEnabled = enabled;
+		this.invalidate();
+	}
+
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.updateDisplay();
@@ -277,7 +308,7 @@ export class ToolExecutionComponent extends Container {
 	override render(width: number): string[] {
 		if (this.hideComponent) return [];
 		const lines = this.renderStock(width);
-		if (!this.isCompactLiveToolCall()) return lines;
+		if (!this.isCompactLiveToolCall()) return this.decorateSemanticSections(lines, width);
 
 		const component = this.callRendererComponent;
 		const headerLocator = this.getCallHeaderRowLocator();
@@ -305,6 +336,30 @@ export class ToolExecutionComponent extends Container {
 		this.compactLiveToolCall = false;
 		this.updateDisplay();
 		return this.renderStock(width);
+	}
+
+	private decorateSemanticSections(lines: string[], width: number): string[] {
+		if (!this.semanticBoundariesEnabled || this.semanticDecoratorsV2.length === 0 || this.isPartial) return lines;
+		const component = this.callRendererComponent;
+		const headerLocator = this.getCallHeaderRowLocator();
+		const bodyLocator = this.getCallBodyRowLocator();
+		if (!component || !headerLocator || !bodyLocator) return lines;
+		try {
+			const componentWidth = this.getRenderShell() === "self" ? width : Math.max(0, width - 2);
+			component.render(componentWidth);
+			const offset = this.getRenderShell() === "self" ? 1 : 2;
+			const headerRow = headerLocator(component);
+			const bodyRow = bodyLocator(component);
+			if (headerRow === undefined || bodyRow === undefined || headerRow < 0 || bodyRow <= headerRow) return lines;
+			return decorateMessageRenderV2(lines, offset + bodyRow, width, "tool", 0, {
+				entryId: this.toolCallId,
+				...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
+				beginRow: offset + headerRow,
+				decorators: this.semanticDecoratorsV2,
+			});
+		} catch {
+			return lines;
+		}
 	}
 
 	private renderStock(width: number): string[] {
