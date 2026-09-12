@@ -109,8 +109,8 @@ function createHarness(ui: TUI, sessionManager: SessionManager) {
 		}
 		renderedV1Indexes.push(index);
 		return {
-			prefix: `\x1b]777;user-begin-${index}\x07`,
-			suffix: `\x1b]777;user-end-${index}\x07`,
+			prefix: `\x1b]777;message-begin-${index}\x07`,
+			suffix: `\x1b]777;message-end-${index}\x07`,
 		};
 	};
 	const v3Selector: MessageRenderBoundarySelectorV3 = () => {
@@ -260,7 +260,7 @@ describe("synthetic long-transcript rendering", () => {
 		expect(groupRender).toHaveBeenCalledTimes(SYNTHETIC_GROUP_COUNT);
 		expect(counts.presentationSelections).toBe(selectionsBeforeResize.presentation);
 		expect(counts.boundarySelections).toBe(selectionsBeforeResize.boundary);
-		expect(counts.v1Decorations).toBe(SYNTHETIC_TURN_COUNT);
+		expect(counts.v1Decorations).toBe(SYNTHETIC_TURN_COUNT * 2);
 		expect(counts.v3Decorations).toBe(SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT);
 		expect(projections).toHaveLength(projectionCountBeforeResize);
 		expect(rendererFactoryCounts.shell).toBe(factoriesBeforeResize);
@@ -283,10 +283,10 @@ describe("synthetic long-transcript rendering", () => {
 			expect(markerIndex, marker).toBeGreaterThan(previousMarkerIndex);
 			previousMarkerIndex = markerIndex;
 		}
-		expect(new Set(renderedV1Indexes).size).toBe(SYNTHETIC_TURN_COUNT);
+		expect(new Set(renderedV1Indexes).size).toBe(SYNTHETIC_TURN_COUNT * 2);
 		for (const index of renderedV1Indexes) {
-			expect(occurrences(resizeOutput, `\x1b]777;user-begin-${index}\x07`)).toBe(1);
-			expect(occurrences(resizeOutput, `\x1b]777;user-end-${index}\x07`)).toBe(1);
+			expect(occurrences(resizeOutput, `\x1b]777;message-begin-${index}\x07`)).toBe(1);
+			expect(occurrences(resizeOutput, `\x1b]777;message-end-${index}\x07`)).toBe(1);
 		}
 		expect(new Set(renderedV3Indexes).size).toBe(SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT);
 		for (const index of renderedV3Indexes) {
