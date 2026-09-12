@@ -26,12 +26,16 @@ interface WorkerResult {
 	structuralCorrectness: true;
 }
 
-interface Target {
+export interface Target {
 	label: string;
 	root: string;
 	expectedRevision: string;
 	actualRevision: string;
 	packageVersions: { codingAgent: string; tui: string };
+}
+
+export function serializeTarget({ root: _root, ...safeTarget }: Target): Omit<Target, "root"> {
+	return safeTarget;
 }
 
 interface Arguments {
@@ -155,55 +159,59 @@ function format(value: number): string {
 	return value.toFixed(2);
 }
 
-const args = parseArguments();
-const targets = [
-	validateTarget("stock", args.stockRoot, STOCK_REVISION),
-	validateTarget("jetpi", args.jetpiRoot, args.jetpiRevision),
-];
-const results = [];
-for (const target of targets) {
-	for (let index = 0; index < args.warmups; index++) runWorker(target);
-	const samples = Array.from({ length: args.samples }, () => runWorker(target));
-	const summary = summarize(samples);
-	results.push({ target, samples, summary });
-	console.log(`\n${target.label} ${target.actualRevision} (${args.samples} samples after ${args.warmups} warm-up)`);
-	for (const [index, sample] of samples.entries()) {
-		const phases = (["construction", "firstRender", "resize"] as const)
-			.map((phase) => {
-				const value = sample.measurements[phase];
-				return `${phase}: wall ${format(value.wallMs)} ms, CPU ${format(value.cpuTotalMs)} ms (${format(value.cpuUserMs)} user + ${format(value.cpuSystemMs)} system)`;
-			})
-			.join(" | ");
-		console.log(`  sample ${index + 1}: ${phases}`);
+async function main(): Promise<void> {
+	const args = parseArguments();
+	const targets = [
+		validateTarget("stock", args.stockRoot, STOCK_REVISION),
+		validateTarget("jetpi", args.jetpiRoot, args.jetpiRevision),
+	];
+	const results = [];
+	for (const target of targets) {
+		for (let index = 0; index < args.warmups; index++) runWorker(target);
+		const samples = Array.from({ length: args.samples }, () => runWorker(target));
+		const summary = summarize(samples);
+		results.push({ target, samples, summary });
+		console.log(`\n${target.label} ${target.actualRevision} (${args.samples} samples after ${args.warmups} warm-up)`);
+		for (const [index, sample] of samples.entries()) {
+			const phases = (["construction", "firstRender", "resize"] as const)
+				.map((phase) => {
+					const value = sample.measurements[phase];
+					return `${phase}: wall ${format(value.wallMs)} ms, CPU ${format(value.cpuTotalMs)} ms (${format(value.cpuUserMs)} user + ${format(value.cpuSystemMs)} system)`;
+				})
+				.join(" | ");
+			console.log(`  sample ${index + 1}: ${phases}`);
+		}
+		for (const phase of ["construction", "firstRender", "resize"] as const) {
+			const wall = summary[phase]?.wallMs;
+			const cpu = summary[phase]?.cpuTotalMs;
+			if (!wall || !cpu) throw new Error(`Missing summary for ${target.label} ${phase}`);
+			console.log(
+				`  ${phase}: wall median/min/max ${format(wall.median)}/${format(wall.min)}/${format(wall.max)} ms; CPU total ${format(cpu.median)}/${format(cpu.min)}/${format(cpu.max)} ms`,
+			);
+		}
 	}
-	for (const phase of ["construction", "firstRender", "resize"] as const) {
-		const wall = summary[phase]?.wallMs;
-		const cpu = summary[phase]?.cpuTotalMs;
-		if (!wall || !cpu) throw new Error(`Missing summary for ${target.label} ${phase}`);
-		console.log(
-			`  ${phase}: wall median/min/max ${format(wall.median)}/${format(wall.min)}/${format(wall.max)} ms; CPU total ${format(cpu.median)}/${format(cpu.min)}/${format(cpu.max)} ms`,
-		);
-	}
+
+	const fixtureHashes = new Set(results.flatMap(({ samples }) => samples.map(({ fixtureHash }) => fixtureHash)));
+	if (fixtureHashes.size !== 1) throw new Error("Workers used different fixtures");
+	const countShapes = new Set(results.flatMap(({ samples }) => samples.map(({ counts }) => JSON.stringify(counts))));
+	if (countShapes.size !== 1) throw new Error("Workers produced different structural counts");
+
+	const artifact = {
+		schemaVersion: 2,
+		createdAt: new Date().toISOString(),
+		description: "Descriptive synthetic long-transcript benchmark. Timing values are not pass/fail thresholds.",
+		runtime: { node: process.version, platform: process.platform, arch: process.arch },
+		geometry: { initial: { width: 77, height: 35 }, resize: { width: 118, height: 35 } },
+		mode: "capability-off",
+		warmups: args.warmups,
+		sampleCount: args.samples,
+		fixtureHash: [...fixtureHashes][0],
+		counts: results[0]?.samples[0]?.counts,
+		results: results.map(({ target, samples, summary }) => ({ target: serializeTarget(target), samples, summary })),
+	};
+	mkdirSync(dirname(args.output), { recursive: true });
+	writeFileSync(args.output, `${JSON.stringify(artifact, null, 2)}\n`);
+	console.log(`\nArtifact: ${args.output}`);
 }
 
-const fixtureHashes = new Set(results.flatMap(({ samples }) => samples.map(({ fixtureHash }) => fixtureHash)));
-if (fixtureHashes.size !== 1) throw new Error("Workers used different fixtures");
-const countShapes = new Set(results.flatMap(({ samples }) => samples.map(({ counts }) => JSON.stringify(counts))));
-if (countShapes.size !== 1) throw new Error("Workers produced different structural counts");
-
-const artifact = {
-	schemaVersion: 1,
-	createdAt: new Date().toISOString(),
-	description: "Descriptive synthetic long-transcript benchmark. Timing values are not pass/fail thresholds.",
-	runtime: { node: process.version, platform: process.platform, arch: process.arch },
-	geometry: { initial: { width: 77, height: 35 }, resize: { width: 118, height: 35 } },
-	mode: "capability-off",
-	warmups: args.warmups,
-	sampleCount: args.samples,
-	fixtureHash: [...fixtureHashes][0],
-	counts: results[0]?.samples[0]?.counts,
-	results,
-};
-mkdirSync(dirname(args.output), { recursive: true });
-writeFileSync(args.output, `${JSON.stringify(artifact, null, 2)}\n`);
-console.log(`\nArtifact: ${args.output}`);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

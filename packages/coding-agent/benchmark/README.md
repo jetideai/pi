@@ -10,7 +10,7 @@ Each warm-up and measured sample runs in a fresh Node.js worker. The worker meas
 
 Each phase reports wall time and CPU user, system, and total time. The driver prints every sample plus median, minimum, and maximum values. Timing values are descriptive. They never cause a failure.
 
-The command fails only when a target root or exact revision is invalid, a worker fails, or structural correctness fails. Structural checks cover fixture shape, one resize render per Tool Call, marker ordering, cursor position, and destructive width-redraw control sequences.
+The command fails only when a target root or exact revision is invalid, a worker fails, or structural correctness fails. Structural checks derive entry, Tool Call, result, group, and singleton counts from the restored transcript and component tree. They also cover one resize render per Tool Call, marker ordering, cursor position, and destructive width-redraw control sequences.
 
 ## Run
 
@@ -25,4 +25,4 @@ npm --prefix packages/coding-agent run benchmark:long-transcript -- \
   --samples 3
 ```
 
-Use `--output <path>` to select the JSON artifact path. The default is under `packages/coding-agent/.artifacts/`, which Git ignores. The artifact contains only runtime metadata, revisions, package versions, geometry, aggregate fixture counts, a fixture hash, measurements, and structural results. It contains no transcript text or private session data.
+Use `--output <path>` to select the JSON artifact path. The default is under `packages/coding-agent/.artifacts/`, which Git ignores. The artifact contains only runtime metadata, safe target labels, revisions, package versions, geometry, observed aggregate counts, a fixture hash, measurements, and structural results. It does not contain target roots, absolute paths, transcript text, or private session data.

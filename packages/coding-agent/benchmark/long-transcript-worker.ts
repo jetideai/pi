@@ -11,8 +11,8 @@ import {
 	SYNTHETIC_SINGLETON_COUNT,
 	SYNTHETIC_TOOL_CALL_COUNT,
 	SYNTHETIC_TOOL_RESULT_COUNT,
-	SYNTHETIC_TURN_COUNT,
 } from "../test/helpers/synthetic-long-transcript.ts";
+import { deriveComponentCounts, deriveTranscriptCounts } from "./long-transcript-structure.ts";
 
 interface Measurement {
 	wallMs: number;
@@ -190,7 +190,9 @@ let sessionManager: SessionManagerLike;
 let terminal: RecordingTerminal & TerminalLike;
 let tui: TuiLike;
 let mode: { chatContainer: ContainerLike };
+let root: ContainerLike;
 let cursor: LogicalCursorProbe;
+let restoredEntries: unknown[];
 const construction = await measure(() => {
 	sessionManager = SessionManager.inMemory() as SessionManagerLike;
 	for (const { message } of fixture.messages) sessionManager.appendMessage(message);
@@ -237,18 +239,45 @@ const construction = await measure(() => {
 		maybeShowCacheMissNotice() {},
 	};
 	Object.setPrototypeOf(mode, InteractiveMode.prototype);
-	const entries = sessionManager.buildTranscriptEntries?.() ?? sessionManager.buildContextEntries();
+	restoredEntries = sessionManager.buildTranscriptEntries?.() ?? sessionManager.buildContextEntries();
 	const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
 		this: typeof mode,
 		entries: unknown[],
 	) => void;
-	renderSessionEntries.call(mode, entries);
+	renderSessionEntries.call(mode, restoredEntries);
 	cursor = new LogicalCursorProbe();
-	const root = new tuiModule.Container() as ContainerLike;
+	root = new tuiModule.Container() as ContainerLike;
 	root.addChild(mode.chatContainer);
 	root.addChild(cursor);
 	tui.addChild(root);
 });
+
+const observedTranscript = deriveTranscriptCounts(restoredEntries);
+const observedComponentToolCalls = deriveComponentCounts(
+	root,
+	(component) => component instanceof ToolExecutionComponent,
+	() => false,
+).toolCalls;
+const expectedObservedCounts = {
+	entries: SYNTHETIC_ENTRY_COUNT,
+	toolCalls: SYNTHETIC_TOOL_CALL_COUNT,
+	toolResults: SYNTHETIC_TOOL_RESULT_COUNT,
+	groups: SYNTHETIC_GROUP_COUNT,
+	singletons: SYNTHETIC_SINGLETON_COUNT,
+};
+const observedCounts = {
+	entries: observedTranscript.entries,
+	toolCalls: observedTranscript.toolCalls,
+	toolResults: observedTranscript.toolResults,
+	groups: observedTranscript.groups,
+	singletons: observedTranscript.singletons,
+};
+if (JSON.stringify(observedCounts) !== JSON.stringify(expectedObservedCounts)) {
+	throw new Error(`Observed structure mismatch: ${JSON.stringify(observedCounts)}`);
+}
+if (observedComponentToolCalls !== observedTranscript.toolCalls) {
+	throw new Error("Restored Tool Call count does not match the component tree");
+}
 
 const firstRender = await measure(async () => {
 	tui.renderNow();
@@ -304,12 +333,7 @@ process.stdout.write(
 			resize: { width: args.resizeWidth, height: args.resizeHeight },
 		},
 		counts: {
-			entries: SYNTHETIC_ENTRY_COUNT,
-			turns: SYNTHETIC_TURN_COUNT,
-			toolCalls: SYNTHETIC_TOOL_CALL_COUNT,
-			toolResults: SYNTHETIC_TOOL_RESULT_COUNT,
-			groups: SYNTHETIC_GROUP_COUNT,
-			singletons: SYNTHETIC_SINGLETON_COUNT,
+			...observedCounts,
 			resizeToolRenders,
 			narrowRows,
 			wideRows: wideState.previousLines.length,
