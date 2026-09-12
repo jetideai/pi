@@ -779,6 +779,8 @@ export interface TurnEndEvent {
 export interface MessageStartEvent {
 	type: "message_start";
 	message: AgentMessage;
+	/** Reserved ID used when this message is persisted. */
+	entryId: string;
 }
 
 /** Fired during assistant message streaming with token-by-token updates */
@@ -786,12 +788,16 @@ export interface MessageUpdateEvent {
 	type: "message_update";
 	message: AgentMessage;
 	assistantMessageEvent: AssistantMessageEvent;
+	/** Reserved ID used when this message is persisted. */
+	entryId: string;
 }
 
 /** Fired when a message ends */
 export interface MessageEndEvent {
 	type: "message_end";
 	message: AgentMessage;
+	/** Reserved ID used when this message is persisted. */
+	entryId: string;
 }
 
 /** Fired when a tool starts executing */

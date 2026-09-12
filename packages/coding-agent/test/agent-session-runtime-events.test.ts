@@ -14,6 +14,9 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type {
 	ExtensionFactory,
+	MessageEndEvent,
+	MessageStartEvent,
+	MessageUpdateEvent,
 	SessionBeforeForkEvent,
 	SessionBeforeSwitchEvent,
 	SessionShutdownEvent,
@@ -111,6 +114,69 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		return { runtimeHost, faux };
 	}
+
+	it("keeps one persisted ID for each message lifecycle", async () => {
+		type MessageLifecycleEvent = MessageStartEvent | MessageUpdateEvent | MessageEndEvent;
+		const extensionEvents: MessageLifecycleEvent[] = [];
+		const deliveryOrder: string[] = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("message_start", (event) => {
+				extensionEvents.push(event);
+				deliveryOrder.push(`extension:${event.type}:${event.entryId}`);
+			});
+			pi.on("message_update", (event) => {
+				extensionEvents.push(event);
+				deliveryOrder.push(`extension:${event.type}:${event.entryId}`);
+			});
+			pi.on("message_end", (event) => {
+				extensionEvents.push(event);
+				deliveryOrder.push(`extension:${event.type}:${event.entryId}`);
+			});
+		});
+		const sessionEvents: MessageLifecycleEvent[] = [];
+		const unsubscribe = runtimeHost.session.subscribe((event) => {
+			if (event.type === "message_start" || event.type === "message_update" || event.type === "message_end") {
+				sessionEvents.push(event);
+				deliveryOrder.push(`listener:${event.type}:${event.entryId}`);
+			}
+		});
+
+		await runtimeHost.session.prompt("same prompt");
+		await runtimeHost.session.prompt("same prompt");
+		unsubscribe();
+
+		const branchMessages = runtimeHost.session.sessionManager.getBranch().filter((entry) => entry.type === "message");
+		const userStarts = extensionEvents.filter(
+			(event): event is MessageStartEvent => event.type === "message_start" && event.message.role === "user",
+		);
+		const assistantStarts = extensionEvents.filter(
+			(event): event is MessageStartEvent => event.type === "message_start" && event.message.role === "assistant",
+		);
+
+		expect(userStarts.map((event) => event.entryId)).toHaveLength(2);
+		expect(new Set(userStarts.map((event) => event.entryId)).size).toBe(2);
+		expect(branchMessages.map((entry) => entry.id)).toEqual([
+			userStarts[0]!.entryId,
+			assistantStarts[0]!.entryId,
+			userStarts[1]!.entryId,
+			assistantStarts[1]!.entryId,
+		]);
+
+		for (const assistant of assistantStarts) {
+			const lifecycle = extensionEvents.filter((event) => event.entryId === assistant.entryId);
+			expect(lifecycle[0]?.type).toBe("message_start");
+			expect(lifecycle.some((event) => event.type === "message_update")).toBe(true);
+			expect(lifecycle.at(-1)?.type).toBe("message_end");
+		}
+		expect(sessionEvents.map((event) => [event.type, event.entryId])).toEqual(
+			extensionEvents.map((event) => [event.type, event.entryId]),
+		);
+		for (let index = 0; index < deliveryOrder.length; index += 2) {
+			expect(deliveryOrder[index]?.replace("extension:", "")).toBe(
+				deliveryOrder[index + 1]?.replace("listener:", ""),
+			);
+		}
+	});
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];

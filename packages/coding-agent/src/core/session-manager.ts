@@ -864,6 +864,8 @@ export class SessionManager {
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
+	private issuedEntryIds: Set<string> = new Set();
+	private reservedEntryIds: Set<string> = new Set();
 	private leafId: string | null = null;
 
 	private constructor(
@@ -1026,6 +1028,34 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
+	private _generateEntryId(): string {
+		const id = generateId({ has: (candidate) => this.byId.has(candidate) || this.issuedEntryIds.has(candidate) });
+		this.issuedEntryIds.add(id);
+		return id;
+	}
+
+	/** Reserve a unique entry ID for a lifecycle that starts before persistence. */
+	reserveEntryId(): string {
+		const id = this._generateEntryId();
+		this.reservedEntryIds.add(id);
+		return id;
+	}
+
+	/** Retire an unfinished reservation without making it reusable. */
+	discardReservedEntryId(entryId: string): void {
+		this.reservedEntryIds.delete(entryId);
+	}
+
+	private _consumeReservedEntryId(entryId: string | undefined): string {
+		if (entryId === undefined) {
+			return this._generateEntryId();
+		}
+		if (!this.reservedEntryIds.delete(entryId)) {
+			throw new Error(`Entry ID ${entryId} is not reserved`);
+		}
+		return entryId;
+	}
+
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 
@@ -1068,10 +1098,10 @@ export class SessionManager {
 	 * so it is easier to find them.
 	 * These need to be appended via appendCompaction() and appendBranchSummary() methods.
 	 */
-	appendMessage(message: Message | CustomMessage | BashExecutionMessage): string {
+	appendMessage(message: Message | CustomMessage | BashExecutionMessage, entryId?: string): string {
 		const entry: SessionMessageEntry = {
 			type: "message",
-			id: generateId(this.byId),
+			id: this._consumeReservedEntryId(entryId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			message,
@@ -1084,7 +1114,7 @@ export class SessionManager {
 	appendThinkingLevelChange(thinkingLevel: string): string {
 		const entry: ThinkingLevelChangeEntry = {
 			type: "thinking_level_change",
-			id: generateId(this.byId),
+			id: this._generateEntryId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			thinkingLevel,
@@ -1097,7 +1127,7 @@ export class SessionManager {
 	appendModelChange(provider: string, modelId: string): string {
 		const entry: ModelChangeEntry = {
 			type: "model_change",
-			id: generateId(this.byId),
+			id: this._generateEntryId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			provider,
@@ -1118,7 +1148,7 @@ export class SessionManager {
 	): string {
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
-			id: generateId(this.byId),
+			id: this._generateEntryId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			summary,
@@ -1138,7 +1168,7 @@ export class SessionManager {
 			type: "custom",
 			customType,
 			data,
-			id: generateId(this.byId),
+			id: this._generateEntryId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 		};
@@ -1151,7 +1181,7 @@ export class SessionManager {
 		const sanitizedName = name.replace(/[\r\n]+/g, " ").trim();
 		const entry: SessionInfoEntry = {
 			type: "session_info",
-			id: generateId(this.byId),
+			id: this._generateEntryId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			name: sanitizedName,
@@ -1187,6 +1217,7 @@ export class SessionManager {
 		content: string | (TextContent | ImageContent)[],
 		display: boolean,
 		details?: T,
+		entryId?: string,
 	): string {
 		const entry: CustomMessageEntry<T> = {
 			type: "custom_message",
@@ -1194,7 +1225,7 @@ export class SessionManager {
 			content,
 			display,
 			details,
-			id: generateId(this.byId),
+			id: this._consumeReservedEntryId(entryId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 		};
@@ -1249,7 +1280,7 @@ export class SessionManager {
 		}
 		const entry: LabelEntry = {
 			type: "label",
-			id: generateId(this.byId),
+			id: this._generateEntryId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			targetId,
@@ -1406,7 +1437,7 @@ export class SessionManager {
 		this.leafId = branchFromId;
 		const entry: BranchSummaryEntry = {
 			type: "branch_summary",
-			id: generateId(this.byId),
+			id: this._generateEntryId(),
 			parentId: branchFromId,
 			timestamp: new Date().toISOString(),
 			fromId,
