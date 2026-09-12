@@ -1,4 +1,4 @@
-import { Container, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, Container, type TuiMouseEvent, truncateToWidth } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundaryDecoratorV2,
 	MessageRenderBoundarySelectorV3,
@@ -20,6 +20,34 @@ export interface ToolGroupOptions {
 	producerSessionId?: string;
 	renderScopeId?: string;
 	semanticSelectorsV3?: readonly MessageRenderBoundarySelectorV3[];
+}
+
+export class ToolGroupMemberComponent implements Component {
+	readonly component: ToolExecutionComponent;
+	private readonly separator: boolean;
+	private renderedHeight = 0;
+
+	constructor(component: ToolExecutionComponent, separator: boolean) {
+		this.component = component;
+		this.separator = separator;
+	}
+
+	render(width: number): string[] {
+		const rows = this.component.render(width);
+		this.renderedHeight = rows.length;
+		if (rows.length === 0 || !this.separator) return rows;
+		return ["", ...rows];
+	}
+
+	invalidate(): void {
+		this.component.invalidate();
+	}
+
+	handleMouse(event: TuiMouseEvent): ReturnType<NonNullable<Component["handleMouse"]>> {
+		const offset = this.separator && this.renderedHeight > 0 ? 1 : 0;
+		if (event.y < offset) return undefined;
+		return this.component.handleMouse({ ...event, y: event.y - offset, height: this.renderedHeight });
+	}
 }
 
 export class ToolGroupComponent extends Container {
@@ -55,7 +83,7 @@ export class ToolGroupComponent extends Container {
 
 	addTool(component: ToolExecutionComponent, member: ToolGroupMemberV1): void {
 		component.setSemanticBoundariesEnabled(false);
-		this.addChild(component);
+		this.addChild(this.semanticDecoratorsV2.length > 0 ? new ToolGroupMemberComponent(component, true) : component);
 		this.members.push(member);
 	}
 
@@ -64,19 +92,26 @@ export class ToolGroupComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const stockRows = super.render(width);
-		if (!this.closed || this.members.length < 2 || this.semanticDecoratorsV2.length === 0) return stockRows;
+		const body = super.render(width);
+		if (!this.closed || this.members.length < 2 || this.semanticDecoratorsV2.length === 0) return body;
 		const header = truncateToWidth(
 			`${" ".repeat(this.outputPad)}${theme.fg("muted", `$ ${toolGroupLabel(this.members)}`)}`,
 			width,
 			"…",
 		);
-		const body = this.children.flatMap((child) => ["", ...child.render(width)]);
 		return decorateMessageRenderV2([header, ...body], 1, width, "tool-group", this.outputPad, {
 			entryId: this.groupId,
 			...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
 			decorators: this.semanticDecoratorsV2,
 		});
+	}
+
+	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		if (!this.closed || this.members.length < 2 || this.semanticDecoratorsV2.length === 0) {
+			return super.handleMouse(event);
+		}
+		if (event.y === 0) return undefined;
+		return super.handleMouse({ ...event, y: event.y - 1, height: event.height - 1 });
 	}
 }
 

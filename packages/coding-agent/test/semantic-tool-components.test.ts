@@ -1,6 +1,6 @@
-import { Text, type TUI } from "@earendil-works/pi-tui";
+import { Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type {
 	MessageRenderBoundaryCandidateV3,
 	MessageRenderBoundaryContextV1,
@@ -9,7 +9,7 @@ import type {
 	ToolExecutionPresentationSelectorV1,
 } from "../src/core/extensions/types.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
+import { ToolGroupComponent, ToolGroupMemberComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -105,7 +105,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(component.render(80).map((line) => stripAnsi(line).trimEnd())).toEqual(["stock header"]);
 	});
 
-	it("renders one presentation-only group around two existing children", () => {
+	it("renders one presentation-only group around two existing children once", () => {
 		const group = new ToolGroupComponent({
 			groupId: "tool-group:assistant-a:tool-a",
 			ownerEntryId: "assistant-a",
@@ -121,13 +121,98 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		second.updateResult({ content: [{ type: "text", text: "second" }], isError: false });
 		group.addTool(first, { toolName: "read", toolCallId: "tool-a" });
 		group.addTool(second, { toolName: "bash", toolCallId: "tool-b" });
+		const firstRender = vi.spyOn(first, "render");
+		const secondRender = vi.spyOn(second, "render");
 
 		const rendered = group.render(80).join("\n");
+		expect(firstRender).toHaveBeenCalledOnce();
+		expect(secondRender).toHaveBeenCalledOnce();
 		expect(stripAnsi(rendered)).toContain("$ Read files, Ran commands");
 		expect(rendered.indexOf("stock header")).toBeLessThan(rendered.lastIndexOf("stock header"));
 		expect(rendered.split(controls.begin)).toHaveLength(2);
 		expect(rendered.split(controls.body)).toHaveLength(2);
 		expect(rendered.split(controls.end)).toHaveLength(2);
+	});
+
+	it("keeps capability-off group bytes on the direct-child path", () => {
+		const first = tool("tool-a", []);
+		const second = tool("tool-b", []);
+		first.updateResult({ content: [{ type: "text", text: "first" }], isError: false });
+		second.updateResult({ content: [{ type: "text", text: "second" }], isError: true });
+		const expected = [...first.render(80), ...second.render(80)];
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:assistant-a:tool-a",
+			closed: true,
+			semanticSelectorsV3: [],
+		});
+		group.addTool(first, { toolName: "read", toolCallId: "tool-a" });
+		group.addTool(second, { toolName: "bash", toolCallId: "tool-b" });
+
+		expect(group.children).toEqual([first, second]);
+		expect(group.render(80)).toEqual(expected);
+	});
+
+	it("maps group-header and member-separator mouse rows to each child", () => {
+		const makeChild = (rows: string[]) => ({
+			render: vi.fn(() => rows),
+			invalidate: vi.fn(),
+			handleMouse: vi.fn(() => ({ handled: true as const })),
+			setSemanticBoundariesEnabled: vi.fn(),
+		});
+		const first = makeChild(["first-0", "first-1"]);
+		const second = makeChild(["second-0"]);
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:assistant-a:tool-a",
+			ownerEntryId: "assistant-a",
+			closed: true,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [() => () => controls],
+		});
+		group.addTool(first as unknown as ToolExecutionComponent, { toolName: "read", toolCallId: "tool-a" });
+		group.addTool(second as unknown as ToolExecutionComponent, { toolName: "bash", toolCallId: "tool-b" });
+		const rows = group.render(80);
+		const event = (y: number): TuiMouseEvent => ({
+			type: "click",
+			button: "left",
+			x: 0,
+			y,
+			screenX: 0,
+			screenY: y,
+			width: 80,
+			height: rows.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 1,
+		});
+
+		expect(group.handleMouse(event(0))).toBeUndefined();
+		expect(group.handleMouse(event(1))).toBeUndefined();
+		expect(group.handleMouse(event(2))).toMatchObject({ handled: true });
+		expect(first.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 2 }));
+		expect(group.handleMouse(event(5))).toMatchObject({ handled: true });
+		expect(second.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 1 }));
+	});
+
+	it.each([
+		["default shell", ["", "default header", "default body"]],
+		["self shell", ["", "self header", "self result"]],
+		["error", ["", "error header", "error body"]],
+		["image", ["image header", "\x1b_Gi=1,r=1;AAAA\x1b\\"]],
+		["image only", ["\x1b_Gi=2,r=1;AAAA\x1b\\"]],
+		["I3 partial", ["stock header"]],
+		["empty", []],
+	] as const)("keeps %s member rows transparent", (_name, childRows) => {
+		const component = {
+			render: vi.fn(() => [...childRows]),
+			invalidate: vi.fn(),
+			handleMouse: vi.fn(),
+		} as unknown as ToolExecutionComponent;
+		const member = new ToolGroupMemberComponent(component, true);
+
+		expect(member.render(80)).toEqual(childRows.length === 0 ? [] : ["", ...childRows]);
+		expect(component.render).toHaveBeenCalledOnce();
 	});
 
 	it("leaves a singleton on its existing Tool Call path", () => {
