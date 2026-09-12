@@ -1,8 +1,14 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { loadExtensions } from "../src/core/extensions/loader.ts";
+import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type {
 	MessageRenderBoundaryCandidateV3,
 	MessageRenderProjectionV1,
@@ -11,6 +17,7 @@ import type {
 import { SessionManager } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
 const user = { role: "user", content: "Question", timestamp: 1 } as const;
 
@@ -58,7 +65,7 @@ function definition(): ToolDefinition {
 	};
 }
 
-function modeHarness(sessionManager: SessionManager) {
+function modeHarness(sessionManager: SessionManager, extensionRunner?: ExtensionRunner) {
 	const projections: Readonly<MessageRenderProjectionV1>[] = [];
 	const candidates: MessageRenderBoundaryCandidateV3[] = [];
 	const chatContainer = new Container();
@@ -80,7 +87,7 @@ function modeHarness(sessionManager: SessionManager) {
 		streamingMessage: undefined,
 		semanticStreamingContainer: undefined,
 		sessionManager,
-		session: { retryAttempt: 0, modelRuntime: undefined },
+		session: { retryAttempt: 0, modelRuntime: undefined, extensionRunner },
 		settingsManager: {
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
@@ -89,15 +96,19 @@ function modeHarness(sessionManager: SessionManager) {
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 		getMarkdownTransformers: () => [],
 		getMessageRenderBoundaryDecoratorsV1: () => [],
-		getMessageRenderBoundarySelectorsV3: () => [
-			(candidate: Readonly<MessageRenderBoundaryCandidateV3>) => {
-				candidates.push(candidate);
-				return () => ({ begin: "<begin>", body: "<body>", end: "<end>" });
-			},
-		],
-		getMessageRenderProjectionObserversV1: () => [
-			(projection: Readonly<MessageRenderProjectionV1>) => projections.push(projection),
-		],
+		...(extensionRunner
+			? {}
+			: {
+					getMessageRenderBoundarySelectorsV3: () => [
+						(candidate: Readonly<MessageRenderBoundaryCandidateV3>) => {
+							candidates.push(candidate);
+							return () => ({ begin: "<begin>", body: "<body>", end: "<end>" });
+						},
+					],
+					getMessageRenderProjectionObserversV1: () => [
+						(projection: Readonly<MessageRenderProjectionV1>) => projections.push(projection),
+					],
+				}),
 		getToolExecutionPresentationSelectorsV1: () => [
 			() => ({
 				liveToolCall: "compact-stock-header" as const,
@@ -188,6 +199,62 @@ describe("InteractiveMode response projection", () => {
 			["tool-group", `tool-group:${assistantId}:tool-a`],
 		]);
 		expect(rendered).toContain("$ Read files, Ran commands");
+	});
+
+	it("delivers a completed projection through an extension-loaded runner", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-i4-projection-"));
+		const extensionPath = path.join(tempDir, "projection-observer.ts");
+		const observed: Readonly<MessageRenderProjectionV1>[] = [];
+		const testGlobal = globalThis as typeof globalThis & {
+			__piI4ProjectionObserver?: (projection: Readonly<MessageRenderProjectionV1>) => void;
+		};
+		testGlobal.__piI4ProjectionObserver = (projection) => observed.push(projection);
+		try {
+			fs.writeFileSync(
+				extensionPath,
+				`export default function (pi) {
+	pi.registerMessageRenderProjectionObserverV1((projection) => globalThis.__piI4ProjectionObserver(projection));
+}`,
+			);
+			const sessionManager = SessionManager.inMemory();
+			const userId = sessionManager.appendMessage(user);
+			const terminalAssistant = assistant([{ type: "text", text: "Done" }], "stop");
+			const assistantId = sessionManager.appendMessage(terminalAssistant);
+			const loaded = await loadExtensions([extensionPath], tempDir);
+			expect(loaded.errors).toEqual([]);
+			const runner = new ExtensionRunner(
+				loaded.extensions,
+				loaded.runtime,
+				tempDir,
+				sessionManager,
+				await createInMemoryModelRegistry(AuthStorage.inMemory()),
+			);
+			const { mode } = modeHarness(sessionManager, runner);
+			const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+				this: typeof mode,
+				event: AgentSessionEvent,
+			) => Promise<void>;
+
+			await handleEvent.call(mode, { type: "message_start", message: user, entryId: userId });
+			await handleEvent.call(mode, {
+				type: "message_start",
+				message: assistant([], "pending"),
+				entryId: assistantId,
+			});
+			await handleEvent.call(mode, {
+				type: "message_end",
+				message: terminalAssistant,
+				entryId: assistantId,
+			});
+
+			expect(observed.at(-1)?.members[0]).toMatchObject({
+				entryId: userId,
+				completedTurn: { assistantEntryId: assistantId, userPreview: "Question", assistantPreview: "Done" },
+			});
+		} finally {
+			delete testGlobal.__piI4ProjectionObserver;
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("restores the same projection member order as the live path", () => {
