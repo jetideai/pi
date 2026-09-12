@@ -69,6 +69,7 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 	const projections: Readonly<MessageRenderProjectionV1>[] = [];
 	const candidates: MessageRenderBoundaryCandidateV3[] = [];
 	const chatContainer = new Container();
+	const messageDecorator = vi.fn(() => undefined);
 	const mode = {
 		isInitialized: true,
 		footer: { invalidate: vi.fn() },
@@ -95,7 +96,7 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 		},
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 		getMarkdownTransformers: () => [],
-		getMessageRenderBoundaryDecoratorsV1: () => [],
+		getMessageRenderBoundaryDecoratorsV1: () => [messageDecorator],
 		...(extensionRunner
 			? {}
 			: {
@@ -129,7 +130,7 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 		renderSessionItems: Reflect.get(InteractiveMode.prototype, "renderSessionItems"),
 	};
 	Object.setPrototypeOf(mode, InteractiveMode.prototype);
-	return { mode, projections, candidates, chatContainer };
+	return { mode, projections, candidates, chatContainer, messageDecorator };
 }
 
 describe("InteractiveMode response projection", () => {
@@ -139,7 +140,7 @@ describe("InteractiveMode response projection", () => {
 		const sessionManager = SessionManager.inMemory();
 		const userId = sessionManager.appendMessage(user);
 		const assistantId = sessionManager.appendMessage(finalAssistant);
-		const { mode, projections, candidates, chatContainer } = modeHarness(sessionManager);
+		const { mode, projections, candidates, chatContainer, messageDecorator } = modeHarness(sessionManager);
 		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 			this: typeof mode,
 			event: AgentSessionEvent,
@@ -198,6 +199,9 @@ describe("InteractiveMode response projection", () => {
 			["tool", "tool-b"],
 			["tool-group", `tool-group:${assistantId}:tool-a`],
 		]);
+		expect(messageDecorator).toHaveBeenCalledWith(
+			expect.objectContaining({ entryId: assistantId, role: "assistant", state: "final" }),
+		);
 		expect(rendered).toContain("$ Read files, Ran commands");
 	});
 

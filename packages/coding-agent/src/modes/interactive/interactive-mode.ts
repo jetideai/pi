@@ -2207,6 +2207,10 @@ export class InteractiveMode {
 						this.hiddenThinkingLabel,
 						this.outputPad,
 						this.getMarkdownTransformers(),
+						{
+							entryId,
+							decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+						},
 					),
 				);
 				continue;
