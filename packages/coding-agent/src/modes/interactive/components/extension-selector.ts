@@ -12,6 +12,7 @@ import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 export interface ExtensionSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
+	onTimeout?: () => void;
 	onToggleToolsExpanded?: () => void;
 }
 
@@ -53,7 +54,7 @@ export class ExtensionSelectorComponent extends Container {
 				opts.timeout,
 				opts.tui,
 				(s) => this.titleText.setText(theme.fg("accent", theme.bold(`${this.baseTitle} (${s}s)`))),
-				() => this.onCancelCallback(),
+				() => (opts.onTimeout ?? this.onCancelCallback)(),
 			);
 		}
 

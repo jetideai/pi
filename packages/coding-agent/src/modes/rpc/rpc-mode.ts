@@ -149,6 +149,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,
 			),
 
+		respond: () => "unsupported",
+
+		dismiss: () => "unsupported",
+
 		notify(message: string, type?: "info" | "warning" | "error"): void {
 			// Fire and forget - no response needed
 			output({

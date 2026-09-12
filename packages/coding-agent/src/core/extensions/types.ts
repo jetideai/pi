@@ -140,6 +140,12 @@ export interface ExtensionUIContext {
 	/** Show a text input dialog. */
 	input(title: string, placeholder?: string, opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
 
+	/** Respond to one active prompt. Throws after the owning extension context is invalidated. */
+	respond(promptId: UIPromptId, response: UIPromptResponse): UIPromptControlResult;
+
+	/** Dismiss one active prompt. Throws after the owning extension context is invalidated. */
+	dismiss(promptId: UIPromptId): UIPromptControlResult;
+
 	/** Show a notification to the user. */
 	notify(message: string, type?: "info" | "warning" | "error"): void;
 
@@ -750,21 +756,96 @@ export interface AgentSettledEvent {
 
 export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
 
-/** Fired when Pi starts waiting on a blocking user-facing extension UI prompt. */
-export interface UIPromptStartEvent {
-	type: "ui_prompt_start";
+declare const uiPromptIdBrand: unique symbol;
+
+/** Host-owned UUID for one UI prompt lifecycle. */
+export type UIPromptId = string & { readonly [uiPromptIdBrand]: true };
+
+export type UIPromptResponse =
+	| { kind: "confirm"; value: boolean }
+	| { kind: "select"; value: string }
+	| { kind: "input"; value: string }
+	| { kind: "editor"; value: string };
+
+export type UIPromptControlResult = "accepted" | "notFound" | "kindMismatch" | "invalidValue" | "unsupported";
+
+export type UIPromptResponseSchema =
+	| { kind: "confirm" }
+	| { kind: "select"; options: readonly string[] }
+	| { kind: "input"; maxResponseBytes: number }
+	| { kind: "editor"; maxResponseBytes: number };
+
+/**
+ * Pi extensions share one trusted process. Exact select options are visible to all loaded extensions through prompt
+ * events. Values leave this process only through an explicit bridge, such as an authenticated jetIDEAI connection.
+ */
+export type UIPromptResponseAvailability =
+	| { status: "supported"; schema: UIPromptResponseSchema }
+	| { status: "unavailable"; reason: "unsupportedKind" | "invalidOptions" | "boundsExceeded" };
+
+interface UIPromptEventBase {
 	reason: "ui_prompt";
 	kind: UIPromptKind;
 	title?: string;
 }
 
-/** Fired when Pi is no longer waiting on a blocking user-facing extension UI prompt. */
-export interface UIPromptEndEvent {
+type ExactUIPromptStartEventBase = UIPromptEventBase & {
+	type: "ui_prompt_start";
+	promptId: UIPromptId;
+};
+
+type SupportedUIPromptResponse<K extends UIPromptResponseSchema["kind"]> = {
+	status: "supported";
+	schema: Extract<UIPromptResponseSchema, { kind: K }>;
+};
+
+type UnavailableUIPromptResponse = Extract<UIPromptResponseAvailability, { status: "unavailable" }>;
+
+/** Exact prompt start event emitted by a UI owner that supports prompt lifecycle IDs. */
+export type ExactUIPromptStartEvent = ExactUIPromptStartEventBase &
+	(
+		| { kind: "confirm"; response: SupportedUIPromptResponse<"confirm"> }
+		| { kind: "select"; response: SupportedUIPromptResponse<"select"> | UnavailableUIPromptResponse }
+		| { kind: "input"; response: SupportedUIPromptResponse<"input"> }
+		| { kind: "editor"; response: SupportedUIPromptResponse<"editor"> }
+		| { kind: "custom"; response: UnavailableUIPromptResponse & { reason: "unsupportedKind" } }
+	);
+
+type ExactUIPromptEndEventBase = UIPromptEventBase & {
 	type: "ui_prompt_end";
-	reason: "ui_prompt";
-	kind: UIPromptKind;
-	title?: string;
+	promptId: UIPromptId;
+};
+
+/** Exact prompt end event. The event never contains a response value. */
+export type ExactUIPromptEndEvent = ExactUIPromptEndEventBase &
+	(
+		| { resolution: "responded"; source: "local" | "external" }
+		| {
+				resolution: "dismissed";
+				source: "local" | "external" | "timeout" | "signal" | "sessionInvalidated";
+		  }
+	);
+
+/** Fired when Pi starts waiting on a blocking user-facing extension UI prompt. */
+export interface LegacyUIPromptStartEvent extends UIPromptEventBase {
+	type: "ui_prompt_start";
+	promptId?: never;
+	response?: never;
 }
+
+/** Legacy events remain available until each UI mode adopts exact prompt ownership. */
+export type UIPromptStartEvent = LegacyUIPromptStartEvent | ExactUIPromptStartEvent;
+
+/** Fired when Pi is no longer waiting on a blocking user-facing extension UI prompt. */
+export interface LegacyUIPromptEndEvent extends UIPromptEventBase {
+	type: "ui_prompt_end";
+	promptId?: never;
+	resolution?: never;
+	source?: never;
+}
+
+/** Legacy events remain available until each UI mode adopts exact prompt ownership. */
+export type UIPromptEndEvent = LegacyUIPromptEndEvent | ExactUIPromptEndEvent;
 
 /** Fired at the start of each turn */
 export interface TurnStartEvent {

@@ -72,6 +72,8 @@ export type {
 	EditToolCallEvent,
 	EntryRenderer,
 	EntryRenderOptions,
+	ExactUIPromptEndEvent,
+	ExactUIPromptStartEvent,
 	ExecOptions,
 	ExecResult,
 	Extension,
@@ -98,6 +100,8 @@ export type {
 	InputEventResult,
 	InputSource,
 	KeybindingsManager,
+	LegacyUIPromptEndEvent,
+	LegacyUIPromptStartEvent,
 	LoadExtensionsResult,
 	LsToolCallEvent,
 	MarkdownTransformContext,
@@ -161,8 +165,13 @@ export type {
 	ToolResultEvent,
 	TurnEndEvent,
 	TurnStartEvent,
+	UIPromptControlResult,
 	UIPromptEndEvent,
+	UIPromptId,
 	UIPromptKind,
+	UIPromptResponse,
+	UIPromptResponseAvailability,
+	UIPromptResponseSchema,
 	UIPromptStartEvent,
 	UserBashEvent,
 	UserBashEventResult,
@@ -187,6 +196,15 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export {
+	createUIPromptId,
+	createUIPromptResponseAvailability,
+	UI_PROMPT_MAX_RESPONSE_BYTES,
+	UI_PROMPT_MAX_SELECT_OPTION_BYTES,
+	UI_PROMPT_MAX_SELECT_OPTIONS,
+	UI_PROMPT_MAX_SELECT_OPTIONS_BYTES,
+	validateUIPromptResponse,
+} from "./core/extensions/ui-prompt-contract.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";

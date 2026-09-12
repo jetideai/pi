@@ -15,11 +15,19 @@ import type {
 	ExtensionContextActions,
 	ExtensionUIContext,
 	ProviderConfig,
+	UIPromptEndEvent,
+	UIPromptStartEvent,
 } from "../src/core/extensions/types.ts";
+import {
+	createUIPromptId,
+	createUIPromptResponseAvailability,
+	type StandardPromptLifecycleSource,
+} from "../src/core/extensions/ui-prompt-contract.ts";
 import { KeybindingsManager, type KeyId } from "../src/core/keybindings.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
 import type { ScopedModel } from "../src/core/model-resolver.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { createTestExtensionsResult } from "./utilities.ts";
 
 describe("ExtensionRunner", () => {
 	let tempDir: string;
@@ -561,6 +569,374 @@ describe("ExtensionRunner", () => {
 			const ctx = runner.createContext();
 			expect(ctx.mode).toBe("tui");
 			expect(ctx.hasUI).toBe(true);
+		});
+	});
+
+	describe("UI prompt notifications", () => {
+		it("forwards exact standard prompt lifecycle events without legacy duplicates", async () => {
+			const observed: Array<UIPromptStartEvent | UIPromptEndEvent> = [];
+			let resolveObserved: () => void = () => {};
+			const allObserved = new Promise<void>((resolve) => {
+				resolveObserved = resolve;
+			});
+			const result = await createTestExtensionsResult([
+				(pi) => {
+					pi.on("ui_prompt_start", (event) => {
+						observed.push(event);
+					});
+					pi.on("ui_prompt_end", (event) => {
+						observed.push(event);
+						if (observed.length === 8) resolveObserved();
+					});
+				},
+			]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			let sink: Parameters<StandardPromptLifecycleSource["connect"]>[0] = async () => {};
+			const source: StandardPromptLifecycleSource = {
+				connect: (listener) => {
+					sink = listener;
+					return () => {};
+				},
+			};
+			const promptIds = {
+				confirm: createUIPromptId(),
+				select: createUIPromptId(),
+				input: createUIPromptId(),
+				editor: createUIPromptId(),
+			};
+			runner.setUIContext(
+				{
+					confirm: async () => {
+						sink({
+							type: "ui_prompt_start",
+							reason: "ui_prompt",
+							promptId: promptIds.confirm,
+							kind: "confirm",
+							response: createUIPromptResponseAvailability("confirm"),
+						});
+						sink({
+							type: "ui_prompt_end",
+							reason: "ui_prompt",
+							promptId: promptIds.confirm,
+							kind: "confirm",
+							resolution: "responded",
+							source: "local",
+						});
+						return true;
+					},
+					select: async () => {
+						sink({
+							type: "ui_prompt_start",
+							reason: "ui_prompt",
+							promptId: promptIds.select,
+							kind: "select",
+							response: createUIPromptResponseAvailability("select", ["First"]),
+						});
+						sink({
+							type: "ui_prompt_end",
+							reason: "ui_prompt",
+							promptId: promptIds.select,
+							kind: "select",
+							resolution: "responded",
+							source: "local",
+						});
+						return "First";
+					},
+					input: async () => {
+						sink({
+							type: "ui_prompt_start",
+							reason: "ui_prompt",
+							promptId: promptIds.input,
+							kind: "input",
+							response: createUIPromptResponseAvailability("input"),
+						});
+						sink({
+							type: "ui_prompt_end",
+							reason: "ui_prompt",
+							promptId: promptIds.input,
+							kind: "input",
+							resolution: "responded",
+							source: "local",
+						});
+						return "input";
+					},
+					editor: async () => {
+						sink({
+							type: "ui_prompt_start",
+							reason: "ui_prompt",
+							promptId: promptIds.editor,
+							kind: "editor",
+							response: createUIPromptResponseAvailability("editor"),
+						});
+						sink({
+							type: "ui_prompt_end",
+							reason: "ui_prompt",
+							promptId: promptIds.editor,
+							kind: "editor",
+							resolution: "responded",
+							source: "local",
+						});
+						return "editor";
+					},
+					respond: () => "unsupported",
+					dismiss: () => "unsupported",
+				} as unknown as ExtensionUIContext,
+				"tui",
+				source,
+			);
+
+			await runner.getUIContext().confirm("Confirm", "Continue?");
+			await runner.getUIContext().select("Select", ["First"]);
+			await runner.getUIContext().input("Input");
+			await runner.getUIContext().editor("Editor");
+			await allObserved;
+
+			expect(observed.map((event) => [event.type, event.kind, event.promptId])).toEqual([
+				["ui_prompt_start", "confirm", promptIds.confirm],
+				["ui_prompt_end", "confirm", promptIds.confirm],
+				["ui_prompt_start", "select", promptIds.select],
+				["ui_prompt_end", "select", promptIds.select],
+				["ui_prompt_start", "input", promptIds.input],
+				["ui_prompt_end", "input", promptIds.input],
+				["ui_prompt_start", "editor", promptIds.editor],
+				["ui_prompt_end", "editor", promptIds.editor],
+			]);
+		});
+
+		it("resolves exact prompt delivery after ordered handlers finish", async () => {
+			let releaseEnd: () => void = () => {};
+			const endGate = new Promise<void>((resolve) => {
+				releaseEnd = resolve;
+			});
+			const observed: string[] = [];
+			const result = await createTestExtensionsResult([
+				(pi) => {
+					pi.on("ui_prompt_start", () => {
+						observed.push("start");
+					});
+					pi.on("ui_prompt_end", async () => {
+						await endGate;
+						observed.push("end");
+					});
+				},
+			]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			let sink: Parameters<StandardPromptLifecycleSource["connect"]>[0] = async () => {};
+			const source: StandardPromptLifecycleSource = {
+				connect: (listener) => {
+					sink = listener;
+					return () => {};
+				},
+			};
+			runner.setUIContext({} as ExtensionUIContext, "tui", source);
+			const promptId = createUIPromptId();
+
+			await sink({
+				type: "ui_prompt_start",
+				reason: "ui_prompt",
+				promptId,
+				kind: "input",
+				response: createUIPromptResponseAvailability("input"),
+			});
+			let endDelivered = false;
+			const endDelivery = sink({
+				type: "ui_prompt_end",
+				reason: "ui_prompt",
+				promptId,
+				kind: "input",
+				resolution: "dismissed",
+				source: "sessionInvalidated",
+			}).then(() => {
+				endDelivered = true;
+			});
+			await Promise.resolve();
+
+			expect(observed).toEqual(["start"]);
+			expect(endDelivered).toBe(false);
+			releaseEnd();
+			await endDelivery;
+			expect(observed).toEqual(["start", "end"]);
+		});
+
+		it("keeps capability-off custom prompts observable but unavailable for external control", async () => {
+			const observed: Array<UIPromptStartEvent | UIPromptEndEvent> = [];
+			let resolveObserved: () => void = () => {};
+			const allObserved = new Promise<void>((resolve) => {
+				resolveObserved = resolve;
+			});
+			const result = await createTestExtensionsResult([
+				(pi) => {
+					pi.on("ui_prompt_start", (event) => {
+						observed.push(event);
+					});
+					pi.on("ui_prompt_end", (event) => {
+						observed.push(event);
+						resolveObserved();
+					});
+				},
+			]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.setUIContext(
+				{
+					custom: async () => "local result",
+					respond: () => "unsupported",
+					dismiss: () => "unsupported",
+				} as unknown as ExtensionUIContext,
+				"tui",
+			);
+
+			expect(await runner.getUIContext().custom(() => ({}) as never)).toBe("local result");
+			await allObserved;
+
+			expect(observed).toEqual([
+				{ type: "ui_prompt_start", reason: "ui_prompt", kind: "custom", title: undefined },
+				{ type: "ui_prompt_end", reason: "ui_prompt", kind: "custom", title: undefined },
+			]);
+			expect("promptId" in observed[0]).toBe(false);
+			expect(createUIPromptResponseAvailability("custom")).toEqual({
+				status: "unavailable",
+				reason: "unsupportedKind",
+			});
+		});
+
+		it("reports unsupported prompt control when the RPC UI has no active prompt", async () => {
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.setUIContext(
+				{ respond: () => "unsupported", dismiss: () => "unsupported" } as unknown as ExtensionUIContext,
+				"rpc",
+			);
+			const ui = runner.createContext().ui;
+			const promptId = createUIPromptId();
+
+			expect(ui.respond(promptId, { kind: "confirm", value: true })).toBe("unsupported");
+			expect(ui.dismiss(promptId)).toBe("unsupported");
+		});
+
+		it("keeps retained prompt controls unavailable and rejects them after context invalidation", async () => {
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.setUIContext(
+				{ respond: () => "unsupported", dismiss: () => "unsupported" } as unknown as ExtensionUIContext,
+				"tui",
+			);
+			const ui = runner.createContext().ui;
+			const promptId = createUIPromptId();
+
+			expect(ui.respond(promptId, { kind: "confirm", value: true })).toBe("unsupported");
+			expect(ui.dismiss(promptId)).toBe("unsupported");
+
+			runner.invalidate("Expired context");
+
+			expect(() => ui.respond(promptId, { kind: "confirm", value: true })).toThrow("Expired context");
+			expect(() => ui.dismiss(promptId)).toThrow("Expired context");
+		});
+
+		it("coalesces nested UI prompts into the outer prompt lifecycle", async () => {
+			const observed: Array<{ type: string; reason: string; kind: string; title?: string }> = [];
+			let resolveObserved: () => void = () => {};
+			const allObserved = new Promise<void>((resolve) => {
+				resolveObserved = resolve;
+			});
+			const result = await createTestExtensionsResult([
+				(pi) => {
+					pi.on("ui_prompt_start", (event) => {
+						observed.push(event);
+					});
+					pi.on("ui_prompt_end", (event) => {
+						observed.push(event);
+						resolveObserved();
+					});
+				},
+			]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.setUIContext(
+				{
+					confirm: async () => {
+						await runner.getUIContext().input("Inner input", "Value");
+						return true;
+					},
+					input: async () => "value",
+				} as unknown as ExtensionUIContext,
+				"tui",
+			);
+
+			await runner.getUIContext().confirm("Outer confirmation", "Continue?");
+			await allObserved;
+
+			expect(observed).toEqual([
+				{ type: "ui_prompt_start", reason: "ui_prompt", kind: "confirm", title: "Outer confirmation" },
+				{ type: "ui_prompt_end", reason: "ui_prompt", kind: "confirm", title: "Outer confirmation" },
+			]);
+		});
+
+		it("preserves prompt notification order when an earlier observer is delayed", async () => {
+			let releaseStart: () => void = () => {};
+			const startGate = new Promise<void>((resolve) => {
+				releaseStart = resolve;
+			});
+			const observed: string[] = [];
+			let resolveObserved: () => void = () => {};
+			const allObserved = new Promise<void>((resolve) => {
+				resolveObserved = resolve;
+			});
+			const result = await createTestExtensionsResult([
+				(pi) => {
+					pi.on("ui_prompt_start", async () => startGate);
+				},
+				(pi) => {
+					pi.on("ui_prompt_start", () => {
+						observed.push("ui_prompt_start");
+						if (observed.length === 2) resolveObserved();
+					});
+					pi.on("ui_prompt_end", () => {
+						observed.push("ui_prompt_end");
+						if (observed.length === 2) resolveObserved();
+					});
+				},
+			]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.setUIContext({ confirm: async () => true } as unknown as ExtensionUIContext, "tui");
+
+			await runner.getUIContext().confirm("Confirm", "Continue?");
+			releaseStart();
+			await allObserved;
+
+			expect(observed).toEqual(["ui_prompt_start", "ui_prompt_end"]);
+		});
+
+		it("continues prompt notification delivery after an observer rejects", async () => {
+			const observed: string[] = [];
+			let resolveObserved: () => void = () => {};
+			const allObserved = new Promise<void>((resolve) => {
+				resolveObserved = resolve;
+			});
+			const result = await createTestExtensionsResult([
+				(pi) => {
+					pi.on("ui_prompt_start", async () => {
+						throw new Error("Rejected prompt observer");
+					});
+				},
+				(pi) => {
+					pi.on("ui_prompt_start", () => {
+						observed.push("ui_prompt_start");
+					});
+					pi.on("ui_prompt_end", () => {
+						observed.push("ui_prompt_end");
+						resolveObserved();
+					});
+				},
+			]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const errors: string[] = [];
+			runner.onError((error) => errors.push(error.error));
+			runner.setUIContext({ confirm: async () => true } as unknown as ExtensionUIContext, "tui");
+
+			await runner.getUIContext().confirm("Confirm", "Continue?");
+			await allObserved;
+
+			expect(observed).toEqual(["ui_prompt_start", "ui_prompt_end"]);
+			expect(errors).toEqual(["Rejected prompt observer"]);
 		});
 	});
 

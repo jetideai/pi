@@ -10,6 +10,11 @@ import {
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import {
+	createUIPromptId,
+	createUIPromptResponseAvailability,
+	type StandardPromptLifecycleSource,
+} from "../src/core/extensions/ui-prompt-contract.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type {
@@ -270,6 +275,145 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		);
 		runtimeHost.setBeforeSessionInvalidate(undefined);
 		runtimeHost.setRebindSession(undefined);
+	});
+
+	it("waits for asynchronous UI invalidation before disposing the old session", async () => {
+		const phases: string[] = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("session_shutdown", () => {
+				phases.push("session_shutdown");
+			});
+		});
+		const oldSession = runtimeHost.session;
+		let invalidateStarted: () => void = () => {};
+		const started = new Promise<void>((resolve) => {
+			invalidateStarted = resolve;
+		});
+		let releaseInvalidation: () => void = () => {};
+		const invalidationGate = new Promise<void>((resolve) => {
+			releaseInvalidation = resolve;
+		});
+		runtimeHost.setBeforeSessionInvalidate(async () => {
+			phases.push("beforeSessionInvalidate:start");
+			invalidateStarted();
+			await invalidationGate;
+			phases.push("beforeSessionInvalidate:end");
+		});
+		runtimeHost.setRebindSession(async () => {
+			phases.push("rebindSession");
+		});
+
+		const replacement = runtimeHost.newSession();
+		await started;
+		expect(phases).toEqual(["session_shutdown", "beforeSessionInvalidate:start"]);
+		expect(oldSession.extensionRunner.createContext().cwd).toBe(oldSession.sessionManager.getCwd());
+
+		releaseInvalidation();
+		await replacement;
+		expect(phases).toEqual([
+			"session_shutdown",
+			"beforeSessionInvalidate:start",
+			"beforeSessionInvalidate:end",
+			"rebindSession",
+		]);
+	});
+
+	it("delivers prompt invalidation before old-session disposal and replacement start", async () => {
+		const phases: string[] = [];
+		let releaseEnd: () => void = () => {};
+		const endGate = new Promise<void>((resolve) => {
+			releaseEnd = resolve;
+		});
+		let endStarted: () => void = () => {};
+		const observedEnd = new Promise<void>((resolve) => {
+			endStarted = resolve;
+		});
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("ui_prompt_start", () => {
+				phases.push("prompt:start");
+			});
+			pi.on("ui_prompt_end", async () => {
+				phases.push("prompt:end:start");
+				endStarted();
+				await endGate;
+				phases.push("prompt:end:done");
+			});
+			pi.on("session_start", (event) => {
+				if (event.reason === "new") phases.push("session_start:new");
+			});
+		});
+		let sink: Parameters<StandardPromptLifecycleSource["connect"]>[0] = async () => {};
+		const source: StandardPromptLifecycleSource = {
+			connect: (listener) => {
+				sink = listener;
+				return () => {};
+			},
+		};
+		await runtimeHost.session.bindExtensions({ standardPromptLifecycleSource: source });
+		const oldSession = runtimeHost.session;
+		const promptId = createUIPromptId();
+		await sink({
+			type: "ui_prompt_start",
+			reason: "ui_prompt",
+			promptId,
+			kind: "confirm",
+			response: createUIPromptResponseAvailability("confirm"),
+		});
+		runtimeHost.setBeforeSessionInvalidate(() =>
+			sink({
+				type: "ui_prompt_end",
+				reason: "ui_prompt",
+				promptId,
+				kind: "confirm",
+				resolution: "dismissed",
+				source: "sessionInvalidated",
+			}),
+		);
+		runtimeHost.setRebindSession(async (session) => {
+			await session.bindExtensions({});
+		});
+
+		const replacement = runtimeHost.newSession();
+		await observedEnd;
+		expect(phases).toEqual(["prompt:start", "prompt:end:start"]);
+		expect(oldSession.extensionRunner.createContext().cwd).toBe(oldSession.sessionManager.getCwd());
+
+		releaseEnd();
+		await replacement;
+		expect(phases).toEqual(["prompt:start", "prompt:end:start", "prompt:end:done", "session_start:new"]);
+		expect(() => oldSession.extensionRunner.createContext().cwd).toThrow(
+			"This extension ctx is stale after session replacement or reload.",
+		);
+		runtimeHost.setBeforeSessionInvalidate(undefined);
+		runtimeHost.setRebindSession(undefined);
+	});
+
+	it("waits for asynchronous UI invalidation during shutdown", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => {});
+		const oldSession = runtimeHost.session;
+		let invalidateStarted: () => void = () => {};
+		const started = new Promise<void>((resolve) => {
+			invalidateStarted = resolve;
+		});
+		let releaseInvalidation: () => void = () => {};
+		const invalidationGate = new Promise<void>((resolve) => {
+			releaseInvalidation = resolve;
+		});
+		runtimeHost.setBeforeSessionInvalidate(async () => {
+			invalidateStarted();
+			await invalidationGate;
+		});
+
+		const shutdown = runtimeHost.dispose();
+		await started;
+		expect(oldSession.extensionRunner.createContext().cwd).toBe(oldSession.sessionManager.getCwd());
+
+		releaseInvalidation();
+		await shutdown;
+		expect(() => oldSession.extensionRunner.createContext().cwd).toThrow(
+			"This extension ctx is stale after session replacement or reload.",
+		);
+		runtimeHost.setBeforeSessionInvalidate(undefined);
 	});
 
 	it("emits session_before_fork and session_start and honors cancellation", async () => {
