@@ -77,6 +77,7 @@ import type {
 	MarkdownTransformer,
 	MessageRenderBoundaryDecoratorV1,
 	ProjectTrustContext,
+	ToolExecutionPresentationSelectorV1,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
@@ -2039,6 +2040,10 @@ export class InteractiveMode {
 		return this.session.extensionRunner.getMessageRenderBoundaryDecoratorsV1();
 	}
 
+	private getToolExecutionPresentationSelectorsV1(): ToolExecutionPresentationSelectorV1[] {
+		return this.session.extensionRunner.getToolExecutionPresentationSelectorsV1();
+	}
+
 	/**
 	 * Set up keyboard shortcuts registered by extensions.
 	 */
@@ -3274,6 +3279,7 @@ export class InteractiveMode {
 									{
 										showImages: this.settingsManager.getShowImages(),
 										imageWidthCells: this.settingsManager.getImageWidthCells(),
+										toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 									},
 									this.getRegisteredToolDefinition(content.name),
 									this.ui,
@@ -3349,6 +3355,7 @@ export class InteractiveMode {
 						{
 							showImages: this.settingsManager.getShowImages(),
 							imageWidthCells: this.settingsManager.getImageWidthCells(),
+							toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 						},
 						this.getRegisteredToolDefinition(event.toolName),
 						this.ui,
@@ -3760,6 +3767,7 @@ export class InteractiveMode {
 							{
 								showImages: this.settingsManager.getShowImages(),
 								imageWidthCells: this.settingsManager.getImageWidthCells(),
+								toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 							},
 							this.getRegisteredToolDefinition(content.name),
 							this.ui,

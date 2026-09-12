@@ -411,6 +411,29 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].messageRenderBoundaryDecoratorV1).toBeDefined();
 	});
 
+	it("registers one Tool Call presentation selector per extension", async () => {
+		const extCode = `
+			export default function(pi) {
+				pi.registerToolExecutionPresentationSelectorV1(() => ({ liveToolCall: "stock" }));
+				pi.registerToolExecutionPresentationSelectorV1(() => ({ liveToolCall: "compact-stock-header" }));
+			}
+		`;
+		fs.writeFileSync(path.join(extensionsDir, "with-tool-presentation.ts"), extCode);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(
+			result.extensions[0].toolExecutionPresentationSelectorV1?.({
+				role: "tool",
+				hasExactHeaderSeam: true,
+				hasCanonicalResultRenderer: true,
+				hasInitialCollapsedBoundaries: true,
+			})?.liveToolCall,
+		).toBe("compact-stock-header");
+	});
+
 	it("reports error when extension throws during initialization", async () => {
 		const extCode = `
 			export default function(pi) {

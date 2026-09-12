@@ -625,6 +625,30 @@ describe("ExtensionRunner", () => {
 			);
 		});
 
+		it("gets Tool Call presentation selectors in extension load order", async () => {
+			const extCode = (header: string) => `
+				export default function(pi) {
+					pi.registerToolExecutionPresentationSelectorV1(() => ({ header: "${header}" }));
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-presentation-a.ts"), extCode("a"));
+			fs.writeFileSync(path.join(extensionsDir, "tool-presentation-b.ts"), extCode("b"));
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const candidate = {
+				role: "tool" as const,
+				hasExactHeaderSeam: true,
+				hasCanonicalResultRenderer: true,
+				hasInitialCollapsedBoundaries: true,
+			};
+
+			expect(runner.getToolExecutionPresentationSelectorsV1().map((select) => select(candidate)?.header)).toEqual([
+				"a",
+				"b",
+			]);
+		});
+
 		it("gets message renderer by type", async () => {
 			const extCode = `
 				export default function(pi) {

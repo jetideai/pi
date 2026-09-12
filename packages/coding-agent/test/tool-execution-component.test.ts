@@ -1,9 +1,9 @@
 import { join, resolve } from "node:path";
-import { Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Container, Image, Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
-import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import type { ToolDefinition, ToolExecutionPresentationSelectorV1 } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createAllToolRenderers, withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
@@ -585,4 +585,243 @@ describe("ToolExecutionComponent parity", () => {
 			expect(collapsed.indexOf(":120-329")).toBeLessThan(collapsed.indexOf("to expand"));
 		});
 	}
+
+	const admitCompactLiveToolCall: ToolExecutionPresentationSelectorV1 = () => ({
+		liveToolCall: "compact-stock-header",
+		liveToolGroup: "compact-stock-header",
+		header: "exact-one-row",
+		settled: "canonical-initial-collapsed",
+	});
+
+	test("keeps admitted partial output behind one renderer-owned header row", () => {
+		let resultRenders = 0;
+		const readDefinition = createReadToolDefinition(process.cwd());
+		const countedRenderResult: NonNullable<typeof readDefinition.renderResult> = (
+			result,
+			options,
+			currentTheme,
+			context,
+		) => {
+			resultRenders += 1;
+			return readDefinition.renderResult!(result, options, currentTheme, context);
+		};
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-live-read",
+			{ path: "a-very-long-file-name-that-wraps-at-narrow-width.txt" },
+			{
+				hasInitialCollapsedBoundaries: true,
+				toolExecutionPresentationSelectorsV1: [admitCompactLiveToolCall],
+			},
+			{ ...readDefinition, renderResult: countedRenderResult },
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult({ content: [{ type: "text", text: "partial output" }], isError: false }, true);
+
+		expect(component.render(12)).toHaveLength(1);
+		expect(stripAnsi(component.render(12).join("\n"))).not.toContain("partial output");
+		expect(resultRenders).toBe(0);
+
+		component.updateResult({ content: [{ type: "text", text: "final output" }], isError: false }, false);
+		expect(stripAnsi(component.render(80).join("\n"))).not.toContain("final output");
+		expect(resultRenders).toBe(1);
+		component.setExpanded(true);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("final output");
+	});
+
+	test("does not inherit built-in locators with a custom call renderer", () => {
+		const definition = withBuiltInRenderers("read", {
+			...createBaseToolDefinition("read"),
+			renderCall: () => new Text("custom header\ncustom preview", 0, 0),
+		});
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-custom-read",
+			{ path: "notes.txt" },
+			{
+				hasInitialCollapsedBoundaries: true,
+				toolExecutionPresentationSelectorsV1: [admitCompactLiveToolCall],
+			},
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult({ content: [{ type: "text", text: "partial body" }], isError: false }, true);
+
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("custom preview");
+		expect(rendered).not.toHaveLength(1);
+	});
+
+	test("does no locator work unless a selector admits the presentation", () => {
+		let headerLocations = 0;
+		let bodyLocations = 0;
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderCall: () => new Text("stock header", 0, 0),
+			renderResult: () => new Text("stock partial body", 0, 0),
+			getRenderCallHeaderRow: () => {
+				headerLocations += 1;
+				return 0;
+			},
+			getRenderCallBodyRow: () => {
+				bodyLocations += 1;
+				return 1;
+			},
+		};
+		for (const selectors of [
+			[],
+			[() => undefined],
+			[
+				() => {
+					throw new Error("selector failed");
+				},
+			],
+		]) {
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				`tool-stock-${selectors.length}`,
+				{},
+				{
+					hasInitialCollapsedBoundaries: true,
+					toolExecutionPresentationSelectorsV1: selectors,
+				},
+				definition,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.markExecutionStarted();
+			component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
+			expect(stripAnsi(component.render(80).join("\n"))).toContain("stock partial body");
+		}
+		expect({ headerLocations, bodyLocations }).toEqual({ headerLocations: 0, bodyLocations: 0 });
+	});
+
+	test("selects once at construction and locates once per admitted render", () => {
+		let selections = 0;
+		let headerLocations = 0;
+		let bodyLocations = 0;
+		const selector: ToolExecutionPresentationSelectorV1 = (candidate) => {
+			selections += 1;
+			return admitCompactLiveToolCall(candidate);
+		};
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderCall: () => new Text("stock header", 0, 0),
+			renderResult: () => new Text("stock body", 0, 0),
+			getRenderCallHeaderRow: () => {
+				headerLocations += 1;
+				return 0;
+			},
+			getRenderCallBodyRow: () => {
+				bodyLocations += 1;
+				return 1;
+			},
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-counts",
+			{},
+			{ hasInitialCollapsedBoundaries: true, toolExecutionPresentationSelectorsV1: [selector] },
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
+
+		expect(component.render(80)).toHaveLength(1);
+		expect({ selections, headerLocations, bodyLocations }).toEqual({
+			selections: 1,
+			headerLocations: 1,
+			bodyLocations: 1,
+		});
+		component.render(40);
+		expect({ selections, headerLocations, bodyLocations }).toEqual({
+			selections: 1,
+			headerLocations: 2,
+			bodyLocations: 2,
+		});
+	});
+
+	test("fails open when an admitted locator does not identify one exact header", () => {
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			renderCall: () => new Text("stock header\nstock preview", 0, 0),
+			renderResult: () => new Text("stock partial body", 0, 0),
+			getRenderCallHeaderRow: () => 4,
+			getRenderCallBodyRow: () => 5,
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-invalid-locator",
+			{},
+			{
+				hasInitialCollapsedBoundaries: true,
+				toolExecutionPresentationSelectorsV1: [admitCompactLiveToolCall],
+			},
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
+
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("stock preview");
+		expect(rendered).toContain("stock partial body");
+	});
+
+	test("materializes self-shell errors and images only after the compact partial settles", () => {
+		let imageRenders = 0;
+		class CountingImage extends Image {
+			override render(width: number): string[] {
+				imageRenders += 1;
+				return super.render(width);
+			}
+		}
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			renderCall: () => new Text("self header", 0, 0),
+			renderResult: (_result, _options, currentTheme, context) => {
+				const container = new Container();
+				container.addChild(
+					new Text(currentTheme.fg(context.isError ? "error" : "toolOutput", "settled body"), 0, 0),
+				);
+				if (!context.isPartial) {
+					container.addChild(
+						new CountingImage("AA==", "image/png", { fallbackColor: (text) => text }, { maxWidthCells: 1 }),
+					);
+				}
+				return container;
+			},
+			getRenderCallHeaderRow: () => 0,
+			getRenderCallBodyRow: () => 1,
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-self-image",
+			{},
+			{
+				hasInitialCollapsedBoundaries: true,
+				toolExecutionPresentationSelectorsV1: [admitCompactLiveToolCall],
+			},
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
+		expect(component.render(80)).toHaveLength(1);
+		expect(imageRenders).toBe(0);
+
+		component.updateResult({ content: [{ type: "text", text: "failed" }], isError: true }, false);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("settled body");
+		expect(imageRenders).toBe(1);
+	});
 });

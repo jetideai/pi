@@ -29,19 +29,29 @@ type EditToolResultLike = {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 	details?: EditToolDetails;
 };
-type EditCallRenderComponent = Box & {
+class EditCallRenderComponent extends Box {
 	preview?: EditPreview;
 	previewArgsKey?: string;
-	previewPending?: boolean;
-	settledError?: boolean;
-};
+	previewPending = false;
+	settledError = false;
+	private renderedWidth = 0;
+
+	constructor() {
+		super(1, 1, (text: string) => text);
+	}
+
+	override render(width: number): string[] {
+		this.renderedWidth = width;
+		return super.render(width);
+	}
+
+	get bodyRow(): number {
+		const header = this.children[0];
+		return 1 + (header?.render(Math.max(0, this.renderedWidth - 2)).length ?? 0);
+	}
+}
 function createEditCallRenderComponent(): EditCallRenderComponent {
-	return Object.assign(new Box(1, 1, (text: string) => text), {
-		preview: undefined as EditPreview | undefined,
-		previewArgsKey: undefined as string | undefined,
-		previewPending: false,
-		settledError: false,
-	});
+	return new EditCallRenderComponent();
 }
 function getEditCallRenderComponent(state: EditRenderState, lastComponent: unknown): EditCallRenderComponent {
 	if (lastComponent instanceof Box) {
@@ -168,7 +178,12 @@ function setEditPreview(
 	return changed;
 }
 
-export const editRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "renderResult"> = {
+export const editRenderers: Pick<
+	ToolDefinition<any, any>,
+	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
+> = {
+	getRenderCallHeaderRow: (component) => (component instanceof EditCallRenderComponent ? 1 : undefined),
+	getRenderCallBodyRow: (component) => (component instanceof EditCallRenderComponent ? component.bodyRow : undefined),
 	renderCall(args, theme, context) {
 		const component = getEditCallRenderComponent(context.state, context.lastComponent);
 		const previewInput = getRenderablePreviewInput(args as RenderableEditArgs | undefined);

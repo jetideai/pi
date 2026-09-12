@@ -45,6 +45,7 @@ import type {
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
+	ToolExecutionPresentationSelectorV1,
 } from "./types.ts";
 
 /** Modules available to extensions via virtualModules (for compiled binaries) */
@@ -347,6 +348,11 @@ function createExtensionAPI(
 		registerMessageRenderBoundaryDecoratorV1(decorator: MessageRenderBoundaryDecoratorV1): void {
 			assertActive();
 			extension.messageRenderBoundaryDecoratorV1 = decorator;
+		},
+
+		registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void {
+			assertActive();
+			extension.toolExecutionPresentationSelectorV1 = selector;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {

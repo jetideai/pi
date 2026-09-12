@@ -12,7 +12,7 @@ import { truncateToVisualLines } from "../../../modes/interactive/components/vis
 import { theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
 import type { BashToolDetails } from "../bash.ts";
-import { getTextOutput, invalidArgText, str } from "../render-utils.ts";
+import { getTextOutput, invalidArgText, SectionedToolCallHeader, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "../truncate.ts";
 
 const BASH_PREVIEW_LINES = 5;
@@ -122,17 +122,25 @@ function rebuildBashResultRenderComponent(
 }
 
 /** Shell renderers are shared by bash and powershell, which differ only in the prompt they display. */
-export function createShellRenderers(prompt: string): Pick<ToolDefinition<any, any>, "renderCall" | "renderResult"> {
+export function createShellRenderers(
+	prompt: string,
+): Pick<ToolDefinition<any, any>, "renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"> {
 	return {
+		getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
+		getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
 		renderCall(args, _theme, context) {
 			const state = context.state;
 			if (context.executionStarted && state.startedAt === undefined) {
 				state.startedAt = Date.now();
 				state.endedAt = undefined;
 			}
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatShellCall(args as { command?: string; timeout?: number } | undefined, prompt));
-			return text;
+			const header =
+				(context.lastComponent as SectionedToolCallHeader | undefined) ?? new SectionedToolCallHeader("", 0, 0);
+			header.setSectionedText(
+				formatShellCall(args as { command?: string; timeout?: number } | undefined, prompt),
+				context.sectioned,
+			);
+			return header;
 		},
 		renderResult(result, options, _theme, context) {
 			const state = context.state;

@@ -16,7 +16,10 @@ import { lsRenderers } from "./ls.ts";
 import { readRenderers } from "./read.ts";
 import { writeRenderers } from "./write.ts";
 
-export type ToolRenderers = Pick<ToolDefinition<any, any>, "renderCall" | "renderResult">;
+export type ToolRenderers = Pick<
+	ToolDefinition<any, any>,
+	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
+>;
 
 export {
 	createShellRenderers,
@@ -59,9 +62,16 @@ export function withBuiltInRenderers<TDefinition extends ToolRenderers>(
 	const builtIn = createAllToolRenderers()[toolName as ToolName];
 	if (!definition) return builtIn;
 	if (!builtIn) return definition;
+	const usesBuiltInCallRenderer = definition.renderCall === undefined;
 	return {
 		...definition,
 		renderCall: definition.renderCall ?? builtIn.renderCall,
+		getRenderCallHeaderRow: usesBuiltInCallRenderer
+			? (definition.getRenderCallHeaderRow ?? builtIn.getRenderCallHeaderRow)
+			: definition.getRenderCallHeaderRow,
+		getRenderCallBodyRow: usesBuiltInCallRenderer
+			? (definition.getRenderCallBodyRow ?? builtIn.getRenderCallBodyRow)
+			: definition.getRenderCallBodyRow,
 		renderResult: definition.renderResult ?? builtIn.renderResult,
 	};
 }

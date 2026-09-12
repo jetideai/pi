@@ -443,6 +443,8 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	showImages: boolean;
 	/** Whether the current result is an error. */
 	isError: boolean;
+	/** Whether the renderer must expose its exact compact header and canonical call rows. */
+	sectioned: boolean;
 }
 
 /**
@@ -489,6 +491,10 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 	/** Custom rendering for tool call display */
 	renderCall?: (args: Static<TParams>, theme: Theme, context: ToolRenderContext<TState, Static<TParams>>) => Component;
+	/** Locate the exact one-row header in this renderer's call component. */
+	getRenderCallHeaderRow?: (component: Component) => number | undefined;
+	/** Locate the first canonical call-body row after the exact header. */
+	getRenderCallBodyRow?: (component: Component) => number | undefined;
 
 	/** Custom rendering for tool result display */
 	renderResult?: (
@@ -1245,6 +1251,25 @@ export type MessageRenderBoundaryDecoratorV1 = (
 	context: Readonly<MessageRenderBoundaryContextV1>,
 ) => MessageRenderBoundariesV1 | undefined;
 
+export interface ToolExecutionPresentationCandidateV1 {
+	role: "tool" | "tool-group";
+	hasExactHeaderSeam: boolean;
+	hasCanonicalResultRenderer: boolean;
+	hasInitialCollapsedBoundaries: boolean;
+}
+
+export interface ToolExecutionPresentationV1 {
+	liveToolCall: "compact-stock-header" | "stock";
+	liveToolGroup: "compact-stock-header" | "stock";
+	header: "exact-one-row" | "stock";
+	settled: "canonical-initial-collapsed" | "stock";
+}
+
+/** Select a compact live presentation from renderer-owned capability facts. */
+export type ToolExecutionPresentationSelectorV1 = (
+	candidate: Readonly<ToolExecutionPresentationCandidateV1>,
+) => ToolExecutionPresentationV1 | undefined;
+
 export interface EntryRenderOptions {
 	expanded: boolean;
 }
@@ -1395,6 +1420,9 @@ export interface ExtensionAPI {
 
 	/** Decorate built-in user and assistant render boundaries with zero-column terminal controls. */
 	registerMessageRenderBoundaryDecoratorV1(decorator: MessageRenderBoundaryDecoratorV1): void;
+
+	/** Select the presentation for renderer-owned Tool Call sections. */
+	registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void;
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
@@ -1814,6 +1842,7 @@ export interface Extension {
 	messageRenderers: Map<string, MessageRenderer>;
 	markdownTransformer?: MarkdownTransformer;
 	messageRenderBoundaryDecoratorV1?: MessageRenderBoundaryDecoratorV1;
+	toolExecutionPresentationSelectorV1?: ToolExecutionPresentationSelectorV1;
 	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

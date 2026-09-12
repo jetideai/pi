@@ -61,6 +61,7 @@ import type {
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolExecutionPresentationSelectorV1,
 	ToolResultEvent,
 	ToolResultEventResult,
 	UIPromptKind,
@@ -644,6 +645,12 @@ export class ExtensionRunner {
 	getMessageRenderBoundaryDecoratorsV1(): MessageRenderBoundaryDecoratorV1[] {
 		return this.extensions.flatMap((extension) =>
 			extension.messageRenderBoundaryDecoratorV1 ? [extension.messageRenderBoundaryDecoratorV1] : [],
+		);
+	}
+
+	getToolExecutionPresentationSelectorsV1(): ToolExecutionPresentationSelectorV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.toolExecutionPresentationSelectorV1 ? [extension.toolExecutionPresentationSelectorV1] : [],
 		);
 	}
 

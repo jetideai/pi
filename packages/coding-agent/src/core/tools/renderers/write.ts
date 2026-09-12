@@ -10,7 +10,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
-import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "../render-utils.ts";
+import { normalizeDisplayText, renderToolPath, replaceTabs, SectionedToolCallHeader, str } from "../render-utils.ts";
 
 type WriteHighlightCache = {
 	rawPath: string | null;
@@ -19,7 +19,7 @@ type WriteHighlightCache = {
 	normalizedLines: string[];
 	highlightedLines: string[];
 };
-class WriteCallRenderComponent extends Text {
+class WriteCallRenderComponent extends SectionedToolCallHeader {
 	cache?: WriteHighlightCache;
 
 	constructor() {
@@ -142,7 +142,12 @@ function formatWriteResult(
 	return `\n${theme.fg("error", output)}`;
 }
 
-export const writeRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "renderResult"> = {
+export const writeRenderers: Pick<
+	ToolDefinition<any, any>,
+	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
+> = {
+	getRenderCallHeaderRow: (component) => (component instanceof WriteCallRenderComponent ? 0 : undefined),
+	getRenderCallBodyRow: (component) => (component instanceof WriteCallRenderComponent ? 1 : undefined),
 	renderCall(args, theme, context) {
 		const renderArgs = args as { path?: string; file_path?: string; content?: string } | undefined;
 		const rawPath = str(renderArgs?.file_path ?? renderArgs?.path);
@@ -156,7 +161,7 @@ export const writeRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "rend
 		} else {
 			component.cache = undefined;
 		}
-		component.setText(
+		component.setSectionedText(
 			formatWriteCall(
 				renderArgs,
 				{ expanded: context.expanded, isPartial: context.isPartial },
@@ -164,6 +169,7 @@ export const writeRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "rend
 				component.cache,
 				context.cwd,
 			),
+			context.sectioned,
 		);
 		return component;
 	},

@@ -11,7 +11,7 @@ import { keyHint } from "../../../modes/interactive/components/keybinding-hints.
 import type { Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
 import type { GrepToolDetails } from "../grep.ts";
-import { getTextOutput, invalidArgText, shortenPath, str } from "../render-utils.ts";
+import { getTextOutput, invalidArgText, SectionedToolCallHeader, shortenPath, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "../truncate.ts";
 
 function formatGrepCall(
@@ -68,11 +68,17 @@ function formatGrepResult(
 	return text;
 }
 
-export const grepRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "renderResult"> = {
+export const grepRenderers: Pick<
+	ToolDefinition<any, any>,
+	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
+> = {
+	getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
+	getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
 	renderCall(args, theme, context) {
-		const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-		text.setText(formatGrepCall(args as any, theme));
-		return text;
+		const header =
+			(context.lastComponent as SectionedToolCallHeader | undefined) ?? new SectionedToolCallHeader("", 0, 0);
+		header.setSectionedText(formatGrepCall(args as any, theme), context.sectioned);
+		return header;
 	},
 	renderResult(result, options, theme, context) {
 		const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

@@ -1,7 +1,14 @@
 import * as os from "node:os";
 import { pathToFileURL } from "node:url";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import { getCapabilities, getImageDimensions, hyperlink, imageFallback } from "@earendil-works/pi-tui";
+import {
+	getCapabilities,
+	getImageDimensions,
+	hyperlink,
+	imageFallback,
+	Text,
+	truncateToWidth,
+} from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
 import { resolvePath } from "../../utils/paths.ts";
@@ -14,6 +21,29 @@ export function shortenPath(path: unknown): string {
 		return `~${path.slice(home.length)}`;
 	}
 	return path;
+}
+
+/** A renderer-owned call component that exposes one compact header before canonical call rows. */
+export class SectionedToolCallHeader extends Text {
+	private canonicalText = "";
+	private sectioned = false;
+
+	setSectionedText(canonicalText: string, sectioned: boolean): void {
+		this.canonicalText = canonicalText;
+		this.sectioned = sectioned;
+		this.setText(canonicalText);
+	}
+
+	override render(width: number): string[] {
+		if (!this.sectioned) return super.render(width);
+		const canonicalLines = super.render(width);
+		const firstLogicalLine = this.canonicalText.split("\n", 1)[0] ?? "";
+		const summary = truncateToWidth(firstLogicalLine, width, "");
+		if (canonicalLines.length === 1 && stripAnsi(canonicalLines[0] ?? "").trim() === stripAnsi(summary).trim()) {
+			return [summary];
+		}
+		return [summary, ...canonicalLines.slice(1)];
+	}
 }
 
 export function linkPath(styledText: string, rawPath: string, cwd: string): string {
