@@ -29,8 +29,11 @@ export {
 };
 
 /** Renderers for every built-in tool, keyed by tool name. */
+let allToolRenderers: Record<ToolName, ToolRenderers> | undefined;
+
 export function createAllToolRenderers(): Record<ToolName, ToolRenderers> {
-	return {
+	if (allToolRenderers) return allToolRenderers;
+	allToolRenderers = {
 		read: readRenderers,
 		bash: createShellRenderers("$"),
 		powershell: createShellRenderers("PS>"),
@@ -40,6 +43,7 @@ export function createAllToolRenderers(): Record<ToolName, ToolRenderers> {
 		find: findRenderers,
 		ls: lsRenderers,
 	};
+	return allToolRenderers;
 }
 
 /**
