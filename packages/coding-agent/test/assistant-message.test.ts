@@ -264,6 +264,29 @@ describe("AssistantMessageComponent", () => {
 		expect(lines.join("\n")).not.toContain("visible");
 	});
 
+	test("fills reserved boundary rows to the allocated width", () => {
+		initTheme("dark");
+		const message = createAssistantMessage([{ type: "text", text: "stock text" }]);
+		const stock = new AssistantMessageComponent(message).render(40);
+		const component = Reflect.construct(AssistantMessageComponent, [
+			message,
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[],
+			{
+				entryId: "assistant-entry",
+				decorators: [() => ({ suffix: "\x1b[39m", reservedRows: 1 })],
+			},
+		]) as AssistantMessageComponent;
+
+		const lines = component.render(40);
+
+		expect(lines).toHaveLength(stock.length + 1);
+		expect(lines.at(-1)).toBe(`${" ".repeat(40)}\x1b[39m`);
+	});
+
 	test("reports final assistant facts after streaming and resize", () => {
 		initTheme("dark");
 		const message = createAssistantMessage([{ type: "text", text: "stock text" }]);
