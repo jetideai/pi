@@ -268,6 +268,7 @@ export {
 	type BranchSummaryEntry,
 	buildContextEntries,
 	buildSessionContext,
+	buildTranscriptEntries,
 	type CompactionEntry,
 	CURRENT_SESSION_VERSION,
 	type CustomEntry,

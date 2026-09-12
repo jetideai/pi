@@ -3,6 +3,7 @@ import {
 	type BranchSummaryEntry,
 	buildContextEntries,
 	buildSessionContext,
+	buildTranscriptEntries,
 	type CompactionEntry,
 	type CustomEntry,
 	type ModelChangeEntry,
@@ -191,6 +192,21 @@ describe("buildSessionContext", () => {
 			expect(buildContextEntries(entries).map((entry) => entry.id)).toEqual(["6", "4", "5", "7", "8"]);
 			const ctx = buildSessionContext(entries);
 			expect(ctx.messages.map((message) => message.role)).toEqual(["compactionSummary", "user", "assistant"]);
+		});
+
+		it("keeps the original selected branch for transcript display without changing model context", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "first"),
+				msg("2", "1", "assistant", "response1"),
+				msg("3", "2", "user", "selected branch"),
+				msg("off-branch", "2", "user", "other branch"),
+				msg("4", "3", "assistant", "response2"),
+				compaction("5", "4", "Summary", "3"),
+				msg("6", "5", "user", "after compaction"),
+			];
+
+			expect(buildTranscriptEntries(entries, "6").map((entry) => entry.id)).toEqual(["1", "2", "3", "4", "6"]);
+			expect(buildContextEntries(entries, "6").map((entry) => entry.id)).toEqual(["5", "3", "4", "6"]);
 		});
 
 		it("keeps settings from the full path after compaction", () => {

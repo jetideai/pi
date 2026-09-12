@@ -106,7 +106,7 @@ describe("InteractiveMode compaction events", () => {
 		);
 	});
 
-	test("renders retained entries and appends the latest summary cost at the bottom", async () => {
+	test("releases live ownership and rebuilds the full transcript before appending the latest summary", async () => {
 		const usage: Usage = {
 			input: 10,
 			output: 20,
@@ -125,15 +125,12 @@ describe("InteractiveMode compaction events", () => {
 			tokensBefore: 123,
 			usage,
 		};
-		const previousCompaction: SessionEntry = {
-			type: "compaction",
+		const previousMessage: SessionEntry = {
+			type: "message",
 			id: "previous",
 			parentId: null,
 			timestamp: "2025-01-01T00:00:00Z",
-			summary: "previous summary",
-			firstKeptEntryId: "kept",
-			tokensBefore: 100,
-			usage,
+			message: { role: "user", content: "original prompt", timestamp: 1 },
 		};
 		const fakeThis = {
 			isInitialized: true,
@@ -143,7 +140,13 @@ describe("InteractiveMode compaction events", () => {
 			defaultEditor: {},
 			statusContainer: { clear: vi.fn() },
 			chatContainer: { clear: vi.fn() },
-			sessionManager: { buildContextEntries: vi.fn().mockReturnValue([latestCompaction, previousCompaction]) },
+			sessionManager: {
+				buildContextEntries: vi.fn().mockReturnValue([latestCompaction]),
+				buildTranscriptEntries: vi.fn().mockReturnValue([previousMessage]),
+			},
+			releaseActiveAgentRunRendering: vi.fn(),
+			releaseSettledMessageRendering: vi.fn(),
+			startFreshMessageRenderScope: vi.fn(),
 			renderSessionEntries: vi.fn(),
 			addMessageToChat: vi.fn(),
 			addCompactionCostNotice: vi.fn(),
@@ -179,8 +182,11 @@ describe("InteractiveMode compaction events", () => {
 			willRetry: false,
 		});
 
+		expect(fakeThis.releaseActiveAgentRunRendering).toHaveBeenCalledTimes(1);
+		expect(fakeThis.releaseSettledMessageRendering).toHaveBeenCalledTimes(1);
+		expect(fakeThis.startFreshMessageRenderScope).toHaveBeenCalledTimes(1);
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
-		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousCompaction]);
+		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousMessage]);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -195,6 +201,18 @@ describe("InteractiveMode compaction events", () => {
 			usage,
 		});
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+		const lifecycleOrder = [
+			fakeThis.releaseActiveAgentRunRendering.mock.invocationCallOrder[0],
+			fakeThis.releaseSettledMessageRendering.mock.invocationCallOrder[0],
+			fakeThis.startFreshMessageRenderScope.mock.invocationCallOrder[0],
+			fakeThis.chatContainer.clear.mock.invocationCallOrder[0],
+			fakeThis.renderSessionEntries.mock.invocationCallOrder[0],
+			fakeThis.addMessageToChat.mock.invocationCallOrder[0],
+			fakeThis.addCompactionCostNotice.mock.invocationCallOrder[0],
+			fakeThis.flushCompactionQueue.mock.invocationCallOrder[0],
+		];
+		expect(lifecycleOrder).toEqual([...lifecycleOrder].sort((left, right) => (left ?? 0) - (right ?? 0)));
+		expect(new Set(lifecycleOrder).size).toBe(lifecycleOrder.length);
 	});
 
 	test("updates the working state when the same agent run resumes after compaction", async () => {

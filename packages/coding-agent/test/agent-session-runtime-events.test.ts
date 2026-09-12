@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -27,6 +28,8 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "../src/index.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 type RecordedSessionEvent =
 	| SessionBeforeSwitchEvent
@@ -224,6 +227,81 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			{ type: "session_before_switch", reason: "resume", targetSessionFile: originalSessionFile },
 			{ type: "session_shutdown", reason: "resume", targetSessionFile: originalSessionFile },
 			{ type: "session_start", reason: "resume", previousSessionFile: secondSessionFile },
+		]);
+	});
+
+	it("publishes the full resumed Tool Call projection before session_start", async () => {
+		initTheme("dark");
+		const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		cleanups.push(async () => {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			stdoutWrite.mockRestore();
+		});
+		const observations: Array<
+			| { type: "projection"; members: Array<[string, string]> }
+			| { type: "session_start"; reason: SessionStartEvent["reason"] }
+		> = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.registerMessageRenderProjectionObserverV1((projection) => {
+				observations.push({
+					type: "projection",
+					members: projection.members.map((member) => [member.entryId, member.role]),
+				});
+			});
+			pi.on("session_start", (event) => {
+				observations.push({ type: "session_start", reason: event.reason });
+			});
+		});
+		const sessionManager = runtimeHost.session.sessionManager;
+		const rootUserId = sessionManager.appendMessage({ role: "user", content: "Run tools", timestamp: 1 });
+		const assistantMessage: AssistantMessage = {
+			...fauxAssistantMessage(""),
+			content: [
+				{ type: "toolCall", id: "tool-a", name: "read", arguments: { path: "a" } },
+				{ type: "toolCall", id: "tool-b", name: "read", arguments: { path: "b" } },
+			],
+		};
+		const assistantId = sessionManager.appendMessage(assistantMessage);
+		const toolResult = (toolCallId: string): ToolResultMessage => ({
+			role: "toolResult",
+			toolCallId,
+			toolName: "read",
+			content: [{ type: "text", text: toolCallId }],
+			isError: false,
+			timestamp: 2,
+		});
+		sessionManager.appendMessage(toolResult("tool-a"));
+		sessionManager.appendMessage(toolResult("tool-b"));
+		const keptUserId = sessionManager.appendMessage({ role: "user", content: "Keep", timestamp: 3 });
+		sessionManager.appendCompaction("summary", keptUserId, 100);
+		const postUserId = sessionManager.appendMessage({ role: "user", content: "After", timestamp: 4 });
+		const originalSessionFile = runtimeHost.session.sessionFile;
+		if (!originalSessionFile) throw new Error("Expected a persisted session");
+
+		await runtimeHost.newSession();
+		observations.length = 0;
+		const mode = new InteractiveMode(runtimeHost);
+		cleanups.push(() => {
+			const renderer = (mode as unknown as { renderer: { stop(options: { preserveScreen: boolean }): void } })
+				.renderer;
+			renderer.stop({ preserveScreen: true });
+		});
+		await runtimeHost.switchSession(originalSessionFile);
+
+		expect(observations).toEqual([
+			{
+				type: "projection",
+				members: [
+					[rootUserId, "user"],
+					[assistantId, "assistant"],
+					[`tool-group:${assistantId}:tool-a`, "tool-group"],
+					["tool-a", "tool"],
+					["tool-b", "tool"],
+					[keptUserId, "user"],
+					[postUserId, "user"],
+				],
+			},
+			{ type: "session_start", reason: "resume" },
 		]);
 	});
 

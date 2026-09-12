@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import { Container, Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -257,21 +257,110 @@ describe("InteractiveMode response projection", () => {
 		}
 	});
 
-	it("restores the same projection member order as the live path", () => {
+	it("keeps an immediate post-compaction message behind the transcript rebuild", async () => {
+		let listener: ((event: { type: string }) => void) | undefined;
+		let releaseFirst: () => void = () => {};
+		const firstBarrier = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		const order: string[] = [];
+		const mode = {
+			renderEventTail: Promise.resolve(),
+			session: {
+				subscribe: (candidate: (event: { type: string }) => void) => {
+					listener = candidate;
+					return vi.fn();
+				},
+			},
+			handleEvent: async (event: { type: string }) => {
+				order.push(`start:${event.type}`);
+				if (event.type === "compaction_end") await firstBarrier;
+				order.push(`end:${event.type}`);
+			},
+			handleRenderEventFailure: vi.fn(),
+		};
+		const subscribeToAgent = Reflect.get(InteractiveMode.prototype, "subscribeToAgent") as (
+			this: typeof mode,
+		) => void;
+
+		subscribeToAgent.call(mode);
+		listener?.({ type: "compaction_end" });
+		listener?.({ type: "message_start" });
+		await Promise.resolve();
+
+		expect(order).toEqual(["start:compaction_end"]);
+		releaseFirst();
+		await vi.waitFor(() =>
+			expect(order).toEqual([
+				"start:compaction_end",
+				"end:compaction_end",
+				"start:message_start",
+				"end:message_start",
+			]),
+		);
+	});
+
+	it("restores the same projection identity and order as the live path", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const userId = sessionManager.appendMessage(user);
 		const assistantId = sessionManager.appendMessage(finalAssistant);
-		const { mode, projections } = modeHarness(sessionManager);
+		const toolResult = (toolCallId: string): ToolResultMessage => ({
+			role: "toolResult",
+			toolCallId,
+			toolName: toolCallId === "tool-a" ? "read" : "bash",
+			content: [{ type: "text", text: `${toolCallId} result` }],
+			isError: false,
+			timestamp: 2,
+		});
+		const toolResultA = toolResult("tool-a");
+		const toolResultB = toolResult("tool-b");
+		sessionManager.appendMessage(toolResultA);
+		sessionManager.appendMessage(toolResultB);
+		const { mode: liveMode, projections: liveProjections, chatContainer: liveChat } = modeHarness(sessionManager);
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof liveMode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		await handleEvent.call(liveMode, { type: "message_start", message: user, entryId: userId });
+		await handleEvent.call(liveMode, {
+			type: "message_start",
+			message: assistant([], "pending"),
+			entryId: assistantId,
+		});
+		await handleEvent.call(liveMode, { type: "message_end", message: finalAssistant, entryId: assistantId });
+		await handleEvent.call(liveMode, {
+			type: "tool_execution_end",
+			toolCallId: "tool-a",
+			toolName: "read",
+			result: toolResultA,
+			isError: false,
+		});
+		await handleEvent.call(liveMode, {
+			type: "tool_execution_end",
+			toolCallId: "tool-b",
+			toolName: "bash",
+			result: toolResultB,
+			isError: false,
+		});
+
+		const {
+			mode: restoredMode,
+			projections: restoredProjections,
+			chatContainer: restoredChat,
+		} = modeHarness(sessionManager);
 		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
-			this: typeof mode,
+			this: typeof restoredMode,
 			entries: ReturnType<SessionManager["getBranch"]>,
 		) => void;
+		renderSessionEntries.call(restoredMode, sessionManager.buildTranscriptEntries());
 
-		renderSessionEntries.call(mode, sessionManager.getBranch());
-
-		expect(projections).toHaveLength(1);
-		expect(projections[0]?.mode).toBe("replace");
-		expect(projections[0]?.members.map(({ entryId, blockId, role }) => [entryId, blockId, role])).toEqual([
+		const memberIdentity = (projection: Readonly<MessageRenderProjectionV1> | undefined) =>
+			projection?.members.map(({ entryId, blockId, role }) => [entryId, blockId, role]);
+		expect(restoredProjections).toHaveLength(1);
+		expect(restoredProjections[0]?.mode).toBe("replace");
+		expect(memberIdentity(restoredProjections[0])).toEqual(memberIdentity(liveProjections.at(-1)));
+		expect(restoredChat.render(100)).toEqual(liveChat.render(100));
+		expect(memberIdentity(restoredProjections[0])).toEqual([
 			[userId, userId, "user"],
 			[assistantId, assistantId, "assistant"],
 			[`tool-group:${assistantId}:tool-a`, `tool-group:${assistantId}:tool-a`, "tool-group"],

@@ -99,7 +99,7 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
-	it("replaces the renderer and restores the previous screen for resume-hint exits", async () => {
+	it("preserves the component tree, focus, and main-screen render state across a renderer round trip", async () => {
 		const terminal = new RecordingTerminal(40, 8);
 		const renderer = createInteractiveTui({
 			tuiMode: "regular",
@@ -144,9 +144,11 @@ describe("createInteractiveTui", () => {
 
 		renderer.start();
 		await terminal.waitForRender();
+		if (!("captureRenderState" in renderer)) throw new Error("Expected the regular renderer");
+		const mainScreenState = renderer.captureRenderState();
+
 		expect(switchTuiMode.call(context, "fullscreen", false)).toBe(true);
 		await terminal.waitForRender();
-
 		expect(stableUi.mode).toBe("fullscreen");
 		expect(context.renderer.children).toEqual([component]);
 		expect(context.renderer.getFocusedComponent()).toBe(component);
@@ -154,10 +156,23 @@ describe("createInteractiveTui", () => {
 		expect(invalidatedModes).toEqual(["fullscreen"]);
 		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 1]);
 
+		expect(switchTuiMode.call(context, "regular", false)).toBe(true);
+		await terminal.waitForRender();
+		expect(stableUi.mode).toBe("regular");
+		expect(context.renderer.children).toEqual([component]);
+		expect(context.renderer.getFocusedComponent()).toBe(component);
+		expect(component.focused).toBe(true);
+		if (!("captureRenderState" in context.renderer)) throw new Error("Expected the restored regular renderer");
+		const restoredState = context.renderer.captureRenderState();
+		expect(restoredState.previousLines).toEqual(mainScreenState.previousLines);
+		expect(restoredState.cursorRow).toBe(mainScreenState.cursorRow);
+		expect(restoredState.hardwareCursorRow).toBe(mainScreenState.hardwareCursorRow);
+		expect([terminal.startCount, terminal.stopCount]).toEqual([3, 2]);
+
 		stopInteractiveTui.call(context, "resume-hint");
 
-		expect(stableUi.mode).toBe("fullscreen");
-		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 2]);
+		expect(stableUi.mode).toBe("regular");
+		expect([terminal.startCount, terminal.stopCount]).toEqual([3, 3]);
 	});
 });
 

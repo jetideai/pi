@@ -527,6 +527,7 @@ export class InteractiveMode {
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
+	private renderEventTail: Promise<void> = Promise.resolve();
 	private signalCleanupHandlers: Array<() => void> = [];
 
 	// Track if editor is in bash mode (text starts with !)
@@ -2106,14 +2107,27 @@ export class InteractiveMode {
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
+		this.releaseActiveAgentRunRendering();
+		this.releaseSettledMessageRendering();
+		this.startFreshMessageRenderScope();
+		this.renderInitialMessages();
+	}
+
+	private releaseActiveAgentRunRendering(): void {
+		this.pendingTools.clear();
+	}
+
+	private releaseSettledMessageRendering(): void {
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.semanticStreamingContainer = undefined;
-		this.pendingTools.clear();
+		this.semanticStreamingBaseMemberCount = 0;
+	}
+
+	private startFreshMessageRenderScope(): void {
+		this.messageRenderScopeId = crypto.randomUUID();
 		this.messageRenderMembers = [];
 		this.publishedMessageRenderProjection = undefined;
-		this.messageRenderScopeId = crypto.randomUUID();
-		this.renderInitialMessages();
 	}
 
 	/**
@@ -3636,9 +3650,22 @@ export class InteractiveMode {
 	}
 
 	private subscribeToAgent(): void {
-		this.unsubscribe = this.session.subscribe(async (event) => {
-			await this.handleEvent(event);
+		const session = this.session;
+		this.unsubscribe = session.subscribe((event) => {
+			this.renderEventTail = this.renderEventTail
+				.then(() => {
+					if (this.session !== session) return;
+					return this.handleEvent(event);
+				})
+				.catch((error: unknown) => {
+					if (this.session === session) this.handleRenderEventFailure(event, error);
+				});
 		});
+	}
+
+	private handleRenderEventFailure(event: AgentSessionEvent, error: unknown): void {
+		const message = error instanceof Error ? error.message : String(error);
+		this.showError(`Failed to render ${event.type}: ${message}`);
 	}
 
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
@@ -4022,13 +4049,15 @@ export class InteractiveMode {
 						this.showStatus("Auto-compaction cancelled");
 					}
 				} else if (event.result) {
-					const entries = this.sessionManager.buildContextEntries();
-					if (entries[0]?.type !== "compaction") {
+					const contextEntries = this.sessionManager.buildContextEntries();
+					if (contextEntries[0]?.type !== "compaction") {
 						throw new Error("Completed compaction is missing from the session context");
 					}
+					this.releaseActiveAgentRunRendering();
+					this.releaseSettledMessageRendering();
+					this.startFreshMessageRenderScope();
 					this.chatContainer.clear();
-					// The latest compaction is prepended for model context; append it below at its chronological position.
-					this.renderSessionEntries(entries.slice(1));
+					this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
 					this.addMessageToChat(
 						createCompactionSummaryMessage(
 							event.result.summary,
@@ -4439,8 +4468,8 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Render session entries to chat. Used for initial load and rebuild after compaction.
-	 * @param entries Compaction-aware session entries to render
+	 * Render session entries to chat. Used for initial load and transcript rebuilds.
+	 * @param entries Session entries to render
 	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
 	 */
@@ -4537,7 +4566,7 @@ export class InteractiveMode {
 	}
 
 	renderInitialMessages(): void {
-		const entries = this.sessionManager.buildContextEntries();
+		const entries = this.sessionManager.buildTranscriptEntries();
 		this.renderSessionEntries(entries, {
 			updateFooter: true,
 			populateHistory: true,
@@ -4589,7 +4618,7 @@ export class InteractiveMode {
 
 	private rebuildChatFromMessages(): void {
 		this.chatContainer.clear();
-		this.renderSessionEntries(this.sessionManager.buildContextEntries());
+		this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
 	}
 
 	// =========================================================================

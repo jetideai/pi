@@ -199,6 +199,7 @@ export type ReadonlySessionManager = Pick<
 	| "getLabel"
 	| "getBranch"
 	| "buildContextEntries"
+	| "buildTranscriptEntries"
 	| "getHeader"
 	| "getEntries"
 	| "getTree"
@@ -451,6 +452,21 @@ export function buildContextEntries(
 	}
 	contextEntries.push(...path.slice(compactionIdx + 1));
 	return contextEntries;
+}
+
+/**
+ * Build the selected session branch for transcript display.
+ *
+ * Compaction entries replace earlier messages only in model context. The
+ * transcript keeps the original selected-branch entries and omits compaction
+ * summaries so canonical message content is not displayed twice.
+ */
+export function buildTranscriptEntries(
+	entries: SessionEntry[],
+	leafId?: string | null,
+	byId?: Map<string, SessionEntry>,
+): SessionEntry[] {
+	return buildSessionPath(entries, leafId, byId).filter((entry) => entry.type !== "compaction");
 }
 
 /**
@@ -1315,11 +1331,16 @@ export class SessionManager {
 	}
 
 	/**
-	 * Build the active, compaction-aware entry list for context/rendering.
+	 * Build the active, compaction-aware entry list for model context.
 	 * Uses tree traversal from current leaf.
 	 */
 	buildContextEntries(): SessionEntry[] {
 		return buildContextEntries(this.getEntries(), this.leafId, this.byId);
+	}
+
+	/** Build the selected branch for transcript display. */
+	buildTranscriptEntries(): SessionEntry[] {
+		return buildTranscriptEntries(this.getEntries(), this.leafId, this.byId);
 	}
 
 	/**
