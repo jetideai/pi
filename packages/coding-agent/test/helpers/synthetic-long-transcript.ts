@@ -1,9 +1,9 @@
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 
-export const SYNTHETIC_TOOL_CALL_COUNT = 422;
-export const SYNTHETIC_TOOL_RESULT_COUNT = 422;
-export const SYNTHETIC_ENTRY_COUNT = 846;
-export const SYNTHETIC_GROUP_COUNT = 210;
+export const SYNTHETIC_TOOL_CALL_COUNT = 1_550;
+export const SYNTHETIC_TOOL_RESULT_COUNT = 1_550;
+export const SYNTHETIC_ENTRY_COUNT = 3_102;
+export const SYNTHETIC_GROUP_COUNT = 774;
 export const SYNTHETIC_SINGLETON_COUNT = 2;
 export const SYNTHETIC_TURN_COUNT = SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT;
 
@@ -20,7 +20,7 @@ export interface SyntheticLongTranscript {
 }
 
 function serial(prefix: string, value: number): string {
-	return `${prefix}${value.toString().padStart(3, "0")}`;
+	return `${prefix}${value.toString().padStart(4, "0")}`;
 }
 
 function assistantMessage(turn: number, toolCallIds: readonly string[]): AssistantMessage {

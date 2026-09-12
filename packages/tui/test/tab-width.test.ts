@@ -35,6 +35,10 @@ class TabStatusOverlay implements Component {
 }
 
 describe("tab width accounting", () => {
+	it("counts ANSI-styled printable ASCII after stripping controls", () => {
+		assert.strictEqual(visibleWidth("\x1b[31mstatus\x1b[0m"), 6);
+	});
+
 	it("keeps slice helper widths consistent with visible width", () => {
 		const text = "out 192M\t.pi/skill-tests/results-ha";
 		const slice = sliceWithWidth(text, 0, 10, true);

@@ -332,7 +332,9 @@ ToolExecutionComponent.prototype.render = originalToolRender;
 const resizeOutput = terminal.writes.join("");
 const wideState = tui.captureRenderState();
 const expectedCursor = cursor.expectedPosition(args.resizeWidth, args.resizeHeight);
-if (resizeToolRenders !== SYNTHETIC_TOOL_CALL_COUNT) throw new Error(`Expected 422 resize renders, got ${resizeToolRenders}`);
+if (resizeToolRenders !== SYNTHETIC_TOOL_CALL_COUNT) {
+	throw new Error(`Expected ${SYNTHETIC_TOOL_CALL_COUNT} resize renders, got ${resizeToolRenders}`);
+}
 if (occurrences(resizeOutput, "\x1b[2J") !== 1 || occurrences(resizeOutput, "\x1b[3J") !== 1) {
 	throw new Error("Resize did not emit exactly one CSI 2J and CSI 3J");
 }

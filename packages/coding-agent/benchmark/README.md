@@ -1,6 +1,6 @@
 # Long-transcript benchmark
 
-This benchmark compares the stock renderer at `d981de1229ef899957bbe968bc8dcda02a21f477` with a selected JetPi revision. It runs stock capability-off, JetPi capability-off, and JetPi semantic-on lanes. It uses the deterministic synthetic 422-Tool-Call fixture. It does not read session files.
+This benchmark compares the stock renderer at `d981de1229ef899957bbe968bc8dcda02a21f477` with a selected JetPi revision. It runs stock capability-off, JetPi capability-off, and JetPi semantic-on lanes. It uses the deterministic synthetic 1,550-Tool-Call fixture. It does not read session files.
 
 Each warm-up and measured sample runs in a fresh Node.js worker. The worker measures these phases separately:
 

@@ -278,8 +278,12 @@ export function visibleWidth(str: string): number {
 
 	// Calculate width
 	let width = 0;
-	for (const { segment } of graphemeSegmenter.segment(clean)) {
-		width += graphemeWidth(segment);
+	if (isPrintableAscii(clean)) {
+		width = clean.length;
+	} else {
+		for (const { segment } of graphemeSegmenter.segment(clean)) {
+			width += graphemeWidth(segment);
+		}
 	}
 
 	// Cache result

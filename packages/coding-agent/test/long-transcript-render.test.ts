@@ -184,7 +184,7 @@ function createHarness(ui: TUI, sessionManager: SessionManager) {
 describe("synthetic long-transcript rendering", () => {
 	beforeAll(() => initTheme("dark"));
 
-	it("restores and width-renders the 422-Tool-Call transcript with bounded work", async () => {
+	it("restores and width-renders the 1550-Tool-Call transcript with bounded work", async () => {
 		const fixture = createSyntheticLongTranscript();
 		const toolResults = fixture.messages.filter(({ message }) => message.role === "toolResult");
 		expect(fixture.messages).toHaveLength(SYNTHETIC_ENTRY_COUNT);
@@ -221,7 +221,7 @@ describe("synthetic long-transcript rendering", () => {
 		);
 		expect(projections).toHaveLength(1);
 		expect(projections[0]?.mode).toBe("replace");
-		expect(projections[0]?.members).toHaveLength(1_056);
+		expect(projections[0]?.members).toHaveLength(SYNTHETIC_GROUP_COUNT * 5 + SYNTHETIC_SINGLETON_COUNT * 3);
 		expect(counts.presentationSelections).toBe(SYNTHETIC_TOOL_CALL_COUNT);
 		expect(counts.boundarySelections).toBe(SYNTHETIC_TOOL_CALL_COUNT + SYNTHETIC_GROUP_COUNT);
 		expect(rendererFactoryCounts.shell - factoriesBefore).toBe(2);
