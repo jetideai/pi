@@ -362,7 +362,9 @@ describe("tracker: root ops", () => {
 		t.flush();
 		const items = Array<JsonValue>(100_000).fill(null);
 		expect(Reflect.apply(t.state.xs.push, t.state.xs, items)).toBe(items.length);
-		expect(t.flush()).toEqual([["p", ["xs"], 0, 0, items]]);
+		const delta = t.flush();
+		expect(delta).toEqual([["p", ["xs"], 0, 0, items]]);
+		expect(apply({ xs: [] }, delta)).toEqual({ xs: items });
 	});
 
 	it("grows arrays with explicit null values", () => {
