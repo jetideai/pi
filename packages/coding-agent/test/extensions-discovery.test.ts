@@ -396,6 +396,21 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].entryRenderers?.has("my-entry-type")).toBe(true);
 	});
 
+	it("registers a message render boundary decorator", async () => {
+		const extCode = `
+			export default function(pi) {
+				pi.registerMessageRenderBoundaryDecoratorV1(() => ({ prefix: "\\u001b[0m" }));
+			}
+		`;
+		fs.writeFileSync(path.join(extensionsDir, "with-message-boundary.ts"), extCode);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].messageRenderBoundaryDecoratorV1).toBeDefined();
+	});
+
 	it("reports error when extension throws during initialization", async () => {
 		const extCode = `
 			export default function(pi) {

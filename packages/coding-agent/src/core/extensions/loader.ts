@@ -40,6 +40,7 @@ import type {
 	ExtensionRuntime,
 	LoadExtensionsResult,
 	MarkdownTransformer,
+	MessageRenderBoundaryDecoratorV1,
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
@@ -341,6 +342,11 @@ function createExtensionAPI(
 		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
 			assertActive();
 			extension.markdownTransformer = transformer;
+		},
+
+		registerMessageRenderBoundaryDecoratorV1(decorator: MessageRenderBoundaryDecoratorV1): void {
+			assertActive();
+			extension.messageRenderBoundaryDecoratorV1 = decorator;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {

@@ -99,8 +99,13 @@ export type {
 	MarkdownTransformer,
 	// Events - Message
 	MessageEndEvent,
+	MessageRenderBoundariesV1,
+	MessageRenderBoundaryContextV1,
+	MessageRenderBoundaryDecoratorV1,
 	MessageRenderer,
 	MessageRenderOptions,
+	MessageRenderRangeV1,
+	MessageRenderRoleV1,
 	MessageStartEvent,
 	MessageUpdateEvent,
 	ModelSelectEvent,

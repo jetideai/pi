@@ -1212,6 +1212,39 @@ export interface MarkdownTransformContext {
 
 export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;
 
+/** Half-open range used to describe rendered columns or rows. */
+export interface MessageRenderRangeV1 {
+	start: 0;
+	end: number;
+}
+
+export type MessageRenderRoleV1 = "user" | "assistant";
+
+/** Facts from one completed built-in user or assistant message render. */
+export interface MessageRenderBoundaryContextV1 {
+	entryId: string;
+	role: MessageRenderRoleV1;
+	state: "streaming" | "final";
+	/** Horizontal padding configured by the outputPad setting for this render. */
+	outputPad: number;
+	allocatedColumns: Readonly<MessageRenderRangeV1>;
+	stockRows: Readonly<MessageRenderRangeV1>;
+}
+
+/** Zero-column terminal controls to place around one built-in message render. */
+export interface MessageRenderBoundariesV1 {
+	prefix?: string;
+	suffix?: string;
+}
+
+/**
+ * Synchronous message render decorator. The callback must not block.
+ * Pi ignores thrown errors and invalid controls.
+ */
+export type MessageRenderBoundaryDecoratorV1 = (
+	context: Readonly<MessageRenderBoundaryContextV1>,
+) => MessageRenderBoundariesV1 | undefined;
+
 export interface EntryRenderOptions {
 	expanded: boolean;
 }
@@ -1359,6 +1392,9 @@ export interface ExtensionAPI {
 
 	/** Register a transformer for user and assistant Markdown before Pi renders it in the interactive transcript. */
 	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
+
+	/** Decorate built-in user and assistant render boundaries with zero-column terminal controls. */
+	registerMessageRenderBoundaryDecoratorV1(decorator: MessageRenderBoundaryDecoratorV1): void;
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
@@ -1777,6 +1813,7 @@ export interface Extension {
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
 	markdownTransformer?: MarkdownTransformer;
+	messageRenderBoundaryDecoratorV1?: MessageRenderBoundaryDecoratorV1;
 	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

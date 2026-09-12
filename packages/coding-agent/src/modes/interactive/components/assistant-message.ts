@@ -3,6 +3,7 @@ import { Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } fr
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { decorateMessageRender, type MessageRenderBoundaryOptionsV1 } from "./message-render-boundaries.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -18,6 +19,7 @@ export class AssistantMessageComponent extends Container {
 	private hiddenThinkingLabel: string;
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
+	private renderBoundaryOptions?: MessageRenderBoundaryOptionsV1;
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
 	private isStreaming = false;
@@ -30,6 +32,7 @@ export class AssistantMessageComponent extends Container {
 		hiddenThinkingLabel = "Thinking...",
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
+		renderBoundaryOptions?: MessageRenderBoundaryOptionsV1,
 	) {
 		super();
 
@@ -38,6 +41,7 @@ export class AssistantMessageComponent extends Container {
 		this.hiddenThinkingLabel = hiddenThinkingLabel;
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
+		this.renderBoundaryOptions = renderBoundaryOptions;
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
@@ -85,7 +89,14 @@ export class AssistantMessageComponent extends Container {
 
 		lines[0] = OSC133_ZONE_START + lines[0];
 		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
-		return lines;
+		return decorateMessageRender(
+			lines,
+			width,
+			"assistant",
+			this.isStreaming ? "streaming" : "final",
+			this.outputPad,
+			this.renderBoundaryOptions,
+		);
 	}
 
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {

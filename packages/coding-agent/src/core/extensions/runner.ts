@@ -42,6 +42,7 @@ import type {
 	MarkdownTransformer,
 	MessageEndEvent,
 	MessageEndEventResult,
+	MessageRenderBoundaryDecoratorV1,
 	MessageRenderer,
 	ProjectTrustContext,
 	ProjectTrustEvent,
@@ -638,6 +639,12 @@ export class ExtensionRunner {
 
 	getMarkdownTransformers(): MarkdownTransformer[] {
 		return this.extensions.flatMap((ext) => (ext.markdownTransformer ? [ext.markdownTransformer] : []));
+	}
+
+	getMessageRenderBoundaryDecoratorsV1(): MessageRenderBoundaryDecoratorV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderBoundaryDecoratorV1 ? [extension.messageRenderBoundaryDecoratorV1] : [],
+		);
 	}
 
 	getEntryRenderer(customType: string): EntryRenderer | undefined {

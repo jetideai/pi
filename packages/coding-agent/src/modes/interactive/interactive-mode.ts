@@ -75,6 +75,7 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 	MarkdownTransformer,
+	MessageRenderBoundaryDecoratorV1,
 	ProjectTrustContext,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
@@ -230,7 +231,16 @@ type CompactionCostNotice = {
 	usage: Usage;
 };
 
-type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" }> | CompactionCostNotice;
+type RenderMessageItem = { message: AgentMessage; entryId: string };
+type RenderSessionItem =
+	| AgentMessage
+	| RenderMessageItem
+	| Extract<SessionEntry, { type: "custom" }>
+	| CompactionCostNotice;
+
+function isRenderMessageItem(item: RenderSessionItem): item is RenderMessageItem {
+	return "message" in item && "entryId" in item;
+}
 
 function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "custom" }> {
 	return "type" in item && item.type === "custom";
@@ -2025,6 +2035,10 @@ export class InteractiveMode {
 		return [this.mermaidMarkdownTransformer, ...this.session.extensionRunner.getMarkdownTransformers()];
 	}
 
+	private getMessageRenderBoundaryDecoratorsV1(): MessageRenderBoundaryDecoratorV1[] {
+		return this.session.extensionRunner.getMessageRenderBoundaryDecoratorsV1();
+	}
+
 	/**
 	 * Set up keyboard shortcuts registered by extensions.
 	 */
@@ -3222,7 +3236,7 @@ export class InteractiveMode {
 					this.addMessageToChat(event.message);
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
-					this.addMessageToChat(event.message);
+					this.addMessageToChat(event.message, { entryId: event.entryId });
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
@@ -3233,6 +3247,10 @@ export class InteractiveMode {
 						this.hiddenThinkingLabel,
 						this.outputPad,
 						this.getMarkdownTransformers(),
+						{
+							entryId: event.entryId,
+							decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+						},
 					);
 					this.streamingMessage = event.message;
 					this.chatContainer.addChild(this.streamingComponent);
@@ -3576,7 +3594,7 @@ export class InteractiveMode {
 		this.chatContainer.addChild(component);
 	}
 
-	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
+	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean; entryId?: string }): void {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
@@ -3643,6 +3661,12 @@ export class InteractiveMode {
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
 								this.getMarkdownTransformers(),
+								options?.entryId
+									? {
+											entryId: options.entryId,
+											decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+										}
+									: undefined,
 							);
 							this.chatContainer.addChild(userComponent);
 						}
@@ -3652,6 +3676,12 @@ export class InteractiveMode {
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
 							this.getMarkdownTransformers(),
+							options?.entryId
+								? {
+										entryId: options.entryId,
+										decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+									}
+								: undefined,
 						);
 						this.chatContainer.addChild(userComponent);
 					}
@@ -3669,6 +3699,12 @@ export class InteractiveMode {
 					this.hiddenThinkingLabel,
 					this.outputPad,
 					this.getMarkdownTransformers(),
+					options?.entryId
+						? {
+								entryId: options.entryId,
+								decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+							}
+						: undefined,
 				);
 				this.chatContainer.addChild(assistantComponent);
 				break;
@@ -3710,10 +3746,10 @@ export class InteractiveMode {
 				continue;
 			}
 
-			const message = item;
+			const { message, entryId } = isRenderMessageItem(item) ? item : { message: item, entryId: undefined };
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
-				this.addMessageToChat(message);
+				this.addMessageToChat(message, { entryId });
 				// Render tool call components
 				for (const content of message.content) {
 					if (content.type === "toolCall") {
@@ -3763,7 +3799,7 @@ export class InteractiveMode {
 				}
 			} else {
 				// All other messages use standard rendering
-				this.addMessageToChat(message, options);
+				this.addMessageToChat(message, { ...options, entryId });
 			}
 		}
 
@@ -3790,6 +3826,9 @@ export class InteractiveMode {
 			const messages = sessionEntryToContextMessages(entry);
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {
 				return [...messages, { type: "compaction_cost", kind: entry.type, usage: entry.usage }];
+			}
+			if (entry.type === "message") {
+				return messages.map((message) => ({ message, entryId: entry.id }));
 			}
 			return messages;
 		});

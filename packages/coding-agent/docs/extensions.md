@@ -1615,6 +1615,21 @@ pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
 
 If a transformer throws, Pi keeps the Markdown produced so far and continues with the next transformer. The hook is display-only: the original message remains unchanged in the session and model context. It runs for new user messages, assistant streaming updates, restored session messages, and terminal width changes, so transformers should remain synchronous and inexpensive.
 
+### pi.registerMessageRenderBoundaryDecoratorV1(decorator)
+
+Register synchronous terminal controls around built-in user and assistant message renders. The decorator receives the persisted `entryId`, message `role`, render `state`, configured `outputPad`, allocated columns, and stock row range. Ranges are half-open: `start` is included and `end` is excluded.
+
+Return `prefix` and `suffix` strings that occupy zero terminal cells. Pi puts prefixes before the first stock row in extension load order. Pi puts suffixes after the last stock row in reverse order. Pi ignores visible controls, invalid results, and thrown errors.
+
+```typescript
+pi.registerMessageRenderBoundaryDecoratorV1(({ entryId, role, state }) => ({
+  prefix: `\u001b]7799;begin;${entryId};${role};${state}\u0007`,
+  suffix: `\u001b]7799;end;${entryId}\u0007`,
+}));
+```
+
+The decorator is display-only. It does not run for Tool Calls, Tool Groups, custom messages, or summaries. It can run again during streaming, repaint, resize, and restored-session rendering. Keep it fast and do not block.
+
 ### pi.registerEntryRenderer(customType, renderer)
 
 Register a custom TUI renderer for custom entries with your `customType`. Custom entries are created with `pi.appendEntry()` and do not participate in LLM context.

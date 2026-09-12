@@ -608,6 +608,23 @@ describe("ExtensionRunner", () => {
 			expect(runner.getMarkdownTransformers()).toHaveLength(2);
 		});
 
+		it("gets message boundary decorators in extension load order", async () => {
+			const extCode = (prefix: string) => `
+				export default function(pi) {
+					pi.registerMessageRenderBoundaryDecoratorV1(() => ({ prefix: "${prefix}" }));
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "boundary-a.ts"), extCode("a"));
+			fs.writeFileSync(path.join(extensionsDir, "boundary-b.ts"), extCode("b"));
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+			expect(runner.getMessageRenderBoundaryDecoratorsV1().map((decorate) => decorate({} as never)?.prefix)).toEqual(
+				["a", "b"],
+			);
+		});
+
 		it("gets message renderer by type", async () => {
 			const extCode = `
 				export default function(pi) {

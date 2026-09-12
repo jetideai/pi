@@ -2,6 +2,7 @@ import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { decorateMessageRender, type MessageRenderBoundaryOptionsV1 } from "./message-render-boundaries.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -15,18 +16,21 @@ export class UserMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
+	private renderBoundaryOptions?: MessageRenderBoundaryOptionsV1;
 
 	constructor(
 		text: string,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
+		renderBoundaryOptions?: MessageRenderBoundaryOptionsV1,
 	) {
 		super();
 		this.text = text;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
+		this.renderBoundaryOptions = renderBoundaryOptions;
 		this.rebuild();
 	}
 
@@ -65,6 +69,6 @@ export class UserMessageComponent extends Container {
 
 		lines[0] = OSC133_ZONE_START + lines[0];
 		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
-		return lines;
+		return decorateMessageRender(lines, width, "user", "final", this.outputPad, this.renderBoundaryOptions);
 	}
 }

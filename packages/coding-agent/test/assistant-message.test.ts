@@ -213,6 +213,107 @@ describe("AssistantMessageComponent", () => {
 		expect(availableWidths).toEqual([78, 58]);
 	});
 
+	test("composes safe assistant boundaries and isolates invalid decorators", () => {
+		initTheme("dark");
+		const message = createAssistantMessage([{ type: "text", text: "stock text" }]);
+		const stock = new AssistantMessageComponent(message).render(40);
+		const contexts: unknown[] = [];
+		const component = Reflect.construct(AssistantMessageComponent, [
+			message,
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[],
+			{
+				entryId: "assistant-entry",
+				decorators: [
+					(context: unknown) => {
+						contexts.push(context);
+						return { prefix: "\x1b[31m", suffix: "\x1b[39m" };
+					},
+					() => {
+						throw new Error("broken decorator");
+					},
+					() => ({ prefix: "visible", suffix: "\x1b[0m" }),
+					() => ({ prefix: "\x1b[32m", suffix: "\x1b[0m" }),
+				],
+			},
+		]) as AssistantMessageComponent;
+
+		component.updateContent(message, true);
+		const lines = component.render(40);
+
+		expect(contexts).toEqual([
+			{
+				entryId: "assistant-entry",
+				role: "assistant",
+				state: "streaming",
+				outputPad: 1,
+				allocatedColumns: { start: 0, end: 40 },
+				stockRows: { start: 0, end: stock.length },
+			},
+		]);
+		expect(lines).toEqual(
+			stock.map((line, index) => {
+				const prefix = index === 0 ? "\x1b[31m\x1b[32m" : "";
+				const suffix = index === stock.length - 1 ? "\x1b[0m\x1b[39m" : "";
+				return prefix + line + suffix;
+			}),
+		);
+		expect(lines.join("\n")).not.toContain("visible");
+	});
+
+	test("reports final assistant facts after streaming and resize", () => {
+		initTheme("dark");
+		const message = createAssistantMessage([{ type: "text", text: "stock text" }]);
+		const contexts: Array<{ state: string; allocatedColumns: { end: number } }> = [];
+		const component = Reflect.construct(AssistantMessageComponent, [
+			undefined,
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[],
+			{
+				entryId: "assistant-entry",
+				decorators: [
+					(context: { state: string; allocatedColumns: { end: number } }) => {
+						contexts.push(context);
+						return {};
+					},
+				],
+			},
+		]) as AssistantMessageComponent;
+
+		component.updateContent(message, true);
+		component.render(40);
+		component.updateContent(message, false);
+		component.render(24);
+
+		expect(contexts.map(({ state, allocatedColumns }) => [state, allocatedColumns.end])).toEqual([
+			["streaming", 40],
+			["final", 24],
+		]);
+	});
+
+	test("keeps capability-off assistant bytes unchanged", () => {
+		initTheme("dark");
+		const message = createAssistantMessage([{ type: "text", text: "stock text" }]);
+		const stock = new AssistantMessageComponent(message).render(40);
+		const component = Reflect.construct(AssistantMessageComponent, [
+			message,
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[],
+			{ entryId: "assistant-entry", decorators: [] },
+		]) as AssistantMessageComponent;
+
+		expect(component.render(40)).toEqual(stock);
+	});
+
 	test("continues the Markdown transformer chain when a transformer throws", () => {
 		initTheme("dark");
 		const calls: string[] = [];

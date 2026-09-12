@@ -24,6 +24,51 @@ describe("UserMessageComponent", () => {
 		expect(lines[2].endsWith(BG_RESET)).toBe(true);
 	});
 
+	test("decorates a frozen user boundary without changing stock rows", () => {
+		initTheme("dark");
+		const stock = new UserMessageComponent("hello").render(20);
+		const contexts: unknown[] = [];
+		const component = Reflect.construct(UserMessageComponent, [
+			"hello",
+			undefined,
+			1,
+			[],
+			{
+				entryId: "user-entry",
+				decorators: [
+					(context: {
+						allocatedColumns: { start: number; end: number };
+						stockRows: { start: number; end: number };
+					}) => {
+						contexts.push(context);
+						expect(Object.isFrozen(context)).toBe(true);
+						expect(Object.isFrozen(context.allocatedColumns)).toBe(true);
+						expect(Object.isFrozen(context.stockRows)).toBe(true);
+						return { prefix: "\x1b[31m", suffix: "\x1b[0m" };
+					},
+				],
+			},
+		]) as UserMessageComponent;
+
+		const lines = component.render(20);
+
+		expect(contexts).toEqual([
+			{
+				entryId: "user-entry",
+				role: "user",
+				state: "final",
+				outputPad: 1,
+				allocatedColumns: { start: 0, end: 20 },
+				stockRows: { start: 0, end: stock.length },
+			},
+		]);
+		expect(lines).toEqual(
+			stock.map(
+				(line, index) => (index === 0 ? "\x1b[31m" : "") + line + (index === stock.length - 1 ? "\x1b[0m" : ""),
+			),
+		);
+	});
+
 	test("chains Markdown transformers with user message context", () => {
 		initTheme("dark");
 		const calls: string[] = [];
