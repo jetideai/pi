@@ -109,7 +109,7 @@ export function decorateMessageRender(
 	}
 
 	lines[0] = prefixes.join("") + lines[0];
-	for (let index = 0; index < reservedRows; index++) lines.push(" ".repeat(width));
+	for (let index = 0; index < reservedRows; index++) lines.push("");
 	lines[lines.length - 1] += suffixes.join("");
 	return lines;
 }
