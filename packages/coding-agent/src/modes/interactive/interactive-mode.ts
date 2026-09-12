@@ -2954,11 +2954,12 @@ export class InteractiveMode {
 
 	private async invalidateExtensionStandardPrompt(): Promise<void> {
 		const promptId = this.activeExtensionStandardPrompt?.promptId;
-		if (!promptId) return;
-		this.settleExtensionStandardPrompt(promptId, {
-			resolution: "dismissed",
-			source: "sessionInvalidated",
-		});
+		if (promptId) {
+			this.settleExtensionStandardPrompt(promptId, {
+				resolution: "dismissed",
+				source: "sessionInvalidated",
+			});
+		}
 		await this.extensionStandardPromptEventDelivery;
 	}
 

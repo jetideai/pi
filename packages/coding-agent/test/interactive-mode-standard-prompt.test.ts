@@ -505,6 +505,36 @@ describe("InteractiveMode exact standard prompts", () => {
 		},
 	);
 
+	it("waits for an already-settled prompt end event before lifecycle teardown continues", async () => {
+		let releaseEnd: () => void = () => {};
+		const endGate = new Promise<void>((resolve) => {
+			releaseEnd = resolve;
+		});
+		const harness = createStandardPromptHarness(async (event) => {
+			if (event.type === "ui_prompt_end") await endGate;
+		});
+		try {
+			const result = harness.context.input("Value");
+			const start = harness.events[0] as ExactUIPromptStartEvent;
+			expect(harness.context.respond(start.promptId, { kind: "input", value: "external" })).toBe("accepted");
+			expect(await result).toBe("external");
+
+			let invalidated = false;
+			const invalidation = harness.invalidate().then(() => {
+				invalidated = true;
+			});
+			await Promise.resolve();
+
+			expect(invalidated).toBe(false);
+			releaseEnd();
+			await invalidation;
+			expect(harness.events).toHaveLength(2);
+		} finally {
+			releaseEnd();
+			harness.close();
+		}
+	});
+
 	it("waits for the invalidation end event before lifecycle teardown continues", async () => {
 		let releaseEnd: () => void = () => {};
 		const endGate = new Promise<void>((resolve) => {
