@@ -2,14 +2,14 @@ export interface ObservedTranscriptCounts {
 	entries: number;
 	toolCalls: number;
 	toolResults: number;
-	groups: number;
-	singletons: number;
+	groupableRuns: number;
+	singletonRuns: number;
 }
 
 export interface ObservedComponentCounts {
-	groups: number;
-	singletons: number;
-	toolCalls: number;
+	toolExecutionComponents: number;
+	toolGroupComponents: number;
+	directToolExecutionComponents: number;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -19,18 +19,18 @@ function record(value: unknown): Record<string, unknown> | undefined {
 export function deriveTranscriptCounts(entries: readonly unknown[]): ObservedTranscriptCounts {
 	let toolCalls = 0;
 	let toolResults = 0;
-	let groups = 0;
-	let singletons = 0;
+	let groupableRuns = 0;
+	let singletonRuns = 0;
 	for (const entry of entries) {
 		const message = record(record(entry)?.message);
 		if (message?.role === "toolResult") toolResults += 1;
 		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
 		const callsInMessage = message.content.filter((content) => record(content)?.type === "toolCall").length;
 		toolCalls += callsInMessage;
-		if (callsInMessage > 1) groups += 1;
-		if (callsInMessage === 1) singletons += 1;
+		if (callsInMessage > 1) groupableRuns += 1;
+		if (callsInMessage === 1) singletonRuns += 1;
 	}
-	return { entries: entries.length, toolCalls, toolResults, groups, singletons };
+	return { entries: entries.length, toolCalls, toolResults, groupableRuns, singletonRuns };
 }
 
 export function deriveComponentCounts(
@@ -38,20 +38,27 @@ export function deriveComponentCounts(
 	isTool: (component: unknown) => boolean,
 	isGroup: (component: unknown) => boolean,
 ): ObservedComponentCounts {
-	let groups = 0;
-	let toolCalls = 0;
-	let groupedToolCalls = 0;
+	let toolExecutionComponents = 0;
+	let toolGroupComponents = 0;
+	let groupedToolExecutionComponents = 0;
 	const visit = (component: unknown, insideGroup: boolean): void => {
 		const group = isGroup(component);
-		if (group) groups += 1;
+		if (group) toolGroupComponents += 1;
 		if (isTool(component)) {
-			toolCalls += 1;
-			if (insideGroup) groupedToolCalls += 1;
+			toolExecutionComponents += 1;
+			if (insideGroup) groupedToolExecutionComponents += 1;
 		}
-		const children = record(component)?.children;
-		if (!Array.isArray(children)) return;
-		for (const child of children) visit(child, insideGroup || group);
+		const value = record(component);
+		const children = value?.children;
+		if (Array.isArray(children)) {
+			for (const child of children) visit(child, insideGroup || group);
+		}
+		if (value?.component !== undefined) visit(value.component, insideGroup || group);
 	};
 	visit(root, false);
-	return { groups, singletons: toolCalls - groupedToolCalls, toolCalls };
+	return {
+		toolExecutionComponents,
+		toolGroupComponents,
+		directToolExecutionComponents: toolExecutionComponents - groupedToolExecutionComponents,
+	};
 }

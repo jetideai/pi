@@ -15,15 +15,27 @@ interface Measurement {
 	cpuTotalMs: number;
 }
 
+type BenchmarkMode = "capability-off" | "semantic-on";
+
 interface WorkerResult {
 	label: string;
-	mode: "capability-off";
+	mode: BenchmarkMode;
 	geometry: { initial: { width: number; height: number }; resize: { width: number; height: number } };
-	counts: Record<string, number>;
+	observations: {
+		transcript: Record<string, number>;
+		components: Record<string, number>;
+		render: Record<string, number>;
+	};
 	fixtureHash: string;
 	packageVersions: { codingAgent: string; tui: string };
 	measurements: Record<"construction" | "firstRender" | "resize", Measurement>;
 	structuralCorrectness: true;
+}
+
+interface Lane {
+	label: string;
+	target: Target;
+	mode: BenchmarkMode;
 }
 
 export interface Target {
@@ -100,7 +112,8 @@ function validateTarget(label: string, root: string, expectedRevision: string): 
 	};
 }
 
-function runWorker(target: Target): WorkerResult {
+function runWorker(lane: Lane): WorkerResult {
+	const { target } = lane;
 	const result = spawnSync(
 		process.execPath,
 		[
@@ -110,7 +123,9 @@ function runWorker(target: Target): WorkerResult {
 			"--target-root",
 			target.root,
 			"--label",
-			target.label,
+			lane.label,
+			"--mode",
+			lane.mode,
 			"--width",
 			"77",
 			"--height",
@@ -126,7 +141,8 @@ function runWorker(target: Target): WorkerResult {
 		throw new Error(`${target.label} worker failed:\n${result.stderr || result.stdout}`);
 	}
 	const parsed = JSON.parse(result.stdout) as WorkerResult;
-	if (!parsed.structuralCorrectness) throw new Error(`${target.label} worker did not prove structural correctness`);
+	if (!parsed.structuralCorrectness) throw new Error(`${lane.label} worker did not prove structural correctness`);
+	if (parsed.label !== lane.label || parsed.mode !== lane.mode) throw new Error(`${lane.label} worker reported the wrong lane`);
 	if (parsed.packageVersions.codingAgent !== target.packageVersions.codingAgent || parsed.packageVersions.tui !== target.packageVersions.tui) {
 		throw new Error(`${target.label} worker loaded package versions from the wrong root`);
 	}
@@ -161,17 +177,22 @@ function format(value: number): string {
 
 async function main(): Promise<void> {
 	const args = parseArguments();
-	const targets = [
-		validateTarget("stock", args.stockRoot, STOCK_REVISION),
-		validateTarget("jetpi", args.jetpiRoot, args.jetpiRevision),
+	const stock = validateTarget("stock", args.stockRoot, STOCK_REVISION);
+	const jetpi = validateTarget("jetpi", args.jetpiRoot, args.jetpiRevision);
+	const lanes: Lane[] = [
+		{ label: "stock-off", target: stock, mode: "capability-off" },
+		{ label: "jetpi-off", target: jetpi, mode: "capability-off" },
+		{ label: "jetpi-semantic-on", target: jetpi, mode: "semantic-on" },
 	];
 	const results = [];
-	for (const target of targets) {
-		for (let index = 0; index < args.warmups; index++) runWorker(target);
-		const samples = Array.from({ length: args.samples }, () => runWorker(target));
+	for (const lane of lanes) {
+		for (let index = 0; index < args.warmups; index++) runWorker(lane);
+		const samples = Array.from({ length: args.samples }, () => runWorker(lane));
 		const summary = summarize(samples);
-		results.push({ target, samples, summary });
-		console.log(`\n${target.label} ${target.actualRevision} (${args.samples} samples after ${args.warmups} warm-up)`);
+		results.push({ lane, samples, summary });
+		console.log(
+			`\n${lane.label} ${lane.target.actualRevision} (${args.samples} samples after ${args.warmups} warm-up)`,
+		);
 		for (const [index, sample] of samples.entries()) {
 			const phases = (["construction", "firstRender", "resize"] as const)
 				.map((phase) => {
@@ -184,7 +205,7 @@ async function main(): Promise<void> {
 		for (const phase of ["construction", "firstRender", "resize"] as const) {
 			const wall = summary[phase]?.wallMs;
 			const cpu = summary[phase]?.cpuTotalMs;
-			if (!wall || !cpu) throw new Error(`Missing summary for ${target.label} ${phase}`);
+			if (!wall || !cpu) throw new Error(`Missing summary for ${lane.label} ${phase}`);
 			console.log(
 				`  ${phase}: wall median/min/max ${format(wall.median)}/${format(wall.min)}/${format(wall.max)} ms; CPU total ${format(cpu.median)}/${format(cpu.min)}/${format(cpu.max)} ms`,
 			);
@@ -193,21 +214,22 @@ async function main(): Promise<void> {
 
 	const fixtureHashes = new Set(results.flatMap(({ samples }) => samples.map(({ fixtureHash }) => fixtureHash)));
 	if (fixtureHashes.size !== 1) throw new Error("Workers used different fixtures");
-	const countShapes = new Set(results.flatMap(({ samples }) => samples.map(({ counts }) => JSON.stringify(counts))));
-	if (countShapes.size !== 1) throw new Error("Workers produced different structural counts");
 
 	const artifact = {
-		schemaVersion: 2,
+		schemaVersion: 3,
 		createdAt: new Date().toISOString(),
 		description: "Descriptive synthetic long-transcript benchmark. Timing values are not pass/fail thresholds.",
 		runtime: { node: process.version, platform: process.platform, arch: process.arch },
 		geometry: { initial: { width: 77, height: 35 }, resize: { width: 118, height: 35 } },
-		mode: "capability-off",
 		warmups: args.warmups,
 		sampleCount: args.samples,
 		fixtureHash: [...fixtureHashes][0],
-		counts: results[0]?.samples[0]?.counts,
-		results: results.map(({ target, samples, summary }) => ({ target: serializeTarget(target), samples, summary })),
+		results: results.map(({ lane, samples, summary }) => ({
+			lane: { label: lane.label, mode: lane.mode },
+			target: serializeTarget(lane.target),
+			samples,
+			summary,
+		})),
 	};
 	mkdirSync(dirname(args.output), { recursive: true });
 	writeFileSync(args.output, `${JSON.stringify(artifact, null, 2)}\n`);

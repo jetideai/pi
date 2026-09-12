@@ -1,6 +1,6 @@
 # Long-transcript benchmark
 
-This benchmark compares the stock renderer at `d981de1229ef899957bbe968bc8dcda02a21f477` with a selected JetPi revision. It uses the deterministic synthetic 422-Tool-Call fixture. It does not read session files.
+This benchmark compares the stock renderer at `d981de1229ef899957bbe968bc8dcda02a21f477` with a selected JetPi revision. It runs stock capability-off, JetPi capability-off, and JetPi semantic-on lanes. It uses the deterministic synthetic 422-Tool-Call fixture. It does not read session files.
 
 Each warm-up and measured sample runs in a fresh Node.js worker. The worker measures these phases separately:
 
@@ -10,7 +10,7 @@ Each warm-up and measured sample runs in a fresh Node.js worker. The worker meas
 
 Each phase reports wall time and CPU user, system, and total time. The driver prints every sample plus median, minimum, and maximum values. Timing values are descriptive. They never cause a failure.
 
-The command fails only when a target root or exact revision is invalid, a worker fails, or structural correctness fails. Structural checks derive entry, Tool Call, result, group, and singleton counts from the restored transcript and component tree. They also cover one resize render per Tool Call, marker ordering, cursor position, and destructive width-redraw control sequences.
+The command fails only when a target root or exact revision is invalid, a worker fails, or structural correctness fails. Restored-transcript observations report entries, Tool Calls, results, groupable runs, and singleton runs. Component-tree observations separately report `ToolExecutionComponent`, `ToolGroupComponent`, and direct Tool Execution instance counts. Capability-off lanes observe zero Tool Group components. The JetPi semantic-on lane observes the production semantic grouping. Structural checks also cover one resize render per Tool Call, marker ordering, cursor position, and destructive width-redraw control sequences.
 
 ## Run
 

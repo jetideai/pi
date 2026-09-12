@@ -49,9 +49,12 @@ interface TuiLike extends Renderable {
 	captureRenderState(): { previousLines: string[]; cursorRow: number };
 }
 
+type BenchmarkMode = "capability-off" | "semantic-on";
+
 interface WorkerArguments {
 	targetRoot: string;
 	label: string;
+	mode: BenchmarkMode;
 	width: number;
 	height: number;
 	resizeWidth: number;
@@ -74,6 +77,7 @@ function parseArguments(): WorkerArguments {
 	return {
 		targetRoot: resolve(required("target-root")),
 		label: required("label"),
+		mode: required("mode") as BenchmarkMode,
 		width: Number(required("width")),
 		height: Number(required("height")),
 		resizeWidth: Number(required("resize-width")),
@@ -127,6 +131,7 @@ function packageVersion(root: string, packagePath: string): string {
 }
 
 const args = parseArguments();
+if (args.mode !== "capability-off" && args.mode !== "semantic-on") throw new Error(`Invalid mode: ${args.mode}`);
 registerTargetWorkspace(args.targetRoot);
 
 const codingRoot = join(args.targetRoot, "packages/coding-agent");
@@ -147,6 +152,12 @@ const [
 		import(pathToFileURL(join(args.targetRoot, "packages/tui/src/tui-main-screen.ts")).href),
 		import(pathToFileURL(join(args.targetRoot, "packages/tui/test/virtual-terminal.ts")).href),
 	]);
+
+const ToolGroupComponent =
+	args.mode === "semantic-on"
+		? (await import(pathToFileURL(join(codingRoot, "src/modes/interactive/components/tool-group.ts")).href))
+				.ToolGroupComponent
+		: undefined;
 
 initTheme("dark");
 const fixture = createSyntheticLongTranscript();
@@ -230,9 +241,20 @@ const construction = await measure(() => {
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 		getMarkdownTransformers: () => [],
 		getMessageRenderBoundaryDecoratorsV1: () => [],
-		getMessageRenderBoundarySelectorsV3: () => [],
+		getMessageRenderBoundarySelectorsV3: () =>
+			args.mode === "semantic-on" ? [() => () => ({ begin: "", body: "", end: "" })] : [],
 		getMessageRenderProjectionObserversV1: () => [],
-		getToolExecutionPresentationSelectorsV1: () => [],
+		getToolExecutionPresentationSelectorsV1: () =>
+			args.mode === "semantic-on"
+				? [
+						() => ({
+							liveToolCall: "compact-stock-header",
+							liveToolGroup: "compact-stock-header",
+							header: "exact-one-row",
+							settled: "canonical-initial-collapsed",
+						}),
+					]
+				: [],
 		updatePendingMessagesDisplay() {},
 		updateEditorBorderColor() {},
 		maybeShowAssistantDiagnostics() {},
@@ -253,30 +275,35 @@ const construction = await measure(() => {
 });
 
 const observedTranscript = deriveTranscriptCounts(restoredEntries);
-const observedComponentToolCalls = deriveComponentCounts(
+const observedComponents = deriveComponentCounts(
 	root,
 	(component) => component instanceof ToolExecutionComponent,
-	() => false,
-).toolCalls;
+	(component) => ToolGroupComponent !== undefined && component instanceof ToolGroupComponent,
+);
 const expectedObservedCounts = {
 	entries: SYNTHETIC_ENTRY_COUNT,
 	toolCalls: SYNTHETIC_TOOL_CALL_COUNT,
 	toolResults: SYNTHETIC_TOOL_RESULT_COUNT,
-	groups: SYNTHETIC_GROUP_COUNT,
-	singletons: SYNTHETIC_SINGLETON_COUNT,
+	groupableRuns: SYNTHETIC_GROUP_COUNT,
+	singletonRuns: SYNTHETIC_SINGLETON_COUNT,
 };
-const observedCounts = {
-	entries: observedTranscript.entries,
-	toolCalls: observedTranscript.toolCalls,
-	toolResults: observedTranscript.toolResults,
-	groups: observedTranscript.groups,
-	singletons: observedTranscript.singletons,
-};
-if (JSON.stringify(observedCounts) !== JSON.stringify(expectedObservedCounts)) {
-	throw new Error(`Observed structure mismatch: ${JSON.stringify(observedCounts)}`);
+if (JSON.stringify(observedTranscript) !== JSON.stringify(expectedObservedCounts)) {
+	throw new Error(`Observed transcript mismatch: ${JSON.stringify(observedTranscript)}`);
 }
-if (observedComponentToolCalls !== observedTranscript.toolCalls) {
-	throw new Error("Restored Tool Call count does not match the component tree");
+const expectedComponentCounts =
+	args.mode === "semantic-on"
+		? {
+				toolExecutionComponents: SYNTHETIC_TOOL_CALL_COUNT,
+				toolGroupComponents: SYNTHETIC_GROUP_COUNT,
+				directToolExecutionComponents: SYNTHETIC_SINGLETON_COUNT,
+			}
+		: {
+				toolExecutionComponents: SYNTHETIC_TOOL_CALL_COUNT,
+				toolGroupComponents: 0,
+				directToolExecutionComponents: SYNTHETIC_TOOL_CALL_COUNT,
+			};
+if (JSON.stringify(observedComponents) !== JSON.stringify(expectedComponentCounts)) {
+	throw new Error(`Observed component tree mismatch: ${JSON.stringify(observedComponents)}`);
 }
 
 const firstRender = await measure(async () => {
@@ -327,16 +354,15 @@ for (let index = 1; index < visibleMarkers.length; index++) {
 process.stdout.write(
 	`${JSON.stringify({
 		label: args.label,
-		mode: "capability-off",
+		mode: args.mode,
 		geometry: {
 			initial: { width: args.width, height: args.height },
 			resize: { width: args.resizeWidth, height: args.resizeHeight },
 		},
-		counts: {
-			...observedCounts,
-			resizeToolRenders,
-			narrowRows,
-			wideRows: wideState.previousLines.length,
+		observations: {
+			transcript: observedTranscript,
+			components: observedComponents,
+			render: { resizeToolRenders, narrowRows, wideRows: wideState.previousLines.length },
 		},
 		fixtureHash,
 		packageVersions: {
