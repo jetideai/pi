@@ -298,4 +298,70 @@ describe("synthetic long-transcript rendering", () => {
 		toolRender.mockRestore();
 		groupRender.mockRestore();
 	});
+	it("reflows collapsed shell history across compaction with stable semantic identities and cursor", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const entries = createSyntheticLongTranscript().messages.slice(0, 12);
+		const entryIds: string[] = [];
+		for (const { message } of entries) {
+			if (message.role === "assistant") {
+				entryIds.push(
+					sessionManager.appendMessage({
+						...message,
+						content: message.content.map((block) =>
+							block.type === "toolCall"
+								? { ...block, name: "bash", arguments: { command: `echo ${block.id}` } }
+								: block,
+						),
+					}),
+				);
+			} else if (message.role === "toolResult") {
+				entryIds.push(
+					sessionManager.appendMessage({
+						...message,
+						toolName: "bash",
+						content: [
+							{
+								type: "text",
+								text: `${"old shell output words ".repeat(100)}\n${message.toolCallId} final tail`,
+							},
+						],
+					}),
+				);
+			} else {
+				entryIds.push(sessionManager.appendMessage(message));
+			}
+		}
+		sessionManager.appendCompaction("compacted context", entryIds[8], 10000);
+		expect(sessionManager.buildContextEntries().length).toBeLessThan(sessionManager.buildTranscriptEntries().length);
+		const terminal = new RecordingTerminal(77, 35);
+		const tui = new TuiMainScreen(terminal);
+		const { mode } = createHarness(tui, sessionManager);
+		mode.toolOutputExpanded = false;
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["buildTranscriptEntries"]>,
+		) => void;
+		renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+		const cursor = new LogicalCursorProbe();
+		tui.addChild(mode.chatContainer);
+		tui.addChild(cursor);
+		let semanticMarkers: string[] | undefined;
+		for (const [index, width] of [77, 53, 91, 77].entries()) {
+			terminal.writes.length = 0;
+			terminal.resize(width, 35);
+			tui.renderNow();
+			await terminal.flush();
+			const output = terminal.writes.join("");
+			const visible = stripAnsi(output);
+			for (const marker of ["U0000", "A0000", "U0001", "A0001", "U0002", "A0002"]) {
+				expect(occurrences(visible, marker)).toBe(1);
+			}
+			const markers = output.match(/\x1b\]777;[^\x07]+\x07/g) ?? [];
+			expect(markers.length).toBeGreaterThan(0);
+			semanticMarkers ??= markers;
+			expect(markers).toEqual(semanticMarkers);
+			expect(occurrences(output, "\x1b[3J")).toBe(index === 0 ? 0 : 1);
+			expect(terminal.getCursorPosition()).toEqual(cursor.expectedPosition(width, 35));
+		}
+	});
 });

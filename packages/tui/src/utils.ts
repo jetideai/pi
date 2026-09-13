@@ -261,17 +261,24 @@ export function visibleWidth(str: string): number {
 	if (clean.includes("\x1b")) {
 		// Strip supported ANSI/OSC/APC escape sequences in one pass.
 		// This covers CSI styling/cursor codes, OSC hyperlinks and prompt markers,
-		// and APC sequences like CURSOR_MARKER.
+		// and APC sequences like CURSOR_MARKER. Copy ordinary text in spans
+		// rather than checking and appending each character individually.
 		let stripped = "";
 		let i = 0;
 		while (i < clean.length) {
-			const ansi = extractAnsiCode(clean, i);
-			if (ansi) {
-				i += ansi.length;
-				continue;
+			const escapeIndex = clean.indexOf("\x1b", i);
+			if (escapeIndex === -1) {
+				stripped += clean.slice(i);
+				break;
 			}
-			stripped += clean[i];
-			i++;
+			stripped += clean.slice(i, escapeIndex);
+			const ansi = extractAnsiCode(clean, escapeIndex);
+			if (ansi) {
+				i = escapeIndex + ansi.length;
+			} else {
+				stripped += "\x1b";
+				i = escapeIndex + 1;
+			}
 		}
 		clean = stripped;
 	}
@@ -735,15 +742,13 @@ class AnsiCodeTracker {
 }
 
 function updateTrackerFromText(text: string, tracker: AnsiCodeTracker): void {
-	let i = 0;
-	while (i < text.length) {
+	let i = text.indexOf("\x1b");
+	while (i !== -1) {
 		const ansiResult = extractAnsiCode(text, i);
 		if (ansiResult) {
 			tracker.process(ansiResult.code);
-			i += ansiResult.length;
-		} else {
-			i++;
 		}
+		i = text.indexOf("\x1b", i + (ansiResult?.length ?? 1));
 	}
 }
 
@@ -787,8 +792,13 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 			end++;
 		}
 
-		for (const { segment } of graphemeSegmenter.segment(text.slice(i, end))) {
-			const segmentIsSpace = segment === " ";
+		const portion = text.slice(i, end);
+		const ascii = isPrintableAscii(portion);
+		const segments = ascii
+			? Array.from(portion.matchAll(/ +|[^ ]+/g), (match) => ({ segment: match[0] }))
+			: graphemeSegmenter.segment(portion);
+		for (const { segment } of segments) {
+			const segmentIsSpace = ascii ? segment[0] === " " : segment === " ";
 			if (!segmentIsSpace && cjkBreakRegex.test(segment)) {
 				flushCurrent();
 				const token = pendingAnsi + segment;
@@ -845,50 +855,69 @@ function splitIntoTokensWithAnsi(text: string): string[] {
  * @returns Array of wrapped lines (NOT padded to width)
  */
 export function wrapTextWithAnsi(text: string, width: number): string[] {
-	if (!text) {
-		return [""];
-	}
-
-	// Handle newlines by processing each line separately
-	// Track ANSI state across lines so styles carry over after literal newlines
-	const inputLines = text.split(/\r\n|\r|\n/);
-	const result: string[] = [];
-	const tracker = new AnsiCodeTracker();
-
-	for (const inputLine of inputLines) {
-		// Prepend active ANSI codes from previous lines (except for first line)
-		const prefix = result.length > 0 ? tracker.getActiveCodes() : "";
-		const wrappedLines = wrapSingleLine(prefix + inputLine, width);
-		for (const wrappedLine of wrappedLines) {
-			result.push(wrappedLine);
-		}
-		// Update tracker with codes from this line for next iteration
-		updateTrackerFromText(inputLine, tracker);
-	}
-
-	return result.length > 0 ? result : [""];
+	return new PreparedTextWithAnsi(text).wrap(width);
 }
 
-function wrapSingleLine(line: string, width: number): string[] {
-	if (!line) {
+interface MeasuredAnsiToken {
+	readonly text: string;
+	readonly width: number;
+	readonly isWhitespace: boolean;
+}
+
+interface PreparedAnsiLine {
+	readonly text: string;
+	readonly width: number;
+	tokens?: readonly MeasuredAnsiToken[];
+}
+
+/** Width-independent analysis owned by one current text value, not by visited widths. */
+export class PreparedTextWithAnsi {
+	private readonly lines: readonly PreparedAnsiLine[];
+
+	constructor(text: string) {
+		const tracker = new AnsiCodeTracker();
+		this.lines = text.split(/\r\n|\r|\n/).map((inputLine, index) => {
+			const line = (index > 0 ? tracker.getActiveCodes() : "") + inputLine;
+			updateTrackerFromText(inputLine, tracker);
+			return { text: line, width: visibleWidth(line) };
+		});
+	}
+
+	wrap(width: number): string[] {
+		const result: string[] = [];
+		for (const line of this.lines) {
+			for (const wrappedLine of wrapSingleLine(line, width)) {
+				result.push(wrappedLine);
+			}
+		}
+		return result;
+	}
+}
+
+function wrapSingleLine(line: PreparedAnsiLine, width: number): string[] {
+	if (!line.text) {
 		return [""];
 	}
 
-	const visibleLength = visibleWidth(line);
-	if (visibleLength <= width) {
-		return [line];
+	if (line.width <= width) {
+		return [line.text];
 	}
 
 	const wrapped: string[] = [];
 	const tracker = new AnsiCodeTracker();
-	const tokens = splitIntoTokensWithAnsi(line);
+	line.tokens ??= splitIntoTokensWithAnsi(line.text).map((text) => ({
+		text,
+		width: visibleWidth(text),
+		isWhitespace: text.trim() === "",
+	}));
 
 	let currentLine = "";
 	let currentVisibleLength = 0;
 
-	for (const token of tokens) {
-		const tokenVisibleLength = visibleWidth(token);
-		const isWhitespace = token.trim() === "";
+	for (const measured of line.tokens) {
+		const token = measured.text;
+		const tokenVisibleLength = measured.width;
+		const isWhitespace = measured.isWhitespace;
 
 		// Token itself is too long - break it character by character
 		if (tokenVisibleLength > width && !isWhitespace) {

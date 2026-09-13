@@ -34,17 +34,9 @@ export function truncateToVisualLines(
 		return { visualLines: [], skippedCount: 0 };
 	}
 
-	// Create a temporary Text component to render and get visual lines
-	const tempText = new Text(text, paddingX, 0);
-	const allVisualLines = tempText.render(width);
-
-	if (allVisualLines.length <= maxVisualLines) {
-		return { visualLines: allVisualLines, skippedCount: 0 };
-	}
-
-	// Take the last N visual lines
-	const truncatedLines = allVisualLines.slice(-maxVisualLines);
-	const skippedCount = allVisualLines.length - maxVisualLines;
-
-	return { visualLines: truncatedLines, skippedCount };
+	const { lines, totalLines } = new Text(text, paddingX, 0).renderTail(width, maxVisualLines);
+	return {
+		visualLines: lines,
+		skippedCount: totalLines <= maxVisualLines ? 0 : totalLines - maxVisualLines,
+	};
 }

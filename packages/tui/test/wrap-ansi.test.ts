@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
+import { getGraphemeSegmenter, PreparedTextWithAnsi, visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
 
 describe("wrapTextWithAnsi", () => {
 	describe("underline styling", () => {
@@ -192,6 +192,37 @@ describe("wrapTextWithAnsi", () => {
 				assert.strictEqual(wrapped[i].endsWith("\x1b[0m"), false);
 			}
 		});
+	});
+});
+
+describe("PreparedTextWithAnsi", () => {
+	it("reuses measured words at novel widths without segmenting them again", (context) => {
+		const prepared = new PreparedTextWithAnsi("café résumé naïve élève ".repeat(20));
+		prepared.wrap(18);
+		const segmentation = context.mock.method(getGraphemeSegmenter(), "segment");
+		for (const width of [13, 22, 11, 18]) {
+			assert.ok(prepared.wrap(width).length > 1);
+		}
+		assert.equal(segmentation.mock.callCount(), 0);
+	});
+
+	it("preserves explicit newline styles and unusual graphemes at every width", () => {
+		for (const source of [
+			"",
+			"  ",
+			"plain words and spaces   ",
+			"long_word_without_breaks_0123456789",
+			"\x1b[4;44mfirst\r\nsecond\rthird\x1b[0m",
+			"word \u0301more 中文\t👩‍💻 🇨 é words",
+			"\x1b]8;;url\x07linked words\nmore words\x1b]8;;\x07",
+			"\x1b]8;;url\x1b\\linked words\nmore words\x1b]8;;\x1b\\",
+			"\x1b]133;A\x07hello \x1b[unknown tail\x1b",
+		]) {
+			const prepared = new PreparedTextWithAnsi(source);
+			for (const width of [80, 5, 13, 1, 7, 5]) {
+				assert.deepEqual(prepared.wrap(width), wrapTextWithAnsi(source, width));
+			}
+		}
 	});
 });
 

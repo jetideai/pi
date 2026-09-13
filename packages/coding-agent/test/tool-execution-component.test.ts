@@ -196,6 +196,112 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).not.toContain("[Showing lines 2001-4000 of 4000. Full output:");
 	});
 
+	test("bash keeps the exact five-row tail and skipped count across novel widths and a revisit", () => {
+		const output = Array.from({ length: 14 }, (_, index) => `row-${index} ${"wrapped output words ".repeat(6)}`).join(
+			"\n",
+		);
+		const component = new ToolExecutionComponent(
+			"bash",
+			"bash-tail",
+			{ command: "echo output" },
+			{},
+			createBashToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: output }], isError: false }, false);
+		const styled = output
+			.split("\n")
+			.map((line) => theme.fg("toolOutput", line))
+			.join("\n");
+		for (const width of [77, 53, 91, 77]) {
+			const all = new Text(styled, 0, 0).render(width - 2);
+			const rendered = component.render(width).map((line) => stripAnsi(line).trim());
+			const hintRow = rendered.findIndex((line) => line.includes("earlier lines"));
+			expect(rendered[hintRow]).toContain(`${all.length - 5} earlier lines`);
+			expect(rendered.slice(hintRow + 1, hintRow + 6)).toEqual(all.slice(-5).map((line) => stripAnsi(line).trim()));
+		}
+	});
+
+	test("expands the retained bash preview through the mouse route after resize", () => {
+		const component = new ToolExecutionComponent(
+			"bash",
+			"bash-click-tail",
+			{ command: "echo output" },
+			{},
+			createBashToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+		const output = Array.from({ length: 12 }, (_, index) => `output-row-${index}`).join("\n");
+		component.updateResult({ content: [{ type: "text", text: output }], isError: false }, false);
+		component.render(77);
+		const lines = component.render(53);
+		expect(stripAnsi(lines.join("\n"))).not.toContain("output-row-0");
+		const row = lines.findIndex((line) => stripAnsi(line).includes("output-row-11"));
+		expect(row).toBeGreaterThan(0);
+		expect(
+			component.handleMouse({
+				type: "click",
+				button: "left",
+				x: 2,
+				y: row,
+				screenX: 2,
+				screenY: row,
+				width: 53,
+				height: lines.length,
+				shift: false,
+				alt: false,
+				ctrl: false,
+				clickCount: 1,
+			})?.handled,
+		).toBe(true);
+		expect(stripAnsi(component.render(53).join("\n"))).toContain("output-row-0");
+	});
+
+	test("bash replaces preview state for partial/final errors, expansion and theme invalidation", () => {
+		const create = () =>
+			new ToolExecutionComponent(
+				"bash",
+				"bash-lifecycle",
+				{ command: "echo output" },
+				{},
+				createBashToolDefinition(process.cwd()),
+				createFakeTui(),
+				process.cwd(),
+			);
+		const component = create();
+		for (const phase of [
+			{ text: "partial words ".repeat(60), isError: false, partial: true },
+			{ text: "final failed words ".repeat(70), isError: true, partial: false },
+			{ text: "replacement successful words ".repeat(80), isError: false, partial: false },
+		]) {
+			const result = { content: [{ type: "text", text: phase.text }], isError: phase.isError };
+			component.updateResult(result, phase.partial);
+			for (const expanded of [true, false, true, false]) {
+				component.setExpanded(expanded);
+				for (const width of [77, 53, 91]) {
+					const fresh = create();
+					fresh.updateResult(result, phase.partial);
+					fresh.setExpanded(expanded);
+					expect(component.render(width)).toEqual(fresh.render(width));
+				}
+			}
+		}
+		initTheme("light");
+		try {
+			component.invalidate();
+			const fresh = create();
+			fresh.updateResult(
+				{ content: [{ type: "text", text: "replacement successful words ".repeat(80) }], isError: false },
+				false,
+			);
+			expect(component.render(77)).toEqual(fresh.render(77));
+		} finally {
+			initTheme("dark");
+		}
+	});
+
 	test("does not duplicate built-in headers when passed the active built-in definition", () => {
 		const component = new ToolExecutionComponent(
 			"read",

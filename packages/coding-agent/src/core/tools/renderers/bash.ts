@@ -8,7 +8,6 @@
 
 import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
-import { truncateToVisualLines } from "../../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
 import type { BashToolDetails } from "../bash.ts";
@@ -72,12 +71,13 @@ function rebuildBashResultRenderComponent(
 		if (options.expanded) {
 			component.addChild(new Text(`\n${styledOutput}`, 0, 0));
 		} else {
+			const previewText = new Text(styledOutput, 0, 0);
 			component.addChild({
 				render: (width: number) => {
 					if (state.cachedLines === undefined || state.cachedWidth !== width) {
-						const preview = truncateToVisualLines(styledOutput, BASH_PREVIEW_LINES, width);
-						state.cachedLines = preview.visualLines;
-						state.cachedSkipped = preview.skippedCount;
+						const preview = previewText.renderTail(width, BASH_PREVIEW_LINES);
+						state.cachedLines = preview.lines;
+						state.cachedSkipped = Math.max(0, preview.totalLines - BASH_PREVIEW_LINES);
 						state.cachedWidth = width;
 					}
 					if (state.cachedSkipped && state.cachedSkipped > 0) {
@@ -89,6 +89,7 @@ function rebuildBashResultRenderComponent(
 					return ["", ...(state.cachedLines ?? [])];
 				},
 				invalidate: () => {
+					previewText.invalidate();
 					state.cachedWidth = undefined;
 					state.cachedLines = undefined;
 					state.cachedSkipped = undefined;
