@@ -23,7 +23,7 @@ const assistant = {
 	},
 	stopReason: "stop" as const,
 	timestamp: 1,
-} as AgentMessage;
+} satisfies AgentMessage;
 
 const members: MessageRenderProjectionMemberV1[] = [
 	{ entryId: "user-a", blockId: "user-a", role: "user" },
@@ -74,6 +74,114 @@ describe("completed transcript projection", () => {
 		expect(Object.isFrozen(projection.members)).toBe(true);
 		expect(Object.isFrozen(projection.members[0])).toBe(true);
 		expect(Object.isFrozen(projection.members[0]?.role === "user" && projection.members[0].completedTurn)).toBe(true);
+	});
+
+	it.each([
+		["stop", "length"],
+		["length", "stop"],
+	] as const)(
+		"keeps the first successful %s assistant when an unrelated successful %s assistant follows",
+		(firstStopReason, laterStopReason) => {
+			const messages = new Map<string, AgentMessage>([
+				["user-a", user],
+				["assistant-owner", { ...assistant, stopReason: firstStopReason }],
+				[
+					"assistant-async",
+					{
+						...assistant,
+						content: [{ type: "text" as const, text: "Later async answer" }],
+						stopReason: laterStopReason,
+					},
+				],
+				["user-next", { ...user, content: "Next question" }],
+			]);
+			const projection = buildMessageRenderProjection({
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				members: [
+					{ entryId: "user-a", blockId: "user-a", role: "user" },
+					{ entryId: "assistant-owner", blockId: "assistant-owner", role: "assistant" },
+					{ entryId: "assistant-async", blockId: "assistant-async", role: "assistant" },
+					{ entryId: "user-next", blockId: "user-next", role: "user" },
+				],
+				mode: "replace",
+				readMessage: (entryId) => messages.get(entryId),
+			});
+
+			expect(projection.members[0]).toMatchObject({
+				completedTurn: {
+					assistantEntryId: "assistant-owner",
+					userPreview: "Question",
+					assistantPreview: "Answer",
+				},
+			});
+		},
+	);
+
+	it("selects the successful assistant after a failed retry attempt", () => {
+		const failedAssistant = {
+			...assistant,
+			content: [{ type: "text" as const, text: "Temporary failure" }],
+			stopReason: "error" as const,
+			errorMessage: "529 overloaded",
+		};
+		const messages = new Map<string, AgentMessage>([
+			["user-a", user],
+			["assistant-error", failedAssistant],
+			["assistant-success", assistant],
+			["user-next", { ...user, content: "Next question" }],
+		]);
+		const projection = buildMessageRenderProjection({
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			members: [
+				{ entryId: "user-a", blockId: "user-a", role: "user" },
+				{ entryId: "assistant-error", blockId: "assistant-error", role: "assistant" },
+				{ entryId: "assistant-success", blockId: "assistant-success", role: "assistant" },
+				{ entryId: "user-next", blockId: "user-next", role: "user" },
+			],
+			mode: "replace",
+			readMessage: (entryId) => messages.get(entryId),
+		});
+
+		expect(projection.members[0]).toMatchObject({
+			completedTurn: {
+				assistantEntryId: "assistant-success",
+				assistantPreview: "Answer",
+			},
+		});
+	});
+
+	it("skips nonterminal assistants before the terminal answer", () => {
+		const messages = new Map<string, AgentMessage>([
+			["user-a", user],
+			...(["pending", "toolUse", "deferred"] as const).map(
+				(stopReason, index) => [`assistant-${index}`, { ...assistant, stopReason }] as const,
+			),
+			["assistant-terminal", assistant],
+			["user-next", { ...user, content: "Next question" }],
+		]);
+		const projection = buildMessageRenderProjection({
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			members: [
+				{ entryId: "user-a", blockId: "user-a", role: "user" },
+				{ entryId: "assistant-0", blockId: "assistant-0", role: "assistant" },
+				{ entryId: "assistant-1", blockId: "assistant-1", role: "assistant" },
+				{ entryId: "assistant-2", blockId: "assistant-2", role: "assistant" },
+				{ entryId: "assistant-terminal", blockId: "assistant-terminal", role: "assistant" },
+				{ entryId: "user-next", blockId: "user-next", role: "user" },
+			],
+			mode: "replace",
+			readMessage: (entryId) => messages.get(entryId),
+		});
+
+		expect(projection.members[0]).toMatchObject({
+			completedTurn: {
+				assistantEntryId: "assistant-terminal",
+				assistantPreview: "Answer",
+			},
+		});
 	});
 
 	it("isolates observers without changing publication order", () => {

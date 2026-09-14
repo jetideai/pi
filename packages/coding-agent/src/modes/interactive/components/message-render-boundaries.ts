@@ -111,6 +111,8 @@ export function decorateMessageRender(
 	lines[0] = prefixes.join("") + lines[0];
 	for (let index = 0; index < reservedRows; index++) lines.push("");
 	lines[lines.length - 1] += suffixes.join("");
+	// Keep one blank row after final assistant footer rows and outside the semantic boundary.
+	if (reservedRows > 0 && role === "assistant" && state === "final") lines.push("");
 	return lines;
 }
 

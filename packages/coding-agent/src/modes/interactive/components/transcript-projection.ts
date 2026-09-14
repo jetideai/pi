@@ -63,6 +63,7 @@ function attachCompletedTurns(
 	let userIndex: number | undefined;
 	let userPreview: string | undefined;
 	let terminalAssistant: { entryId: string; preview: string | null } | undefined;
+	let terminalAssistantSucceeded = false;
 	const completeTurn = (): void => {
 		if (userIndex === undefined || userPreview === undefined || terminalAssistant === undefined) return;
 		const user = completedMembers[userIndex];
@@ -80,11 +81,17 @@ function attachCompletedTurns(
 			userIndex = index;
 			userPreview = userMessagePreview(readMessage(member.entryId));
 			terminalAssistant = undefined;
+			terminalAssistantSucceeded = false;
 			continue;
 		}
 		if (member.role !== "assistant" || userIndex === undefined) continue;
-		const preview = terminalAssistantPreview(readMessage(member.entryId));
-		if (preview !== undefined) terminalAssistant = { entryId: member.entryId, preview };
+		const message = readMessage(member.entryId);
+		const preview = terminalAssistantPreview(message);
+		if (preview !== undefined && (terminalAssistant === undefined || !terminalAssistantSucceeded)) {
+			terminalAssistant = { entryId: member.entryId, preview };
+			terminalAssistantSucceeded =
+				message?.role === "assistant" && (message.stopReason === "stop" || message.stopReason === "length");
+		}
 	}
 	if (completeLastTurn) completeTurn();
 	return completedMembers;

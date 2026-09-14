@@ -2,18 +2,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
-import { Container, Text, type TUI } from "@earendil-works/pi-tui";
+import { Container, Text, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { loadExtensions } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type {
+	MessageRenderBoundariesV1,
 	MessageRenderBoundaryCandidateV3,
+	MessageRenderBoundaryContextV1,
 	MessageRenderProjectionV1,
 	ToolDefinition,
 } from "../src/core/extensions/types.ts";
+import type { CustomMessage } from "../src/core/messages.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -69,7 +73,9 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 	const projections: Readonly<MessageRenderProjectionV1>[] = [];
 	const candidates: MessageRenderBoundaryCandidateV3[] = [];
 	const chatContainer = new Container();
-	const messageDecorator = vi.fn(() => undefined);
+	const messageDecorator = vi.fn(
+		(_context: Readonly<MessageRenderBoundaryContextV1>): MessageRenderBoundariesV1 | undefined => undefined,
+	);
 	const mode = {
 		isInitialized: true,
 		footer: { invalidate: vi.fn() },
@@ -203,6 +209,115 @@ describe("InteractiveMode response projection", () => {
 			expect.objectContaining({ entryId: assistantId, role: "assistant", state: "final" }),
 		);
 		expect(rendered).toContain("$ Read files, Ran commands");
+	});
+
+	it("keeps a blank row after a completed-turn footer before a later assistant", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const firstUser = { ...user, content: "Gamma" };
+		const firstAssistant = assistant([{ type: "text", text: "First answer" }], "stop");
+		const laterAssistant = assistant([{ type: "text", text: "Later async answer" }], "stop");
+		const hiddenCustom = {
+			role: "custom",
+			customType: "hub-message",
+			content: "hidden delivery metadata",
+			display: false,
+			timestamp: 1,
+		} satisfies CustomMessage;
+		const laterUser = { ...user, content: "Beta" };
+		const firstUserId = sessionManager.appendMessage(firstUser);
+		const firstAssistantId = sessionManager.appendMessage(firstAssistant);
+		const hiddenCustomId = sessionManager.appendCustomMessageEntry("hub-message", "hidden delivery metadata", false);
+		const laterAssistantId = sessionManager.appendMessage(laterAssistant);
+		const laterUserId = sessionManager.appendMessage(laterUser);
+		const { mode, projections, chatContainer, messageDecorator } = modeHarness(sessionManager);
+		const terminal = new VirtualTerminal(80, 24);
+		const tui: TUI = new TuiMainScreen(terminal);
+		mode.ui = tui;
+		tui.addChild(chatContainer);
+		messageDecorator.mockImplementation((context) => {
+			if (context.role !== "assistant") return undefined;
+			const completedAssistantId = projections
+				.at(-1)
+				?.members.flatMap((member) =>
+					member.role === "user" && member.completedTurn ? [member.completedTurn.assistantEntryId] : [],
+				)[0];
+			return {
+				prefix: `\x1b]777;begin-${context.entryId}\x07`,
+				suffix: `\x1b]777;end-${context.entryId}\x07`,
+				...(context.entryId === completedAssistantId ? { reservedRows: 1 } : {}),
+			};
+		});
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+
+		tui.start();
+		await handleEvent.call(mode, { type: "message_start", message: firstUser, entryId: firstUserId });
+		await handleEvent.call(mode, {
+			type: "message_start",
+			message: assistant([], "pending"),
+			entryId: firstAssistantId,
+		});
+		await handleEvent.call(mode, {
+			type: "message_end",
+			message: firstAssistant,
+			entryId: firstAssistantId,
+		});
+		await terminal.waitForRender();
+
+		await handleEvent.call(mode, {
+			type: "message_start",
+			message: hiddenCustom,
+			entryId: hiddenCustomId,
+		});
+		await handleEvent.call(mode, {
+			type: "message_end",
+			message: hiddenCustom,
+			entryId: hiddenCustomId,
+		});
+		await handleEvent.call(mode, {
+			type: "message_start",
+			message: assistant([], "pending"),
+			entryId: laterAssistantId,
+		});
+		await handleEvent.call(mode, {
+			type: "message_update",
+			message: laterAssistant,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "Later async answer",
+				partial: laterAssistant,
+			},
+			entryId: laterAssistantId,
+		});
+		await handleEvent.call(mode, {
+			type: "message_end",
+			message: laterAssistant,
+			entryId: laterAssistantId,
+		});
+		await terminal.waitForRender();
+
+		const renderedTranscript = chatContainer.render(80);
+		const firstFooterRow = renderedTranscript.findIndex((line) => line.includes(`end-${firstAssistantId}`));
+		const laterBoundaryRow = renderedTranscript.findIndex((line) => line.includes(`begin-${laterAssistantId}`));
+		expect(projections.at(-1)?.members[0]).toMatchObject({
+			completedTurn: { assistantEntryId: firstAssistantId },
+		});
+		expect(renderedTranscript.slice(firstFooterRow + 1, laterBoundaryRow)).toEqual([""]);
+
+		let transcript = terminal.getScrollBuffer();
+		const firstAnswerRow = transcript.findIndex((line) => line.includes("First answer"));
+		const laterAnswerRow = transcript.findIndex((line) => line.includes("Later async answer"));
+		expect(transcript.slice(firstAnswerRow + 1, laterAnswerRow).map((line) => line.trim())).toEqual(["", "", ""]);
+
+		await handleEvent.call(mode, { type: "message_start", message: laterUser, entryId: laterUserId });
+		await terminal.waitForRender();
+		transcript = terminal.getScrollBuffer();
+		const delayedUserRow = transcript.findIndex((line) => line.includes("Beta"));
+		expect(transcript.slice(laterAnswerRow + 1, delayedUserRow).map((line) => line.trim())).toEqual(["", ""]);
+		tui.stop();
 	});
 
 	it("delivers a completed projection through an extension-loaded runner", async () => {
