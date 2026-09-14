@@ -870,6 +870,11 @@ interface PreparedAnsiLine {
 	tokens?: readonly MeasuredAnsiToken[];
 }
 
+interface WrappedAnsiLines {
+	readonly lines: string[];
+	readonly totalLines: number;
+}
+
 /** Width-independent analysis owned by one current text value, not by visited widths. */
 export class PreparedTextWithAnsi {
 	private readonly lines: readonly PreparedAnsiLine[];
@@ -884,26 +889,41 @@ export class PreparedTextWithAnsi {
 	}
 
 	wrap(width: number): string[] {
-		const result: string[] = [];
-		for (const line of this.lines) {
-			for (const wrappedLine of wrapSingleLine(line, width)) {
-				result.push(wrappedLine);
+		return this.lines.flatMap((line) => layoutSingleLine(line, width, 0).lines);
+	}
+
+	wrapTail(width: number, maxLines: number): WrappedAnsiLines {
+		const lineCounts = this.lines.map((line) => layoutSingleLine(line, width, Number.POSITIVE_INFINITY).totalLines);
+		const totalLines = lineCounts.reduce((total, count) => total + count, 0);
+		const firstMaterializedLine = Math.max(0, totalLines - maxLines);
+		const lines: string[] = [];
+		let precedingLines = 0;
+
+		for (let index = 0; index < this.lines.length; index++) {
+			const lineCount = lineCounts[index]!;
+			if (precedingLines + lineCount > firstMaterializedLine) {
+				lines.push(
+					...layoutSingleLine(this.lines[index]!, width, Math.max(0, firstMaterializedLine - precedingLines))
+						.lines,
+				);
 			}
+			precedingLines += lineCount;
 		}
-		return result;
+
+		return { lines, totalLines };
 	}
 }
 
-function wrapSingleLine(line: PreparedAnsiLine, width: number): string[] {
+function layoutSingleLine(line: PreparedAnsiLine, width: number, materializeFromLine: number): WrappedAnsiLines {
 	if (!line.text) {
-		return [""];
+		return { lines: materializeFromLine <= 0 ? [""] : [], totalLines: 1 };
 	}
 
 	if (line.width <= width) {
-		return [line.text];
+		return { lines: materializeFromLine <= 0 ? [line.text] : [], totalLines: 1 };
 	}
 
-	const wrapped: string[] = [];
+	const lines: string[] = [];
 	const tracker = new AnsiCodeTracker();
 	line.tokens ??= splitIntoTokensWithAnsi(line.text).map((text) => ({
 		text,
@@ -911,72 +931,153 @@ function wrapSingleLine(line: PreparedAnsiLine, width: number): string[] {
 		isWhitespace: text.trim() === "",
 	}));
 
+	let totalLines = 0;
 	let currentLine = "";
+	let currentLineHasContent = false;
 	let currentVisibleLength = 0;
+
+	const append = (text: string): void => {
+		if (text) currentLineHasContent = true;
+		if (totalLines >= materializeFromLine) currentLine += text;
+	};
+	const appendSlice = (text: string, start: number, end: number): void => {
+		if (end > start) currentLineHasContent = true;
+		if (totalLines >= materializeFromLine) currentLine += text.slice(start, end);
+	};
+	const finishLine = (trimBeforeReset: boolean, lineEndReset: string): void => {
+		if (totalLines >= materializeFromLine) {
+			if (trimBeforeReset) currentLine = currentLine.trimEnd();
+			lines.push((currentLine + lineEndReset).trimEnd());
+		}
+		totalLines++;
+		currentLine = "";
+		currentLineHasContent = false;
+		currentVisibleLength = 0;
+	};
+	const startContinuation = (): void => append(tracker.getActiveCodes());
 
 	for (const measured of line.tokens) {
 		const token = measured.text;
 		const tokenVisibleLength = measured.width;
 		const isWhitespace = measured.isWhitespace;
 
-		// Token itself is too long - break it character by character
 		if (tokenVisibleLength > width && !isWhitespace) {
-			if (currentLine) {
-				// Add specific reset for underline only (preserves background)
-				const lineEndReset = tracker.getLineEndReset();
-				if (lineEndReset) {
-					currentLine += lineEndReset;
-				}
-				wrapped.push(currentLine);
-				currentLine = "";
-				currentVisibleLength = 0;
-			}
-
-			// Break long token - breakLongWord handles its own resets
-			const broken = breakLongWord(token, width, tracker);
-			for (let i = 0; i < broken.length - 1; i++) {
-				wrapped.push(broken[i]!);
-			}
-			currentLine = broken[broken.length - 1];
-			currentVisibleLength = visibleWidth(currentLine);
+			if (currentLineHasContent) finishLine(false, tracker.getLineEndReset());
+			startContinuation();
+			appendLongWord(
+				token,
+				width,
+				tracker,
+				append,
+				appendSlice,
+				finishLine,
+				() => currentVisibleLength,
+				(value) => {
+					currentVisibleLength = value;
+				},
+			);
 			continue;
 		}
 
-		// Check if adding this token would exceed width
-		const totalNeeded = currentVisibleLength + tokenVisibleLength;
-
-		if (totalNeeded > width && currentVisibleLength > 0) {
-			// Trim trailing whitespace, then add underline reset (not full reset, to preserve background)
-			let lineToWrap = currentLine.trimEnd();
-			const lineEndReset = tracker.getLineEndReset();
-			if (lineEndReset) {
-				lineToWrap += lineEndReset;
-			}
-			wrapped.push(lineToWrap);
-			if (isWhitespace) {
-				// Don't start new line with whitespace
-				currentLine = tracker.getActiveCodes();
-				currentVisibleLength = 0;
-			} else {
-				currentLine = tracker.getActiveCodes() + token;
+		if (currentVisibleLength + tokenVisibleLength > width && currentVisibleLength > 0) {
+			finishLine(true, tracker.getLineEndReset());
+			startContinuation();
+			if (!isWhitespace) {
+				append(token);
 				currentVisibleLength = tokenVisibleLength;
 			}
 		} else {
-			// Add to current line
-			currentLine += token;
+			append(token);
 			currentVisibleLength += tokenVisibleLength;
 		}
 
 		updateTrackerFromText(token, tracker);
 	}
 
-	if (currentLine) {
-		// No reset at end of final line - let caller handle it
-		wrapped.push(currentLine);
+	if (currentLineHasContent) finishLine(false, "");
+	if (totalLines === 0) {
+		totalLines = 1;
+		if (materializeFromLine <= 0) lines.push("");
+	}
+	return { lines, totalLines };
+}
+
+function appendLongWord(
+	word: string,
+	width: number,
+	tracker: AnsiCodeTracker,
+	append: (text: string) => void,
+	appendSlice: (text: string, start: number, end: number) => void,
+	finishLine: (trimBeforeReset: boolean, lineEndReset: string) => void,
+	getCurrentWidth: () => number,
+	setCurrentWidth: (width: number) => void,
+): void {
+	if (width > 0 && isPrintableAscii(word)) {
+		appendPrintableAscii(word, width, tracker, append, appendSlice, finishLine, getCurrentWidth, setCurrentWidth);
+		return;
 	}
 
-	// Trailing whitespace can cause lines to exceed the requested width
-	return wrapped.length > 0 ? wrapped.map((line) => line.trimEnd()) : [""];
+	let index = 0;
+	while (index < word.length) {
+		const ansi = extractAnsiCode(word, index);
+		if (ansi) {
+			append(ansi.code);
+			tracker.process(ansi.code);
+			index += ansi.length;
+			continue;
+		}
+
+		let end = index;
+		while (end < word.length && !extractAnsiCode(word, end)) end++;
+		const portion = word.slice(index, end);
+		if (width > 0 && isPrintableAscii(portion)) {
+			appendPrintableAscii(
+				portion,
+				width,
+				tracker,
+				append,
+				appendSlice,
+				finishLine,
+				getCurrentWidth,
+				setCurrentWidth,
+			);
+		} else {
+			for (const { segment } of graphemeSegmenter.segment(portion)) {
+				const segmentWidth = visibleWidth(segment);
+				if (getCurrentWidth() + segmentWidth > width) {
+					finishLine(false, tracker.getLineEndReset());
+					append(tracker.getActiveCodes());
+				}
+				append(segment);
+				setCurrentWidth(getCurrentWidth() + segmentWidth);
+			}
+		}
+		index = end;
+	}
+}
+
+function appendPrintableAscii(
+	text: string,
+	width: number,
+	tracker: AnsiCodeTracker,
+	append: (text: string) => void,
+	appendSlice: (text: string, start: number, end: number) => void,
+	finishLine: (trimBeforeReset: boolean, lineEndReset: string) => void,
+	getCurrentWidth: () => number,
+	setCurrentWidth: (width: number) => void,
+): void {
+	let offset = 0;
+	while (offset < text.length) {
+		const available = width - getCurrentWidth();
+		const end = Math.min(text.length, offset + available);
+		appendSlice(text, offset, end);
+		setCurrentWidth(getCurrentWidth() + end - offset);
+		offset = end;
+		if (offset < text.length) {
+			finishLine(false, tracker.getLineEndReset());
+			append(tracker.getActiveCodes());
+		}
+	}
 }
 
 export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
@@ -993,75 +1094,6 @@ export function isWhitespaceChar(char: string): boolean {
  */
 export function isPunctuationChar(char: string): boolean {
 	return PUNCTUATION_REGEX.test(char);
-}
-
-function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): string[] {
-	const lines: string[] = [];
-	let currentLine = tracker.getActiveCodes();
-	let currentWidth = 0;
-
-	// First, separate ANSI codes from visible content
-	// We need to handle ANSI codes specially since they're not graphemes
-	let i = 0;
-	const segments: Array<{ type: "ansi" | "grapheme"; value: string }> = [];
-
-	while (i < word.length) {
-		const ansiResult = extractAnsiCode(word, i);
-		if (ansiResult) {
-			segments.push({ type: "ansi", value: ansiResult.code });
-			i += ansiResult.length;
-		} else {
-			// Find the next ANSI code or end of string
-			let end = i;
-			while (end < word.length) {
-				const nextAnsi = extractAnsiCode(word, end);
-				if (nextAnsi) break;
-				end++;
-			}
-			// Segment this non-ANSI portion into graphemes
-			const textPortion = word.slice(i, end);
-			for (const seg of graphemeSegmenter.segment(textPortion)) {
-				segments.push({ type: "grapheme", value: seg.segment });
-			}
-			i = end;
-		}
-	}
-
-	// Now process segments
-	for (const seg of segments) {
-		if (seg.type === "ansi") {
-			currentLine += seg.value;
-			tracker.process(seg.value);
-			continue;
-		}
-
-		const grapheme = seg.value;
-		// Skip empty graphemes to avoid issues with string-width calculation
-		if (!grapheme) continue;
-
-		const graphemeWidth = visibleWidth(grapheme);
-
-		if (currentWidth + graphemeWidth > width) {
-			// Add specific reset for underline only (preserves background)
-			const lineEndReset = tracker.getLineEndReset();
-			if (lineEndReset) {
-				currentLine += lineEndReset;
-			}
-			lines.push(currentLine);
-			currentLine = tracker.getActiveCodes();
-			currentWidth = 0;
-		}
-
-		currentLine += grapheme;
-		currentWidth += graphemeWidth;
-	}
-
-	if (currentLine) {
-		// No reset at end of final segment - caller handles continuation
-		lines.push(currentLine);
-	}
-
-	return lines.length > 0 ? lines : [""];
 }
 
 /**

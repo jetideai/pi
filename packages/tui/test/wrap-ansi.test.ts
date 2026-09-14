@@ -175,6 +175,10 @@ describe("wrapTextWithAnsi", () => {
 			assert.ok(visibleWidth(twoSpacesWrappedToWidth1[0]) <= 1);
 		});
 
+		it("should preserve zero-width fallback behavior", () => {
+			assert.deepEqual(wrapTextWithAnsi("abc", 0), ["", "a", "b", "c"]);
+		});
+
 		it("should preserve color codes across wraps", () => {
 			const red = "\x1b[31m";
 			const reset = "\x1b[0m";
@@ -196,6 +200,27 @@ describe("wrapTextWithAnsi", () => {
 });
 
 describe("PreparedTextWithAnsi", () => {
+	it("returns only the requested tail while preserving the full wrapped row count", () => {
+		for (const source of [
+			`${"long_ascii_token".repeat(5000)}\nlast words`,
+			`\x1b[4;44m${"styled-token".repeat(500)}\r\ncontinued\x1b[0m`,
+			`\x1b]8;;https://example.com\x07${"linked-token".repeat(500)}\x1b]8;;\x07\nlast`,
+			`${"中文👩‍💻é".repeat(500)}\nlast`,
+			`\x1b]133;A\x07${"semantic-token".repeat(500)}\x1b]133;B\x07\nlast`,
+		]) {
+			const prepared = new PreparedTextWithAnsi(source);
+			for (const width of [40, 13, 1, 0]) {
+				const full = prepared.wrap(width);
+				for (const maxLines of [1, 5, 11]) {
+					assert.deepEqual(prepared.wrapTail(width, maxLines), {
+						lines: full.slice(-maxLines),
+						totalLines: full.length,
+					});
+				}
+			}
+		}
+	});
+
 	it("reuses measured words at novel widths without segmenting them again", (context) => {
 		const prepared = new PreparedTextWithAnsi("café résumé naïve élève ".repeat(20));
 		prepared.wrap(18);

@@ -59,12 +59,16 @@ export class Text implements Component {
 		// Reduce margins when necessary so content and padding fit within the available width.
 		const paddingX = Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2)));
 		const contentWidth = Math.max(1, width - paddingX * 2);
-		const wrappedLines = this.prepared.wrap(contentWidth);
+		const tailOnly = maxLines !== undefined && Number.isInteger(maxLines) && maxLines > 0;
+		const wrapped = tailOnly
+			? this.prepared.wrapTail(contentWidth, maxLines)
+			: { lines: this.prepared.wrap(contentWidth), totalLines: 0 };
+		const wrappedTotalLines = tailOnly ? wrapped.totalLines : wrapped.lines.length;
 		const paddingLines: null[] = [];
 		for (let i = 0; i < this.paddingY; i++) paddingLines.push(null);
-		const sourceLines = paddingLines.length ? [...paddingLines, ...wrappedLines, ...paddingLines] : wrappedLines;
-		const selected =
-			maxLines === undefined || sourceLines.length <= maxLines ? sourceLines : sourceLines.slice(-maxLines);
+		const sourceLines = paddingLines.length ? [...paddingLines, ...wrapped.lines, ...paddingLines] : wrapped.lines;
+		const totalLines = wrappedTotalLines + paddingLines.length * 2;
+		const selected = maxLines === undefined || totalLines <= maxLines ? sourceLines : sourceLines.slice(-maxLines);
 		const margin = " ".repeat(paddingX);
 		const emptyLine = " ".repeat(width);
 		const lines = selected.map((line) => {
@@ -73,7 +77,7 @@ export class Text implements Component {
 			return withMargins + " ".repeat(Math.max(0, width - visibleWidth(withMargins)));
 		});
 
-		this.cached = { width, maxLines, lines, totalLines: sourceLines.length };
+		this.cached = { width, maxLines, lines, totalLines };
 		return this.cached;
 	}
 }

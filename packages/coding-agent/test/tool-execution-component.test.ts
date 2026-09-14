@@ -214,7 +214,7 @@ describe("ToolExecutionComponent parity", () => {
 			.split("\n")
 			.map((line) => theme.fg("toolOutput", line))
 			.join("\n");
-		for (const width of [77, 53, 91, 77]) {
+		for (const width of [77, 40, 53, 91, 77]) {
 			const all = new Text(styled, 0, 0).render(width - 2);
 			const rendered = component.render(width).map((line) => stripAnsi(line).trim());
 			const hintRow = rendered.findIndex((line) => line.includes("earlier lines"));
