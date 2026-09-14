@@ -34,11 +34,18 @@ const eagerLanguagesLoadedAtStartup = eagerLanguages.every(supportsLanguage);
 const uncommonLanguageLoadedAtStartup = supportsLanguage("ada");
 
 describe("syntax highlight renderer", () => {
-	it("loads the twenty most common languages at startup and defers the rest", async () => {
+	it("loads the twenty most common languages at startup and coalesces deferred loading", async () => {
 		expect(eagerLanguagesLoadedAtStartup).toBe(true);
 		expect(uncommonLanguageLoadedAtStartup).toBe(false);
-		await loadAllHighlightLanguages();
+		initTheme("dark");
+		const code = "with Ada.Text_IO;";
+		const beforeLoad = highlightCode(code, "ada");
+		const firstLoad = loadAllHighlightLanguages();
+		const secondLoad = loadAllHighlightLanguages();
+		expect(secondLoad).toBe(firstLoad);
+		await firstLoad;
 		expect(supportsLanguage("ada")).toBe(true);
+		expect(highlightCode(code, "ada")).not.toEqual(beforeLoad);
 	});
 
 	it("renders highlighted spans with the provided theme", () => {

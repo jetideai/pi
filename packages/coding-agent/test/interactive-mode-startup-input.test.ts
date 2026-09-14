@@ -32,6 +32,10 @@ type InteractiveModePrivate = {
 	handleStartupSubmit(this: StartupSubmitContext, text: string): void;
 	setupEditorSubmitHandler(this: SubmitContext): void;
 	getUserInput(this: InputContext): Promise<string>;
+	renderInitialMessagesAfterHighlightLanguages(
+		this: { isInitialized: boolean; renderInitialMessages: () => void },
+		languagesReady: Promise<void>,
+	): Promise<void>;
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
@@ -86,5 +90,38 @@ describe("InteractiveMode startup input", () => {
 		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("queued prompt");
 		expect(context.onInputCallback).toBeUndefined();
 		expect(context.pendingUserInputs).toEqual([]);
+	});
+
+	it("renders restored messages only after deferred highlight languages settle", async () => {
+		let resolveLanguages: (() => void) | undefined;
+		const languagesReady = new Promise<void>((resolve) => {
+			resolveLanguages = resolve;
+		});
+		const context = {
+			isInitialized: true,
+			renderInitialMessages: vi.fn(),
+		};
+
+		const rendering = interactiveModePrototype.renderInitialMessagesAfterHighlightLanguages.call(
+			context,
+			languagesReady,
+		);
+		expect(context.renderInitialMessages).not.toHaveBeenCalled();
+
+		resolveLanguages?.();
+		await rendering;
+
+		expect(context.renderInitialMessages).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not render restored messages after shutdown while languages load", async () => {
+		const context = {
+			isInitialized: false,
+			renderInitialMessages: vi.fn(),
+		};
+
+		await interactiveModePrototype.renderInitialMessagesAfterHighlightLanguages.call(context, Promise.resolve());
+
+		expect(context.renderInitialMessages).not.toHaveBeenCalled();
 	});
 });

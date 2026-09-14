@@ -1007,6 +1007,7 @@ export class InteractiveMode {
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
 		this.isInitialized = true;
+		const highlightLanguagesReady = loadAllHighlightLanguages();
 
 		await this.themeController.applyFromSettings();
 
@@ -1089,8 +1090,8 @@ export class InteractiveMode {
 		// Initialize extensions first so resources are shown before messages
 		await this.rebindCurrentSession();
 
-		// Render initial messages AFTER showing loaded resources
-		this.renderInitialMessages();
+		// Render initial messages AFTER showing loaded resources and loading syntax grammars.
+		await this.renderInitialMessagesAfterHighlightLanguages(highlightLanguagesReady);
 
 		// Set up theme file watcher
 		onThemeChange(() => {
@@ -1107,13 +1108,13 @@ export class InteractiveMode {
 		// Initialize available provider count for footer display
 		await this.updateAvailableProviderCount();
 
-		// Flush the completed startup state before loading the remaining syntax grammars.
 		this.ui.renderNow();
-		void loadAllHighlightLanguages().then(() => {
-			if (!this.isInitialized) return;
-			this.ui.invalidate();
-			this.ui.requestRender();
-		});
+	}
+
+	private async renderInitialMessagesAfterHighlightLanguages(languagesReady: Promise<void>): Promise<void> {
+		await languagesReady;
+		if (!this.isInitialized) return;
+		this.renderInitialMessages();
 	}
 
 	/**
