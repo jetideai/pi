@@ -121,6 +121,9 @@ type ReloadCommandContext = {
 	defaultEditor: { setPaddingX: (padding: number) => void; setAutocompleteMaxVisible: (maxVisible: number) => void };
 	themeController: { applyFromSettings: () => Promise<void> };
 	resetExtensionUI: () => void;
+	releaseActiveAgentRunRendering: () => void;
+	releaseSettledMessageRendering: () => void;
+	startFreshMessageRenderScope: () => void;
 	rebuildChatFromMessages: () => void;
 	setupAutocompleteProvider: () => void;
 	setupExtensionShortcuts: (runner: unknown) => void;
@@ -195,6 +198,9 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 		customHeader: overrides.customHeader,
 		builtInHeader: overrides.builtInHeader,
 		resetExtensionUI: overrides.resetExtensionUI ?? (() => {}),
+		releaseActiveAgentRunRendering: overrides.releaseActiveAgentRunRendering ?? (() => {}),
+		releaseSettledMessageRendering: overrides.releaseSettledMessageRendering ?? (() => {}),
+		startFreshMessageRenderScope: overrides.startFreshMessageRenderScope ?? (() => {}),
 		rebuildChatFromMessages: overrides.rebuildChatFromMessages ?? (() => {}),
 		setupAutocompleteProvider: overrides.setupAutocompleteProvider ?? (() => {}),
 		setupExtensionShortcuts: overrides.setupExtensionShortcuts ?? (() => {}),
@@ -450,6 +456,44 @@ describe("regression #5943: session_start transient UI", () => {
 		}
 	});
 
+	it("forces restored transcript rendering after reload session start settles", async () => {
+		initTheme("dark", false);
+		const events: string[] = [];
+		const context = createReloadCommandContext({
+			session: {
+				reload: async (options) => {
+					await options?.beforeSessionStart?.();
+					events.push("session-start-settled");
+				},
+			},
+			ui: {
+				requestRender: (force) => events.push(`render:${force === true}`),
+			},
+			releaseActiveAgentRunRendering: () => events.push("release-active-render"),
+			releaseSettledMessageRendering: () => events.push("release-settled-render"),
+			startFreshMessageRenderScope: () => events.push("fresh-render-scope"),
+			rebuildChatFromMessages: () => events.push("rebuild"),
+		});
+
+		await interactiveModePrototype.handleReloadCommand.call(context);
+
+		expect(events.slice(1, 6)).toEqual([
+			"release-active-render",
+			"release-settled-render",
+			"fresh-render-scope",
+			"rebuild",
+			"session-start-settled",
+		]);
+		const sessionStartSettled = events.indexOf("session-start-settled");
+		expect(events.slice(sessionStartSettled + 1, sessionStartSettled + 6)).toEqual([
+			"release-active-render",
+			"release-settled-render",
+			"fresh-render-scope",
+			"rebuild",
+			"render:true",
+		]);
+	});
+
 	it("refreshes hideThinkingBlock before rebuilding chat during reload", async () => {
 		initTheme("dark", false);
 		const events: string[] = [];
@@ -471,7 +515,7 @@ describe("regression #5943: session_start transient UI", () => {
 		await interactiveModePrototype.handleReloadCommand.call(context);
 
 		expect(context.hideThinkingBlock).toBe(true);
-		expect(events).toEqual(["reload", "rebuild:true", "start:true"]);
+		expect(events).toEqual(["reload", "rebuild:true", "start:true", "rebuild:true"]);
 	});
 
 	it("keeps the reload blocker focused until async reload completes", async () => {

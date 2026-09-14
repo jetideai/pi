@@ -6689,13 +6689,26 @@ export class InteractiveMode {
 			}
 			this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 			this.outputPad = this.settingsManager.getOutputPad();
+			this.releaseActiveAgentRunRendering();
+			this.releaseSettledMessageRendering();
+			this.startFreshMessageRenderScope();
 			this.rebuildChatFromMessages();
 			chatRestoredBeforeSessionStart = true;
 		};
 
 		try {
 			await this.session.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
-			restoreChatBeforeSessionStart();
+			if (chatRestoredBeforeSessionStart) {
+				// Extension-backed render contracts can register during session_start. Rebuild once more so the
+				// restored transcript uses the replacement extension's projection, selectors, and decorators.
+				this.releaseActiveAgentRunRendering();
+				this.releaseSettledMessageRendering();
+				this.startFreshMessageRenderScope();
+				this.rebuildChatFromMessages();
+			} else {
+				restoreChatBeforeSessionStart();
+			}
+			this.ui.requestRender(true);
 			this.keybindings.reload();
 			const activeHeader = this.customHeader ?? this.builtInHeader;
 			if (isExpandable(activeHeader)) {
