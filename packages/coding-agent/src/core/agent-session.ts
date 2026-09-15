@@ -328,6 +328,8 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	private _promptPreflightWait: Promise<void> | undefined;
+	private _resolvePromptPreflightWait: (() => void) | undefined;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 	private _activeMessageEntryId: string | undefined;
@@ -1150,8 +1152,35 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+	private _beginPromptPreflight(): void {
 		this._isAgentRunActive = true;
+		this._promptPreflightWait = new Promise((resolve) => {
+			this._resolvePromptPreflightWait = resolve;
+		});
+	}
+
+	private _finishPromptPreflight(releaseAdmission: boolean): void {
+		if (releaseAdmission) {
+			this._isAgentRunActive = false;
+		}
+		const resolve = this._resolvePromptPreflightWait;
+		this._promptPreflightWait = undefined;
+		this._resolvePromptPreflightWait = undefined;
+		resolve?.();
+		if (releaseAdmission) {
+			this._resolveIdleWaitIfIdle();
+		}
+	}
+
+	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], alreadyAdmitted = false): Promise<void> {
+		if (!alreadyAdmitted) {
+			if (this._isAgentRunActive) {
+				throw new Error("Agent is already processing.");
+			}
+			this._isAgentRunActive = true;
+		} else if (!this._isAgentRunActive) {
+			throw new Error("Agent run admission was released before the prompt started.");
+		}
 		try {
 			await this.agent.prompt(messages);
 			while (await this._handlePostAgentRun()) {
@@ -1207,18 +1236,31 @@ export class AgentSession {
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
+		let ownsRunAdmission = false;
 		let messages: AgentMessage[] | undefined;
 
 		try {
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
 			if (expandPromptTemplates && text.startsWith("/")) {
-				const handled = await this._tryExecuteExtensionCommand(text);
-				if (handled) {
+				const extensionCommand = this._tryExecuteExtensionCommand(text);
+				if (extensionCommand) {
+					await extensionCommand;
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
 					return;
 				}
+			}
+
+			while (this._promptPreflightWait) {
+				await this._promptPreflightWait;
+			}
+
+			const wasAgentRunActive = this._isAgentRunActive;
+			let shouldQueue = wasAgentRunActive;
+			if (!shouldQueue) {
+				this._beginPromptPreflight();
+				ownsRunAdmission = true;
 			}
 
 			if (this._compactionAbortController !== undefined) {
@@ -1235,9 +1277,12 @@ export class AgentSession {
 					currentText,
 					currentImages,
 					options?.source ?? "interactive",
-					this.isStreaming ? options?.streamingBehavior : undefined,
+					wasAgentRunActive ? options?.streamingBehavior : undefined,
 				);
 				if (inputResult.action === "handled") {
+					if (ownsRunAdmission) {
+						this._finishPromptPreflight(true);
+					}
 					preflightResult?.(true);
 					return;
 				}
@@ -1254,8 +1299,20 @@ export class AgentSession {
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
 
+			while (shouldQueue && this._promptPreflightWait) {
+				await this._promptPreflightWait;
+			}
+
+			// The run that was active at submission can settle while an input handler is pending.
+			// Claim the released admission before continuing instead of leaving a message in an idle queue.
+			if (shouldQueue && !this._isAgentRunActive) {
+				this._beginPromptPreflight();
+				ownsRunAdmission = true;
+				shouldQueue = false;
+			}
+
 			// If streaming, queue via steer() or followUp() based on option
-			if (this.isStreaming) {
+			if (shouldQueue) {
 				if (!options?.streamingBehavior) {
 					throw new Error(
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -1352,22 +1409,29 @@ export class AgentSession {
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 			}
 		} catch (error) {
+			if (ownsRunAdmission) {
+				this._finishPromptPreflight(true);
+			}
 			preflightResult?.(false);
 			throw error;
 		}
 
 		if (!messages) {
+			if (ownsRunAdmission) {
+				this._finishPromptPreflight(true);
+			}
 			return;
 		}
 
 		preflightResult?.(true);
-		await this._runAgentPrompt(messages);
+		this._finishPromptPreflight(false);
+		await this._runAgentPrompt(messages, ownsRunAdmission);
 	}
 
 	/**
 	 * Try to execute an extension command. Returns true if command was found and executed.
 	 */
-	private async _tryExecuteExtensionCommand(text: string): Promise<boolean> {
+	private _tryExecuteExtensionCommand(text: string): Promise<true> | false {
 		// Parse command name and args
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
@@ -1376,21 +1440,22 @@ export class AgentSession {
 		const command = this._extensionRunner.getCommand(commandName);
 		if (!command) return false;
 
-		// Get command context from extension runner (includes session control methods)
-		const ctx = this._extensionRunner.createCommandContext();
+		return (async () => {
+			// Get command context from extension runner (includes session control methods)
+			const ctx = this._extensionRunner.createCommandContext();
 
-		try {
-			await command.handler(args, ctx);
-			return true;
-		} catch (err) {
-			// Emit error via extension runner
-			this._extensionRunner.emitError({
-				extensionPath: `command:${commandName}`,
-				event: "command",
-				error: err instanceof Error ? err.message : String(err),
-			});
-			return true;
-		}
+			try {
+				await command.handler(args, ctx);
+			} catch (err) {
+				// Emit error via extension runner
+				this._extensionRunner.emitError({
+					extensionPath: `command:${commandName}`,
+					event: "command",
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+			return true as const;
+		})();
 	}
 
 	/**

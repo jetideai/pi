@@ -11,6 +11,14 @@ import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
 import { createTestResourceLoader } from "../utilities.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
+function createDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+	let resolve = (_value: T) => {};
+	const promise = new Promise<T>((promiseResolve) => {
+		resolve = promiseResolve;
+	});
+	return { promise, resolve };
+}
+
 describe("AgentSession prompt characterization", () => {
 	const harnesses: Harness[] = [];
 	const tempDirs: string[] = [];
@@ -322,6 +330,266 @@ describe("AgentSession prompt characterization", () => {
 		expect(getMessageText(harness.session.messages[0]!)).toBe("from extension");
 	});
 
+	it("queues a concurrent extension message behind the admitted prompt", async () => {
+		let extensionApi: ExtensionAPI | undefined;
+		const winnerPreflightStarted = createDeferred();
+		const winnerPreflightRelease = createDeferred();
+		const loserPreflightRelease = createDeferred();
+		const toolStarted = createDeferred();
+		const toolRelease = createDeferred();
+		const loserDecision = createDeferred<"preflight" | "queued">();
+		const loserRejected = createDeferred();
+		const extensionErrors: string[] = [];
+		const waitTool: AgentTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for release",
+			parameters: Type.Object({}),
+			execute: async () => {
+				toolStarted.resolve();
+				await toolRelease.promise;
+				return { content: [{ type: "text", text: "released" }], details: {} };
+			},
+		};
+		const harness = await createHarness({
+			tools: [waitTool],
+			extensionFactories: [
+				(pi) => {
+					extensionApi = pi;
+					pi.on("before_agent_start", async (event) => {
+						if (event.prompt === "winner") {
+							winnerPreflightStarted.resolve();
+							await winnerPreflightRelease.promise;
+							return;
+						}
+						if (event.prompt === "loser") {
+							loserDecision.resolve("preflight");
+							await loserPreflightRelease.promise;
+						}
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.bindExtensions({
+			onError: (error) => {
+				extensionErrors.push(error.error);
+				loserRejected.resolve();
+			},
+		});
+		harness.session.subscribe((event) => {
+			if (event.type === "queue_update" && event.followUp.includes("loser")) {
+				loserDecision.resolve("queued");
+			}
+		});
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("winner done"),
+			fauxAssistantMessage("loser done"),
+		]);
+
+		expect(extensionApi).toBeDefined();
+		extensionApi?.sendUserMessage("winner", { deliverAs: "followUp" });
+		await winnerPreflightStarted.promise;
+		extensionApi?.sendUserMessage("loser", { deliverAs: "followUp" });
+		winnerPreflightRelease.resolve();
+		await toolStarted.promise;
+		const decision = await loserDecision.promise;
+
+		try {
+			if (decision === "preflight") {
+				loserPreflightRelease.resolve();
+				await loserRejected.promise;
+			}
+
+			expect(decision).toBe("queued");
+			expect(harness.session.isStreaming).toBe(true);
+			expect(extensionErrors).toEqual([]);
+		} finally {
+			winnerPreflightRelease.resolve();
+			loserPreflightRelease.resolve();
+			toolRelease.resolve();
+			await harness.session.agent.waitForIdle();
+		}
+
+		await harness.session.waitForIdle();
+		expect(
+			harness.session.messages
+				.filter((message) => message.role === "user")
+				.map((message) => getMessageText(message)),
+		).toEqual(["winner", "loser"]);
+	});
+
+	it("does not queue a slow input behind a newer preflight owner", async () => {
+		const winnerToolStarted = createDeferred();
+		const winnerToolRelease = createDeferred();
+		const loserInputStarted = createDeferred();
+		const loserInputRelease = createDeferred();
+		const loserAccepted = createDeferred();
+		const interloperInputStarted = createDeferred();
+		const interloperInputRelease = createDeferred();
+		let loserInputRuns = 0;
+		const waitTool: AgentTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for release",
+			parameters: Type.Object({}),
+			execute: async () => {
+				winnerToolStarted.resolve();
+				await winnerToolRelease.promise;
+				return { content: [{ type: "text", text: "released" }], details: {} };
+			},
+		};
+		const harness = await createHarness({
+			tools: [waitTool],
+			extensionFactories: [
+				(pi) => {
+					pi.on("input", async (event) => {
+						if (event.text === "loser") {
+							loserInputRuns++;
+							loserInputStarted.resolve();
+							await loserInputRelease.promise;
+						}
+						if (event.text === "interloper") {
+							interloperInputStarted.resolve();
+							await interloperInputRelease.promise;
+							return { action: "handled" };
+						}
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("winner done"),
+			fauxAssistantMessage("loser done"),
+		]);
+
+		const winnerPrompt = harness.session.prompt("winner");
+		await winnerToolStarted.promise;
+		const loserPrompt = harness.session.prompt("loser", {
+			streamingBehavior: "followUp",
+			preflightResult: (success) => {
+				if (success) loserAccepted.resolve();
+			},
+		});
+		await loserInputStarted.promise;
+
+		winnerToolRelease.resolve();
+		await winnerPrompt;
+		const interloperPrompt = harness.session.prompt("interloper");
+		await interloperInputStarted.promise;
+		loserInputRelease.resolve();
+		interloperInputRelease.resolve();
+		await interloperPrompt;
+		await loserAccepted.promise;
+		await loserPrompt;
+		expect(loserInputRuns).toBe(1);
+
+		expect(
+			harness.session.messages
+				.filter((message) => message.role === "user")
+				.map((message) => getMessageText(message)),
+		).toEqual(["winner", "loser"]);
+	});
+
+	it("releases prompt admission when an input handler handles the message", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("input", () => ({ action: "handled" }));
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await harness.session.prompt("handled");
+
+		expect(harness.session.isIdle).toBe(true);
+		expect(harness.session.messages).toEqual([]);
+	});
+
+	it.each(["handled", "failure"] as const)(
+		"runs an accepted contender after the prompt owner exits preflight with %s",
+		async (ownerOutcome) => {
+			const ownerInputStarted = createDeferred();
+			const ownerInputRelease = createDeferred();
+			const contenderInputStarted = createDeferred();
+			const contenderInputRelease = createDeferred();
+			const toolStarted = createDeferred();
+			const toolRelease = createDeferred();
+			const waitTool: AgentTool = {
+				name: "wait",
+				label: "Wait",
+				description: "Wait for release",
+				parameters: Type.Object({}),
+				execute: async () => {
+					toolStarted.resolve();
+					await toolRelease.promise;
+					return { content: [{ type: "text", text: "released" }], details: {} };
+				},
+			};
+			const harness = await createHarness({
+				tools: [waitTool],
+				extensionFactories: [
+					(pi) => {
+						pi.on("input", async (event) => {
+							if (event.text === "owner") {
+								ownerInputStarted.resolve();
+								await ownerInputRelease.promise;
+								return ownerOutcome === "handled" ? { action: "handled" } : undefined;
+							}
+							if (event.text === "contender") {
+								contenderInputStarted.resolve();
+								await contenderInputRelease.promise;
+							}
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("contender done"),
+			]);
+
+			const ownerPrompt = harness.session.prompt("owner");
+			await ownerInputStarted.promise;
+			const contenderPrompt = harness.session.sendUserMessage("contender", { deliverAs: "followUp" });
+			const model = harness.session.agent.state.model;
+			if (ownerOutcome === "failure") {
+				harness.session.agent.state.model = undefined as unknown as Model<any>;
+			}
+			ownerInputRelease.resolve();
+
+			try {
+				if (ownerOutcome === "failure") {
+					await expect(ownerPrompt).rejects.toThrow("No model selected.");
+				} else {
+					await ownerPrompt;
+				}
+				await contenderInputStarted.promise;
+				harness.session.agent.state.model = model;
+				expect(harness.session.isStreaming).toBe(true);
+				contenderInputRelease.resolve();
+				await toolStarted.promise;
+				expect(harness.session.pendingMessageCount).toBe(0);
+			} finally {
+				harness.session.agent.state.model = model;
+				contenderInputRelease.resolve();
+				toolRelease.resolve();
+				await contenderPrompt;
+			}
+
+			expect(
+				harness.session.messages
+					.filter((message) => message.role === "user")
+					.map((message) => getMessageText(message)),
+			).toEqual(["contender"]);
+		},
+	);
+
 	it("does not report streamingBehavior to input handlers while idle", async () => {
 		const inputEvents: InputEvent[] = [];
 		const harness = await createHarness({
@@ -493,6 +761,7 @@ describe("AgentSession prompt characterization", () => {
 		harness.session.agent.state.model = undefined as unknown as Model<any>;
 
 		await expect(harness.session.prompt("hi")).rejects.toThrow("No model selected.");
+		expect(harness.session.isIdle).toBe(true);
 	});
 
 	it("throws when prompting without configured auth", async () => {
@@ -502,5 +771,6 @@ describe("AgentSession prompt characterization", () => {
 		await expect(harness.session.prompt("hi")).rejects.toThrow(
 			`No API key found for ${harness.getModel().provider}.`,
 		);
+		expect(harness.session.isIdle).toBe(true);
 	});
 });
