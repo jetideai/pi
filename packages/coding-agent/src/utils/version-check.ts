@@ -1,4 +1,4 @@
-import { compare, valid } from "semver";
+import { compare, prerelease, valid } from "semver";
 import { fetchWithRetry } from "./management-http.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
@@ -95,7 +95,10 @@ export async function getLatestPiVersion(
 }
 
 export async function checkForNewPiVersion(currentVersion: string): Promise<LatestPiRelease | undefined> {
-	if (process.env.PI_SKIP_VERSION_CHECK) return undefined;
+	const prereleaseIdentifiers = prerelease(currentVersion.trim());
+	if (process.env.PI_SKIP_VERSION_CHECK || prereleaseIdentifiers?.some((identifier) => identifier === "jetpi")) {
+		return undefined;
+	}
 
 	try {
 		const latestRelease = await getLatestPiRelease(currentVersion);

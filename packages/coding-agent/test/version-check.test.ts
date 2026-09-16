@@ -120,6 +120,14 @@ describe("version checks", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it("skips automatic upstream version checks for JetPi releases", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(checkForNewPiVersion("0.85.1-jetpi.9")).resolves.toBeUndefined();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it("allows direct api calls when automatic version checks are disabled", async () => {
 		process.env.PI_SKIP_VERSION_CHECK = "1";
 		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
