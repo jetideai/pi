@@ -13,7 +13,7 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
-import type { Component, TUI } from "../src/tui.ts";
+import { type Component, CURSOR_MARKER, type TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -530,6 +530,59 @@ describe("TUI resize handling", () => {
 			const viewport = terminal.getViewport();
 			assert.ok(viewport[0]?.includes("Line 0"), "Content preserved after height change");
 
+			tui.stop();
+		});
+	});
+
+	it("reports one correlated JetIDEAI redraw after the complete resize output", async () => {
+		await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: "1", TERMUX_VERSION: undefined }, async () => {
+			const terminal = new LoggingVirtualTerminal(40, 10);
+			const tui: TUI = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			component.lines = ["Line 0", "Line 1", `Line 2${CURSOR_MARKER}`];
+			tui.addChild(component);
+			tui.start();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+
+			terminal.resize(40, 15);
+			await terminal.waitForRender();
+
+			const writes = terminal.getWrites();
+			const begin = writes.indexOf("\x1b]7799;1;begin;18:jetideai.redraw.v1;");
+			const clear = writes.indexOf("\x1b[2J\x1b[H\x1b[3J");
+			const replay = writes.indexOf("Line 2");
+			const finalCursor = writes.lastIndexOf("G");
+			const end = writes.indexOf("\x1b]7799;1;end;18:jetideai.redraw.v1;");
+			assert.ok(begin >= 0, "resize redraw should have a begin marker");
+			assert.ok(begin < clear, "begin should precede the destructive clear");
+			assert.ok(clear < replay, "clear should preserve the ordinary transcript replay");
+			assert.ok(replay < finalCursor, "the replay should precede final cursor placement");
+			assert.ok(finalCursor < end, "end should follow all output in the redraw");
+			const beginId = /begin;18:jetideai\.redraw\.v1;([^;]+);6:resize;/.exec(writes)?.[1];
+			const endId = /end;18:jetideai\.redraw\.v1;([^;]+);6:resize;/.exec(writes)?.[1];
+			assert.ok(beginId !== undefined && beginId === endId, "redraw markers should share one identity");
+			assert.match(writes, /24:\{"columns":40,"rows":15\}/);
+
+			tui.stop();
+		});
+	});
+
+	it("does not report resize redraws outside the JetIDEAI semantic integration", async () => {
+		await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: undefined, TERMUX_VERSION: undefined }, async () => {
+			const terminal = new LoggingVirtualTerminal(40, 10);
+			const tui: TUI = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			component.lines = ["Line 0"];
+			tui.addChild(component);
+			tui.start();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+
+			terminal.resize(50, 10);
+			await terminal.waitForRender();
+
+			assert.ok(!terminal.getWrites().includes("jetideai.redraw.v1"));
 			tui.stop();
 		});
 	});

@@ -7,6 +7,16 @@ import { visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 const MAX_RENDER_WRITE_CHARS = 1024 * 1024;
+const JETIDEAI_REDRAW_NAMESPACE = "jetideai.redraw.v1";
+
+function netstring(value: string): string {
+	return `${new TextEncoder().encode(value).length}:${value}`;
+}
+
+function jetideaiResizeRedrawMarker(phase: "begin" | "end", redrawId: string, columns: number, rows: number): string {
+	const metadata = JSON.stringify({ columns, rows });
+	return `\x1b]7799;1;${phase};${netstring(JETIDEAI_REDRAW_NAMESPACE)};${netstring(redrawId)};6:resize;${netstring(metadata)}\x1b\\`;
+}
 
 /**
  * Streams terminal output in 1 MiB chunks so a full render never forms one string large enough to exceed V8's limit.
@@ -131,6 +141,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private hardwareCursorRow = 0;
 	private maxLinesRendered = 0;
 	private previousViewportTop = 0;
+	private resizeRedrawSequence = 0;
 
 	captureRenderState(): TuiMainScreenRenderState {
 		return {
@@ -274,8 +285,12 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		newLines = this.applyLineResets(newLines);
 
 		// Helper to clear scrollback and viewport and render all new lines
-		const fullRender = (clear: boolean): void => {
+		const fullRender = (clear: boolean, resizeRedraw = false): void => {
 			this.fullRedrawCount += 1;
+			const redrawId = resizeRedraw ? `resize-${++this.resizeRedrawSequence}` : undefined;
+			if (redrawId !== undefined && process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED === "1") {
+				this.terminal.write(jetideaiResizeRedrawMarker("begin", redrawId, width, height));
+			}
 			const output = new BoundedTerminalWriter((data) => this.terminal.write(data));
 			output.append("\x1b[?2026h"); // Begin synchronized output
 			if (clear) {
@@ -312,6 +327,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			const bufferLength = Math.max(height, newLines.length);
 			this.previousViewportTop = Math.max(0, bufferLength - height);
 			this.positionHardwareCursor(cursorPos, newLines.length);
+			if (redrawId !== undefined && process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED === "1") {
+				this.terminal.write(jetideaiResizeRedrawMarker("end", redrawId, width, height));
+			}
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
@@ -337,7 +355,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Width changes always need a full re-render because wrapping changes.
 		if (widthChanged) {
 			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
-			fullRender(true);
+			fullRender(true, true);
 			return;
 		}
 
@@ -346,7 +364,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// In that environment, a full redraw causes the entire history to replay on every toggle.
 		if (heightChanged && !isTermuxSession()) {
 			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
-			fullRender(true);
+			fullRender(true, true);
 			return;
 		}
 
