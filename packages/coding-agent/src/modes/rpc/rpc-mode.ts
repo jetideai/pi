@@ -169,6 +169,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			return () => {};
 		},
 
+		requestSemanticRedraw(): boolean {
+			return false;
+		},
+
 		setStatus(key: string, text: string | undefined): void {
 			// Fire and forget - no response needed
 			output({

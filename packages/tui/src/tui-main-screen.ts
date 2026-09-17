@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
-import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
+import { type SemanticRedrawRequest, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
@@ -141,7 +141,23 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private hardwareCursorRow = 0;
 	private maxLinesRendered = 0;
 	private previousViewportTop = 0;
-	private resizeRedrawSequence = 0;
+	private pendingSemanticRedraw: SemanticRedrawRequest | undefined;
+
+	override requestSemanticRedraw(request: SemanticRedrawRequest): boolean {
+		if (
+			process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED !== "1" ||
+			request.requestId.length === 0 ||
+			!Number.isSafeInteger(request.columns) ||
+			request.columns <= 0 ||
+			!Number.isSafeInteger(request.rows) ||
+			request.rows <= 0
+		) {
+			return false;
+		}
+		this.pendingSemanticRedraw = request;
+		this.requestRender();
+		return true;
+	}
 
 	captureRenderState(): TuiMainScreenRenderState {
 		return {
@@ -285,11 +301,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		newLines = this.applyLineResets(newLines);
 
 		// Helper to clear scrollback and viewport and render all new lines
-		const fullRender = (clear: boolean, resizeRedraw = false): void => {
+		const fullRender = (clear: boolean, semanticRedraw?: SemanticRedrawRequest): void => {
 			this.fullRedrawCount += 1;
-			const redrawId = resizeRedraw ? `resize-${++this.resizeRedrawSequence}` : undefined;
-			if (redrawId !== undefined && process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED === "1") {
-				this.terminal.write(jetideaiResizeRedrawMarker("begin", redrawId, width, height));
+			if (semanticRedraw !== undefined) {
+				this.terminal.write(jetideaiResizeRedrawMarker("begin", semanticRedraw.requestId, width, height));
 			}
 			const output = new BoundedTerminalWriter((data) => this.terminal.write(data));
 			output.append("\x1b[?2026h"); // Begin synchronized output
@@ -327,8 +342,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			const bufferLength = Math.max(height, newLines.length);
 			this.previousViewportTop = Math.max(0, bufferLength - height);
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			if (redrawId !== undefined && process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED === "1") {
-				this.terminal.write(jetideaiResizeRedrawMarker("end", redrawId, width, height));
+			if (semanticRedraw !== undefined) {
+				this.terminal.write(jetideaiResizeRedrawMarker("end", semanticRedraw.requestId, width, height));
 			}
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
@@ -345,6 +360,14 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			fs.appendFileSync(logPath, msg);
 		};
 
+		const semanticRedraw = this.pendingSemanticRedraw;
+		if (semanticRedraw?.columns === width && semanticRedraw.rows === height) {
+			this.pendingSemanticRedraw = undefined;
+			logRedraw(`requested semantic redraw (${semanticRedraw.requestId})`);
+			fullRender(true, semanticRedraw);
+			return;
+		}
+
 		// First render - just output everything without clearing (assumes clean screen)
 		if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
 			logRedraw("first render");
@@ -355,7 +378,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Width changes always need a full re-render because wrapping changes.
 		if (widthChanged) {
 			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
-			fullRender(true, true);
+			fullRender(true);
 			return;
 		}
 
@@ -364,7 +387,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// In that environment, a full redraw causes the entire history to replay on every toggle.
 		if (heightChanged && !isTermuxSession()) {
 			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
-			fullRender(true, true);
+			fullRender(true);
 			return;
 		}
 

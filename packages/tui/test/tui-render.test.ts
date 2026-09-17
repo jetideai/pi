@@ -534,7 +534,7 @@ describe("TUI resize handling", () => {
 		});
 	});
 
-	it("reports one correlated JetIDEAI redraw after the complete resize output", async () => {
+	it("waits for the requested grid before reporting one correlated semantic redraw", async () => {
 		await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: "1", TERMUX_VERSION: undefined }, async () => {
 			const terminal = new LoggingVirtualTerminal(40, 10);
 			const tui: TUI = new TuiMainScreen(terminal);
@@ -543,6 +543,11 @@ describe("TUI resize handling", () => {
 			tui.addChild(component);
 			tui.start();
 			await terminal.waitForRender();
+			terminal.clearWrites();
+
+			assert.equal(tui.requestSemanticRedraw({ requestId: "redraw-request-1", columns: 40, rows: 15 }), true);
+			await terminal.waitForRender();
+			assert.ok(!terminal.getWrites().includes("jetideai.redraw.v1"));
 			terminal.clearWrites();
 
 			terminal.resize(40, 15);
@@ -559,32 +564,55 @@ describe("TUI resize handling", () => {
 			assert.ok(clear < replay, "clear should preserve the ordinary transcript replay");
 			assert.ok(replay < finalCursor, "the replay should precede final cursor placement");
 			assert.ok(finalCursor < end, "end should follow all output in the redraw");
-			const beginId = /begin;18:jetideai\.redraw\.v1;([^;]+);6:resize;/.exec(writes)?.[1];
-			const endId = /end;18:jetideai\.redraw\.v1;([^;]+);6:resize;/.exec(writes)?.[1];
-			assert.ok(beginId !== undefined && beginId === endId, "redraw markers should share one identity");
+			assert.match(writes, /16:redraw-request-1;6:resize;/);
 			assert.match(writes, /24:\{"columns":40,"rows":15\}/);
 
 			tui.stop();
 		});
 	});
 
-	it("does not report resize redraws outside the JetIDEAI semantic integration", async () => {
-		await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: undefined, TERMUX_VERSION: undefined }, async () => {
+	it("reports a requested redraw when the terminal already has the requested grid", async () => {
+		await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: "1" }, async () => {
 			const terminal = new LoggingVirtualTerminal(40, 10);
 			const tui: TUI = new TuiMainScreen(terminal);
 			const component = new TestComponent();
-			component.lines = ["Line 0"];
+			component.lines = ["Line 0", `Line 1${CURSOR_MARKER}`];
 			tui.addChild(component);
 			tui.start();
 			await terminal.waitForRender();
 			terminal.clearWrites();
+			const initialRedraws = tui.fullRedraws;
 
-			terminal.resize(50, 10);
+			assert.equal(tui.requestSemanticRedraw({ requestId: "obsolete-grid", columns: 80, rows: 24 }), true);
+			assert.equal(tui.requestSemanticRedraw({ requestId: "matching-grid", columns: 40, rows: 10 }), true);
 			await terminal.waitForRender();
 
-			assert.ok(!terminal.getWrites().includes("jetideai.redraw.v1"));
+			assert.ok(tui.fullRedraws > initialRedraws);
+			assert.match(terminal.getWrites(), /13:matching-grid;6:resize;/);
+			assert.ok(!terminal.getWrites().includes("obsolete-grid"));
 			tui.stop();
 		});
+	});
+
+	it("does not report resize redraws outside the JetIDEAI semantic integration", async () => {
+		for (const capability of ["0", undefined]) {
+			await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: capability, TERMUX_VERSION: undefined }, async () => {
+				const terminal = new LoggingVirtualTerminal(40, 10);
+				const tui: TUI = new TuiMainScreen(terminal);
+				const component = new TestComponent();
+				component.lines = ["Line 0"];
+				tui.addChild(component);
+				tui.start();
+				await terminal.waitForRender();
+				terminal.clearWrites();
+
+				terminal.resize(50, 10);
+				await terminal.waitForRender();
+
+				assert.ok(!terminal.getWrites().includes("jetideai.redraw.v1"));
+				tui.stop();
+			});
+		}
 	});
 
 	it("skips full re-render on height changes in Termux", async () => {

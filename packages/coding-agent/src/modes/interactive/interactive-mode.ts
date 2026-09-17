@@ -2674,6 +2674,7 @@ export class InteractiveMode {
 			dismiss: (promptId) => this.dismissExtensionStandardPrompt(promptId),
 			notify: (message, type) => this.showExtensionNotify(message, type),
 			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
+			requestSemanticRedraw: (request) => this.ui.requestSemanticRedraw(request),
 			setStatus: (key, text) => this.setExtensionStatus(key, text),
 			setWorkingMessage: (message) => {
 				this.workingMessage = message;

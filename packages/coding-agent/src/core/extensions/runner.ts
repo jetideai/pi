@@ -246,6 +246,7 @@ const noOpUIContext: ExtensionUIContext = {
 	dismiss: () => "unsupported",
 	notify: () => {},
 	onTerminalInput: () => () => {},
+	requestSemanticRedraw: () => false,
 	setStatus: () => {},
 	setWorkingMessage: () => {},
 	setWorkingVisible: () => {},

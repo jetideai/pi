@@ -18,6 +18,7 @@ function createUiContext(
 		dismiss: () => "unsupported",
 		notify: onNotify,
 		onTerminalInput: () => () => {},
+		requestSemanticRedraw: () => false,
 		setStatus: () => {},
 		setWorkingMessage: () => {},
 		setWorkingVisible: () => {},

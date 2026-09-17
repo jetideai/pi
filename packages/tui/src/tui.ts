@@ -422,6 +422,12 @@ export interface TuiStopOptions {
 	preserveScreen?: boolean;
 }
 
+export interface SemanticRedrawRequest {
+	requestId: string;
+	columns: number;
+	rows: number;
+}
+
 export interface TUI extends Component {
 	readonly mode: TuiMode;
 	children: Component[];
@@ -443,6 +449,7 @@ export interface TUI extends Component {
 	stop(options?: TuiStopOptions): void;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
+	requestSemanticRedraw(request: SemanticRedrawRequest): boolean;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
@@ -958,6 +965,10 @@ export abstract class TuiBase extends Container implements TUI {
 		if (this.renderRequested) return;
 		this.renderRequested = true;
 		process.nextTick(() => this.scheduleRender());
+	}
+
+	requestSemanticRedraw(_request: SemanticRedrawRequest): boolean {
+		return false;
 	}
 
 	private requestImmediateRender(): void {
