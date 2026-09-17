@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import type { PreWrapTextDecorator } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundariesV1,
 	MessageRenderBoundariesV2,
@@ -6,6 +8,8 @@ import type {
 	MessageRenderBoundaryDecoratorV2,
 	MessageRenderBoundarySelectorV3,
 	MessageRenderRoleV1,
+	MessageRenderSourcePointDecoratorV1,
+	MessageRenderSourcePointV1,
 } from "../../../core/extensions/types.ts";
 import { stripAnsi } from "../../../utils/ansi.ts";
 
@@ -13,6 +17,69 @@ export interface MessageRenderBoundaryOptionsV1 {
 	entryId: string;
 	ownerEntryId?: string;
 	decorators: readonly MessageRenderBoundaryDecoratorV1[];
+	sourcePointDecorators?: readonly MessageRenderSourcePointDecoratorV1[];
+}
+
+export type MessageRenderSourceOwnerV1 = Omit<
+	MessageRenderSourcePointV1,
+	"contentIndex" | "pointKind" | "sourceOffset" | "contentDigest"
+>;
+
+const SOURCE_POINT_LINE_STEP = 8;
+const SOURCE_POINT_BYTE_STEP = 512;
+const SOURCE_POINT_GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+export function createMessageRenderSourcePointDecorator(
+	owner: MessageRenderSourceOwnerV1,
+	contentIndex: number,
+	decorators: readonly MessageRenderSourcePointDecoratorV1[],
+): PreWrapTextDecorator | undefined {
+	if (decorators.length === 0) return undefined;
+	return (lines) => {
+		const source = lines.join("\n");
+		const contentDigest = createHash("sha256").update(source, "utf8").digest("hex");
+		const result: Array<{ line: number; utf8Offset: number; control: string }> = [];
+		let sourceOffset = 0;
+		for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+			const line = lines[lineIndex] ?? "";
+			if (lineIndex > 0 && lineIndex % SOURCE_POINT_LINE_STEP === 0) {
+				appendPoint("line", lineIndex, 0, sourceOffset);
+			}
+			let lineOffset = 0;
+			let nextBytePoint = SOURCE_POINT_BYTE_STEP;
+			for (const { segment } of SOURCE_POINT_GRAPHEMES.segment(line)) {
+				const segmentEnd = lineOffset + Buffer.byteLength(segment, "utf8");
+				if (segmentEnd >= nextBytePoint) {
+					appendPoint("offset", lineIndex, lineOffset, sourceOffset + lineOffset);
+					while (segmentEnd >= nextBytePoint) nextBytePoint += SOURCE_POINT_BYTE_STEP;
+				}
+				lineOffset = segmentEnd;
+			}
+			sourceOffset += Buffer.byteLength(line, "utf8") + (lineIndex + 1 < lines.length ? 1 : 0);
+		}
+		return result;
+
+		function appendPoint(
+			pointKind: "line" | "offset",
+			line: number,
+			utf8Offset: number,
+			absoluteOffset: number,
+		): void {
+			const point = Object.freeze({
+				...owner,
+				contentIndex,
+				pointKind,
+				sourceOffset: absoluteOffset,
+				contentDigest,
+			});
+			for (const decorate of decorators) {
+				try {
+					const control = decorate(point);
+					if (typeof control === "string") result.push({ line, utf8Offset, control });
+				} catch {}
+			}
+		}
+	};
 }
 
 export function selectMessageRenderBoundaryDecoratorsV3(

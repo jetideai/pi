@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Text } from "../src/components/text.ts";
-import { getGraphemeSegmenter } from "../src/utils.ts";
+import { decoratePreWrapText, getGraphemeSegmenter, stripTerminalSequences } from "../src/utils.ts";
 
 const sources = [
 	"",
@@ -15,6 +15,26 @@ const sources = [
 ];
 
 describe("Text retained layout", () => {
+	it("adds zero-column controls at ANSI-aware UTF-8 scalar offsets before wrapping", () => {
+		const control = "\x1b]777;point\x07";
+		const source = "\x1b[31mé🙂z\x1b[0m tail words";
+		const decorated = decoratePreWrapText([source], () => [
+			{ line: 0, utf8Offset: 2, control },
+			{ line: 0, utf8Offset: 6, control },
+		]);
+		assert.equal(stripTerminalSequences(decorated[0]!), "é🙂z tail words");
+		assert.equal(decorated[0]!.split(control).length, 3);
+
+		const text = new Text(source, 0, 0);
+		text.setPreWrapDecorator(() => [{ line: 0, utf8Offset: 6, control }]);
+		for (const width of [5, 9]) {
+			const baseline = new Text(source, 0, 0).render(width).map(stripTerminalSequences);
+			const rendered = text.render(width);
+			assert.deepEqual(rendered.map(stripTerminalSequences), baseline);
+			assert.equal(rendered.join("").split(control).length, 2);
+		}
+	});
+
 	it("keeps full and tail output equivalent at new and repeated widths, including unusual limits", () => {
 		for (const source of sources) {
 			for (const padding of [0, 1, 2]) {

@@ -1362,6 +1362,25 @@ export type MessageRenderBoundarySelectorV3 = (
 	candidate: Readonly<MessageRenderBoundaryCandidateV3>,
 ) => MessageRenderBoundaryDecoratorV2 | undefined;
 
+/** One stable point in Pi's canonical pre-wrap display text. */
+export interface MessageRenderSourcePointV1 {
+	entryId: string;
+	ownerEntryId?: string;
+	role: "user" | "assistant" | "tool";
+	state: "final" | "expanded";
+	contentIndex: number;
+	pointKind: "line" | "offset";
+	sourceOffset: number;
+	contentDigest: string;
+	producerSessionId?: string;
+	renderScopeId?: string;
+	blockId?: string;
+	foldRole?: "tool" | "tool-group";
+}
+
+/** Return one zero-column terminal control for a stable source point. */
+export type MessageRenderSourcePointDecoratorV1 = (point: Readonly<MessageRenderSourcePointV1>) => string | undefined;
+
 /**
  * Synchronous message render decorator. The callback must not block.
  * Pi ignores thrown errors and invalid controls.
@@ -1588,6 +1607,9 @@ export interface ExtensionAPI {
 
 	/** Select exact boundaries for one renderer-owned Tool Call or Tool Group. */
 	registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void;
+
+	/** Decorate stable points in built-in pre-wrap display text with zero-column terminal controls. */
+	registerMessageRenderSourcePointDecoratorV1(decorator: MessageRenderSourcePointDecoratorV1): void;
 
 	/** Select the presentation for renderer-owned Tool Call sections. */
 	registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void;
@@ -2014,6 +2036,7 @@ export interface Extension {
 	markdownTransformer?: MarkdownTransformer;
 	messageRenderBoundaryDecoratorV1?: MessageRenderBoundaryDecoratorV1;
 	messageRenderBoundarySelectorV3?: MessageRenderBoundarySelectorV3;
+	messageRenderSourcePointDecoratorV1?: MessageRenderSourcePointDecoratorV1;
 	toolExecutionPresentationSelectorV1?: ToolExecutionPresentationSelectorV1;
 	messageRenderProjectionObserverV1?: MessageRenderProjectionObserverV1;
 	entryRenderers?: Map<string, EntryRenderer>;

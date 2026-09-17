@@ -81,6 +81,7 @@ import type {
 	MessageRenderProjectionMemberV1,
 	MessageRenderProjectionObserverV1,
 	MessageRenderProjectionV1,
+	MessageRenderSourcePointDecoratorV1,
 	ProjectTrustContext,
 	ToolExecutionPresentationSelectorV1,
 	UIPromptControlResult,
@@ -2158,6 +2159,10 @@ export class InteractiveMode {
 		return this.session.extensionRunner?.getMessageRenderBoundarySelectorsV3?.() ?? [];
 	}
 
+	private getMessageRenderSourcePointDecoratorsV1(): MessageRenderSourcePointDecoratorV1[] {
+		return this.session.extensionRunner?.getMessageRenderSourcePointDecoratorsV1?.() ?? [];
+	}
+
 	private getMessageRenderProjectionObserversV1(): MessageRenderProjectionObserverV1[] {
 		return this.session.extensionRunner?.getMessageRenderProjectionObserversV1?.() ?? [];
 	}
@@ -2179,6 +2184,7 @@ export class InteractiveMode {
 				producerSessionId: this.sessionManager.getSessionId(),
 				renderScopeId: this.messageRenderScopeId,
 				semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
+				sourcePointDecoratorsV1: this.getMessageRenderSourcePointDecoratorsV1(),
 				toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 			},
 			this.getRegisteredToolDefinition(content.name),
@@ -2211,6 +2217,7 @@ export class InteractiveMode {
 						{
 							entryId,
 							decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+							sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
 						},
 					),
 				);
@@ -3783,6 +3790,7 @@ export class InteractiveMode {
 							{
 								entryId: event.entryId,
 								decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+								sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
 							},
 						);
 						this.chatContainer.addChild(this.streamingComponent);
@@ -4291,6 +4299,7 @@ export class InteractiveMode {
 									? {
 											entryId: options.entryId,
 											decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+											sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
 										}
 									: undefined,
 							);
@@ -4306,6 +4315,7 @@ export class InteractiveMode {
 								? {
 										entryId: options.entryId,
 										decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+										sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
 									}
 								: undefined,
 						);
@@ -4329,6 +4339,7 @@ export class InteractiveMode {
 						? {
 								entryId: options.entryId,
 								decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+								sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
 							}
 						: undefined,
 				);

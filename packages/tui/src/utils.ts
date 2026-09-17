@@ -858,6 +858,69 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 	return new PreparedTextWithAnsi(text).wrap(width);
 }
 
+export interface PreWrapTextPoint {
+	line: number;
+	utf8Offset: number;
+	control: string;
+}
+
+export type PreWrapTextDecorator = (lines: readonly string[]) => readonly PreWrapTextPoint[];
+
+/** Add zero-column controls at UTF-8 scalar boundaries before width wrapping. */
+export function decoratePreWrapText(lines: readonly string[], decorator?: PreWrapTextDecorator): string[] {
+	if (!decorator) return [...lines];
+	let points: readonly PreWrapTextPoint[];
+	try {
+		points = decorator(Object.freeze(lines.map((line) => stripTerminalSequences(line))));
+	} catch {
+		return [...lines];
+	}
+	const byLine = new Map<number, PreWrapTextPoint[]>();
+	for (const point of points) {
+		if (
+			!Number.isSafeInteger(point.line) ||
+			point.line < 0 ||
+			point.line >= lines.length ||
+			!Number.isSafeInteger(point.utf8Offset) ||
+			point.utf8Offset < 0 ||
+			point.control.includes("\n") ||
+			point.control.includes("\r") ||
+			stripTerminalSequences(point.control) !== ""
+		) {
+			continue;
+		}
+		const existing = byLine.get(point.line);
+		if (existing) existing.push(point);
+		else byLine.set(point.line, [point]);
+	}
+	return lines.map((line, lineIndex) => {
+		const placements = byLine.get(lineIndex);
+		if (!placements) return line;
+		let decorated = line;
+		for (const point of [...placements].sort((a, b) => b.utf8Offset - a.utf8Offset)) {
+			const index = ansiIndexAtUtf8Offset(decorated, point.utf8Offset);
+			if (index !== undefined) decorated = decorated.slice(0, index) + point.control + decorated.slice(index);
+		}
+		return decorated;
+	});
+}
+
+function ansiIndexAtUtf8Offset(text: string, target: number): number | undefined {
+	let utf8Offset = 0;
+	for (let index = 0; index < text.length; ) {
+		const ansi = extractAnsiCode(text, index);
+		if (ansi) {
+			index += ansi.length;
+			continue;
+		}
+		if (utf8Offset === target) return index;
+		const scalar = String.fromCodePoint(text.codePointAt(index)!);
+		utf8Offset += new TextEncoder().encode(scalar).length;
+		index += scalar.length;
+	}
+	return utf8Offset === target ? text.length : undefined;
+}
+
 interface MeasuredAnsiToken {
 	readonly text: string;
 	readonly width: number;

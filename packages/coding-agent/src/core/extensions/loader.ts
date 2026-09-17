@@ -44,6 +44,7 @@ import type {
 	MessageRenderBoundarySelectorV3,
 	MessageRenderer,
 	MessageRenderProjectionObserverV1,
+	MessageRenderSourcePointDecoratorV1,
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
@@ -355,6 +356,11 @@ function createExtensionAPI(
 		registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void {
 			assertActive();
 			extension.messageRenderBoundarySelectorV3 = selector;
+		},
+
+		registerMessageRenderSourcePointDecoratorV1(decorator: MessageRenderSourcePointDecoratorV1): void {
+			assertActive();
+			extension.messageRenderSourcePointDecoratorV1 = decorator;
 		},
 
 		registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void {

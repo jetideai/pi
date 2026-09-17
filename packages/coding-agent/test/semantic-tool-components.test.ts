@@ -5,9 +5,13 @@ import type {
 	MessageRenderBoundaryCandidateV3,
 	MessageRenderBoundaryContextV1,
 	MessageRenderBoundarySelectorV3,
+	MessageRenderSourcePointV1,
 	ToolDefinition,
 	ToolExecutionPresentationSelectorV1,
 } from "../src/core/extensions/types.ts";
+import { createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
+import type { ToolRenderers } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolGroupComponent, ToolGroupMemberComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -134,6 +138,73 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rendered.split(controls.end)).toHaveLength(2);
 	});
 
+	it("keeps expanded stock tool points stable and assigns the containing Tool Group fold", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const sourcePointDecoratorsV1 = [
+			(point: Readonly<MessageRenderSourcePointV1>) => {
+				points.push({ ...point });
+				return "\x1b]777;point\x07";
+			},
+		];
+		const makeBash = (id: string) => {
+			const component = new ToolExecutionComponent(
+				"bash",
+				id,
+				{ command: "printf lines" },
+				{
+					ownerEntryId: "assistant-a",
+					producerSessionId: "session-a",
+					renderScopeId: "scope-a",
+					sourcePointDecoratorsV1,
+				},
+				withBuiltInRenderers("bash", createBashToolDefinition(process.cwd()) as unknown as ToolRenderers),
+				{ requestRender() {} } as unknown as TUI,
+				process.cwd(),
+			);
+			component.setExpanded(true);
+			component.updateResult({
+				content: [{ type: "text", text: Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n") }],
+				isError: false,
+			});
+			return component;
+		};
+		makeBash("tool-a").render(80);
+		const singleton80 = points.splice(0);
+		makeBash("tool-a").render(120);
+		const singleton120 = points.splice(0);
+		expect(singleton80).toEqual(singleton120);
+		expect(singleton80[0]).toMatchObject({
+			entryId: "tool-a",
+			ownerEntryId: "assistant-a",
+			role: "tool",
+			state: "expanded",
+			blockId: "tool-a",
+			foldRole: "tool",
+		});
+
+		const first = makeBash("tool-a");
+		const second = makeBash("tool-b");
+		const group = new ToolGroupComponent({ groupId: "tool-group:assistant-a:tool-a", closed: true });
+		group.addTool(first, { toolName: "bash", toolCallId: "tool-a" });
+		group.addTool(second, { toolName: "bash", toolCallId: "tool-b" });
+		group.render(80);
+		expect(points.length).toBeGreaterThan(0);
+		expect(points).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					entryId: "tool-a",
+					blockId: "tool-group:assistant-a:tool-a",
+					foldRole: "tool-group",
+				}),
+				expect.objectContaining({
+					entryId: "tool-b",
+					blockId: "tool-group:assistant-a:tool-a",
+					foldRole: "tool-group",
+				}),
+			]),
+		);
+	});
+
 	it("keeps capability-off group bytes on the direct-child path", () => {
 		const first = tool("tool-a", []);
 		const second = tool("tool-b", []);
@@ -158,6 +229,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 			invalidate: vi.fn(),
 			handleMouse: vi.fn(() => ({ handled: true as const })),
 			setSemanticBoundariesEnabled: vi.fn(),
+			setSourcePointContainingFold: vi.fn(),
 		});
 		const first = makeChild(["first-0", "first-1"]);
 		const second = makeChild(["second-0"]);

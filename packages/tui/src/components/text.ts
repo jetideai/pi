@@ -1,5 +1,11 @@
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, PreparedTextWithAnsi, visibleWidth } from "../utils.ts";
+import {
+	applyBackgroundToLine,
+	decoratePreWrapText,
+	PreparedTextWithAnsi,
+	type PreWrapTextDecorator,
+	visibleWidth,
+} from "../utils.ts";
 
 /**
  * Text component - displays multi-line text with word wrapping
@@ -9,6 +15,7 @@ export class Text implements Component {
 	private paddingX: number; // Left/right padding
 	private paddingY: number; // Top/bottom padding
 	private customBgFn?: (text: string) => string;
+	private decoratePreWrap?: PreWrapTextDecorator;
 	private prepared?: PreparedTextWithAnsi;
 	private cached?: { width: number; maxLines: number | undefined; lines: string[]; totalLines: number };
 
@@ -27,6 +34,12 @@ export class Text implements Component {
 
 	setCustomBgFn(customBgFn?: (text: string) => string): void {
 		this.customBgFn = customBgFn;
+		this.cached = undefined;
+	}
+
+	setPreWrapDecorator(decorator?: PreWrapTextDecorator): void {
+		this.decoratePreWrap = decorator;
+		this.prepared = undefined;
 		this.cached = undefined;
 	}
 
@@ -54,7 +67,9 @@ export class Text implements Component {
 			return this.cached;
 		}
 
-		this.prepared ??= new PreparedTextWithAnsi(this.text.replace(/\t/g, "   "));
+		this.prepared ??= new PreparedTextWithAnsi(
+			decoratePreWrapText(this.text.replace(/\t/g, "   ").split("\n"), this.decoratePreWrap).join("\n"),
+		);
 
 		// Reduce margins when necessary so content and padding fit within the available width.
 		const paddingX = Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2)));

@@ -19,7 +19,7 @@ import { writeRenderers } from "./write.ts";
 export type ToolRenderers = Pick<
 	ToolDefinition<any, any>,
 	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
->;
+> & { semanticSourceTextRenderer?: ToolDefinition<any, any>["renderResult"] };
 
 export {
 	createShellRenderers,
@@ -63,6 +63,11 @@ export function withBuiltInRenderers<TDefinition extends ToolRenderers>(
 	if (!definition) return builtIn;
 	if (!builtIn) return definition;
 	const usesBuiltInCallRenderer = definition.renderCall === undefined;
+	const usesBuiltInResultRenderer = definition.renderResult === undefined;
+	const usesSemanticSourceTextRenderer =
+		usesBuiltInResultRenderer ||
+		definition.renderResult === builtIn.renderResult ||
+		definition.renderResult === definition.semanticSourceTextRenderer;
 	return {
 		...definition,
 		renderCall: definition.renderCall ?? builtIn.renderCall,
@@ -73,5 +78,8 @@ export function withBuiltInRenderers<TDefinition extends ToolRenderers>(
 			? (definition.getRenderCallBodyRow ?? builtIn.getRenderCallBodyRow)
 			: definition.getRenderCallBodyRow,
 		renderResult: definition.renderResult ?? builtIn.renderResult,
+		semanticSourceTextRenderer: usesSemanticSourceTextRenderer
+			? (definition.renderResult ?? builtIn.renderResult)
+			: undefined,
 	};
 }

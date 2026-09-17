@@ -3,7 +3,11 @@ import { Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } fr
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
-import { decorateMessageRender, type MessageRenderBoundaryOptionsV1 } from "./message-render-boundaries.ts";
+import {
+	createMessageRenderSourcePointDecorator,
+	decorateMessageRender,
+	type MessageRenderBoundaryOptionsV1,
+} from "./message-render-boundaries.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -119,11 +123,33 @@ export class AssistantMessageComponent extends Container {
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
+				const transform = createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers);
+				let sourceUnchanged = true;
+				const sourcePoints =
+					!this.isStreaming &&
+					this.renderBoundaryOptions?.sourcePointDecorators &&
+					createMessageRenderSourcePointDecorator(
+						{
+							entryId: this.renderBoundaryOptions.entryId,
+							...(this.renderBoundaryOptions.ownerEntryId
+								? { ownerEntryId: this.renderBoundaryOptions.ownerEntryId }
+								: {}),
+							role: "assistant",
+							state: "final",
+						},
+						i,
+						this.renderBoundaryOptions.sourcePointDecorators,
+					);
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				this.contentContainer.addChild(
 					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
-						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+						transform: (markdown, width) => {
+							const transformed = transform(markdown, width);
+							sourceUnchanged = transformed === markdown;
+							return transformed;
+						},
+						decoratePreWrap: sourcePoints ? (lines) => (sourceUnchanged ? sourcePoints(lines) : []) : undefined,
 					}),
 				);
 			} else if (content.type === "thinking") {

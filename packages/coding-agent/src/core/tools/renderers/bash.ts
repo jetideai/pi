@@ -123,10 +123,16 @@ function rebuildBashResultRenderComponent(
 }
 
 /** Shell renderers are shared by bash and powershell, which differ only in the prompt they display. */
-export function createShellRenderers(
-	prompt: string,
-): Pick<ToolDefinition<any, any>, "renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"> {
-	return {
+export function createShellRenderers(prompt: string): Pick<
+	ToolDefinition<any, any>,
+	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
+> & {
+	semanticSourceTextRenderer: ToolDefinition<any, any>["renderResult"];
+} {
+	const renderers: Pick<
+		ToolDefinition<any, any>,
+		"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
+	> = {
 		getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
 		getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
 		renderCall(args, _theme, context) {
@@ -169,4 +175,5 @@ export function createShellRenderers(
 			return component;
 		},
 	};
+	return { ...renderers, semanticSourceTextRenderer: renderers.renderResult };
 }

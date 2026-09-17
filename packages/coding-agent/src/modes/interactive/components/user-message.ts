@@ -2,7 +2,11 @@ import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
-import { decorateMessageRender, type MessageRenderBoundaryOptionsV1 } from "./message-render-boundaries.ts";
+import {
+	createMessageRenderSourcePointDecorator,
+	decorateMessageRender,
+	type MessageRenderBoundaryOptionsV1,
+} from "./message-render-boundaries.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -42,6 +46,22 @@ export class UserMessageComponent extends Container {
 	private rebuild(): void {
 		this.clear();
 		const contentBox = new Box(this.outputPad, 1, (content: string) => theme.bg("userMessageBg", content));
+		const transform = createMarkdownTransform("user", false, this.markdownTransformers);
+		let sourceUnchanged = true;
+		const sourcePoints =
+			this.renderBoundaryOptions?.sourcePointDecorators &&
+			createMessageRenderSourcePointDecorator(
+				{
+					entryId: this.renderBoundaryOptions.entryId,
+					...(this.renderBoundaryOptions.ownerEntryId
+						? { ownerEntryId: this.renderBoundaryOptions.ownerEntryId }
+						: {}),
+					role: "user",
+					state: "final",
+				},
+				0,
+				this.renderBoundaryOptions.sourcePointDecorators,
+			);
 		contentBox.addChild(
 			new Markdown(
 				this.text,
@@ -54,7 +74,12 @@ export class UserMessageComponent extends Container {
 				{
 					preserveOrderedListMarkers: true,
 					preserveBackslashEscapes: true,
-					transform: createMarkdownTransform("user", false, this.markdownTransformers),
+					transform: (markdown, width) => {
+						const transformed = transform(markdown, width);
+						sourceUnchanged = transformed === markdown;
+						return transformed;
+					},
+					decoratePreWrap: sourcePoints ? (lines) => (sourceUnchanged ? sourcePoints(lines) : []) : undefined,
 				},
 			),
 		);

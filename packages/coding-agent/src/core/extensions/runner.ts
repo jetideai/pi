@@ -46,6 +46,7 @@ import type {
 	MessageRenderBoundarySelectorV3,
 	MessageRenderer,
 	MessageRenderProjectionObserverV1,
+	MessageRenderSourcePointDecoratorV1,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
@@ -695,6 +696,12 @@ export class ExtensionRunner {
 	getMessageRenderBoundarySelectorsV3(): MessageRenderBoundarySelectorV3[] {
 		return this.extensions.flatMap((extension) =>
 			extension.messageRenderBoundarySelectorV3 ? [extension.messageRenderBoundarySelectorV3] : [],
+		);
+	}
+
+	getMessageRenderSourcePointDecoratorsV1(): MessageRenderSourcePointDecoratorV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderSourcePointDecoratorV1 ? [extension.messageRenderSourcePointDecoratorV1] : [],
 		);
 	}
 

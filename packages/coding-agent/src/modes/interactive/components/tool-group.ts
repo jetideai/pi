@@ -57,6 +57,7 @@ export class ToolGroupComponent extends Container {
 	private outputPad: number;
 	private readonly semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[];
 	private readonly members: ToolGroupMemberV1[] = [];
+	private readonly memberComponents: ToolExecutionComponent[] = [];
 
 	constructor(options: ToolGroupOptions) {
 		super();
@@ -85,6 +86,12 @@ export class ToolGroupComponent extends Container {
 		component.setSemanticBoundariesEnabled(false);
 		this.addChild(this.semanticDecoratorsV2.length > 0 ? new ToolGroupMemberComponent(component, true) : component);
 		this.members.push(member);
+		this.memberComponents.push(component);
+		if (this.memberComponents.length >= 2) {
+			for (const memberComponent of this.memberComponents) {
+				memberComponent.setSourcePointContainingFold(this.groupId, "tool-group");
+			}
+		}
 	}
 
 	setOutputPad(outputPad: number): void {

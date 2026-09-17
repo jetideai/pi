@@ -2,7 +2,13 @@ import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens } f
 import { renderLatex } from "../latex.ts";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
+import {
+	applyBackgroundToLine,
+	decoratePreWrapText,
+	type PreWrapTextDecorator,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "../utils.ts";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
@@ -226,6 +232,8 @@ export interface MarkdownOptions {
 	transform?: (markdown: string, availableWidth: number) => string;
 	/** Render supported LaTeX math expressions as Unicode text (default: true). */
 	renderLatex?: boolean;
+	/** Add zero-column controls to stable display-source positions before width wrapping. */
+	decoratePreWrap?: PreWrapTextDecorator;
 }
 
 interface InlineStyleContext {
@@ -300,6 +308,11 @@ export class Markdown implements Component {
 		// Parse markdown to HTML-like tokens
 		const tokens = markdownParser.lexer(normalizedText);
 		trimPartialClosingFences(tokens);
+		const decoratePreWrap = tokens.every((token) =>
+			["paragraph", "text", "code", "heading", "space"].includes(token.type),
+		)
+			? this.options.decoratePreWrap
+			: undefined;
 
 		// Convert tokens to styled terminal output
 		const renderedLines: string[] = [];
@@ -315,7 +328,7 @@ export class Markdown implements Component {
 
 		// Wrap lines (NO padding, NO background yet)
 		const wrappedLines: string[] = [];
-		for (const line of renderedLines) {
+		for (const line of decoratePreWrapText(renderedLines, decoratePreWrap)) {
 			if (isImageLine(line)) {
 				wrappedLines.push(line);
 			} else {

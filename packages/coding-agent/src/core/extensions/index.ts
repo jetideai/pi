@@ -119,6 +119,8 @@ export type {
 	MessageRenderProjectionV1,
 	MessageRenderRangeV1,
 	MessageRenderRoleV1,
+	MessageRenderSourcePointDecoratorV1,
+	MessageRenderSourcePointV1,
 	MessageStartEvent,
 	MessageUpdateEvent,
 	ModelSelectEvent,

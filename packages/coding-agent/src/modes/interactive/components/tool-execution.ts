@@ -14,6 +14,7 @@ import {
 import type {
 	MessageRenderBoundaryDecoratorV2,
 	MessageRenderBoundarySelectorV3,
+	MessageRenderSourcePointDecoratorV1,
 	ToolDefinition,
 	ToolExecutionPresentationSelectorV1,
 	ToolRenderContext,
@@ -30,6 +31,7 @@ import type { Theme } from "../theme/theme.ts";
  */
 export interface ToolRenderers {
 	renderShell?: "default" | "self";
+	semanticSourceTextRenderer?: ToolDefinition<any, any>["renderResult"];
 	renderCall?: (args: any, theme: Theme, context: ToolRenderContext<any, any>) => Component;
 	getRenderCallHeaderRow?: (component: Component) => number | undefined;
 	getRenderCallBodyRow?: (component: Component) => number | undefined;
@@ -45,7 +47,11 @@ import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/rend
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
-import { decorateMessageRenderV2, selectMessageRenderBoundaryDecoratorsV3 } from "./message-render-boundaries.ts";
+import {
+	createMessageRenderSourcePointDecorator,
+	decorateMessageRenderV2,
+	selectMessageRenderBoundaryDecoratorsV3,
+} from "./message-render-boundaries.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
 
@@ -57,6 +63,7 @@ export interface ToolExecutionOptions {
 	producerSessionId?: string;
 	renderScopeId?: string;
 	semanticSelectorsV3?: readonly MessageRenderBoundarySelectorV3[];
+	sourcePointDecoratorsV1?: readonly MessageRenderSourcePointDecoratorV1[];
 	toolExecutionPresentationSelectorsV1?: readonly ToolExecutionPresentationSelectorV1[];
 }
 
@@ -94,6 +101,12 @@ export class ToolExecutionComponent extends Container {
 	private readonly ownerEntryId?: string;
 	private readonly semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[];
 	private semanticBoundariesEnabled = true;
+	private readonly producerSessionId?: string;
+	private readonly renderScopeId?: string;
+	private readonly sourcePointDecoratorsV1: readonly MessageRenderSourcePointDecoratorV1[];
+	private sourcePointFoldRole: "tool" | "tool-group" = "tool";
+	private sourcePointFoldBlockId: string;
+	private decoratedResultText?: Text;
 
 	constructor(
 		toolName: string,
@@ -110,6 +123,10 @@ export class ToolExecutionComponent extends Container {
 		this.args = args;
 		this.toolDefinition = toolDefinition;
 		this.ownerEntryId = options.ownerEntryId;
+		this.producerSessionId = options.producerSessionId;
+		this.renderScopeId = options.renderScopeId;
+		this.sourcePointDecoratorsV1 = options.sourcePointDecoratorsV1 ?? [];
+		this.sourcePointFoldBlockId = toolCallId;
 		this.semanticDecoratorsV2 =
 			options.producerSessionId && options.renderScopeId
 				? selectMessageRenderBoundaryDecoratorsV3(
@@ -290,6 +307,12 @@ export class ToolExecutionComponent extends Container {
 		this.invalidate();
 	}
 
+	setSourcePointContainingFold(blockId: string, role: "tool" | "tool-group"): void {
+		this.sourcePointFoldBlockId = blockId;
+		this.sourcePointFoldRole = role;
+		this.updateResultSourcePoints();
+	}
+
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.updateDisplay();
@@ -433,6 +456,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
+		this.decoratedResultText?.setPreWrapDecorator(undefined);
+		this.decoratedResultText = undefined;
 		const bgFn = this.isPartial
 			? (text: string) => theme.bg("toolPendingBg", text)
 			: this.result?.isError
@@ -538,6 +563,39 @@ export class ToolExecutionComponent extends Container {
 		if (this.hasRendererDefinition() && !hasContent && this.imageComponents.length === 0) {
 			this.hideComponent = true;
 		}
+		this.updateResultSourcePoints();
+	}
+
+	private updateResultSourcePoints(): void {
+		if (
+			this.isPartial ||
+			!this.expanded ||
+			this.sourcePointDecoratorsV1.length === 0 ||
+			this.toolDefinition?.renderResult !== this.toolDefinition?.semanticSourceTextRenderer ||
+			!this.producerSessionId ||
+			!this.renderScopeId
+		) {
+			return;
+		}
+		const text = findFirstText(this.resultRendererComponent);
+		if (!text) return;
+		text.setPreWrapDecorator(
+			createMessageRenderSourcePointDecorator(
+				{
+					entryId: this.toolCallId,
+					...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
+					role: "tool",
+					state: "expanded",
+					producerSessionId: this.producerSessionId,
+					renderScopeId: this.renderScopeId,
+					blockId: this.sourcePointFoldBlockId,
+					foldRole: this.sourcePointFoldRole,
+				},
+				0,
+				this.sourcePointDecoratorsV1,
+			),
+		);
+		this.decoratedResultText = text;
 	}
 
 	private getTextOutput(): string {
@@ -556,4 +614,14 @@ export class ToolExecutionComponent extends Container {
 		}
 		return text;
 	}
+}
+
+function findFirstText(component: Component | undefined): Text | undefined {
+	if (component instanceof Text) return component;
+	if (!(component instanceof Container)) return undefined;
+	for (const child of component.children) {
+		const text = findFirstText(child);
+		if (text) return text;
+	}
+	return undefined;
 }

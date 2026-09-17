@@ -146,6 +146,8 @@ export { TuiMainScreen, type TuiMainScreenRenderState } from "./tui-main-screen.
 // Utilities
 export {
 	getOsc8LinkAtColumn,
+	type PreWrapTextDecorator,
+	type PreWrapTextPoint,
 	sliceByColumn,
 	stripTerminalSequences,
 	truncateToWidth,
