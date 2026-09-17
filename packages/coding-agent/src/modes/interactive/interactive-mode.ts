@@ -3844,6 +3844,10 @@ export class InteractiveMode {
 									{
 										showImages: this.settingsManager.getShowImages(),
 										imageWidthCells: this.settingsManager.getImageWidthCells(),
+										ownerEntryId: event.entryId,
+										producerSessionId: this.sessionManager.getSessionId(),
+										renderScopeId: this.messageRenderScopeId,
+										sourcePointDecoratorsV1: this.getMessageRenderSourcePointDecoratorsV1(),
 										toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 									},
 									this.getRegisteredToolDefinition(content.name),
@@ -3851,7 +3855,7 @@ export class InteractiveMode {
 									this.sessionManager.getCwd(),
 								);
 								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
+								this.streamingComponent.addChild(component);
 								this.pendingTools.set(content.id, component);
 							} else {
 								const component = this.pendingTools.get(content.id);
@@ -4228,7 +4232,10 @@ export class InteractiveMode {
 		this.chatContainer.addChild(component);
 	}
 
-	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean; entryId?: string }): void {
+	private addMessageToChat(
+		message: AgentMessage,
+		options?: { populateHistory?: boolean; entryId?: string },
+	): AssistantMessageComponent | undefined {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
@@ -4344,7 +4351,7 @@ export class InteractiveMode {
 						: undefined,
 				);
 				this.chatContainer.addChild(assistantComponent);
-				break;
+				return assistantComponent;
 			}
 			case "toolResult": {
 				// Tool results are rendered inline with tool calls, handled separately
@@ -4354,6 +4361,7 @@ export class InteractiveMode {
 				const _exhaustive: never = message;
 			}
 		}
+		return undefined;
 	}
 
 	private renderSessionItems(
@@ -4421,7 +4429,9 @@ export class InteractiveMode {
 						}
 					}
 				} else {
-					this.addMessageToChat(message, { entryId });
+					const assistantComponent = this.addMessageToChat(message, { entryId });
+					const semanticParent =
+						entryId && this.getMessageRenderBoundaryDecoratorsV1().length > 0 ? assistantComponent : undefined;
 					// Render tool call components
 					for (const content of message.content) {
 						if (content.type === "toolCall") {
@@ -4432,6 +4442,14 @@ export class InteractiveMode {
 								{
 									showImages: this.settingsManager.getShowImages(),
 									imageWidthCells: this.settingsManager.getImageWidthCells(),
+									...(entryId
+										? {
+												ownerEntryId: entryId,
+												producerSessionId: this.sessionManager.getSessionId(),
+												renderScopeId: this.messageRenderScopeId,
+												sourcePointDecoratorsV1: this.getMessageRenderSourcePointDecoratorsV1(),
+											}
+										: {}),
 									toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 								},
 								this.getRegisteredToolDefinition(content.name),
@@ -4439,7 +4457,7 @@ export class InteractiveMode {
 								this.sessionManager.getCwd(),
 							);
 							component.setExpanded(this.toolOutputExpanded);
-							this.chatContainer.addChild(component);
+							(semanticParent ?? this.chatContainer).addChild(component);
 
 							if (message.stopReason === "aborted" || message.stopReason === "error") {
 								let errorMessage: string;

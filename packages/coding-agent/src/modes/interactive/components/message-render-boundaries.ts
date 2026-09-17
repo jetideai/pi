@@ -33,6 +33,7 @@ export function createMessageRenderSourcePointDecorator(
 	owner: MessageRenderSourceOwnerV1,
 	contentIndex: number,
 	decorators: readonly MessageRenderSourcePointDecoratorV1[],
+	includeStart = false,
 ): PreWrapTextDecorator | undefined {
 	if (decorators.length === 0) return undefined;
 	return (lines) => {
@@ -42,6 +43,7 @@ export function createMessageRenderSourcePointDecorator(
 		let sourceOffset = 0;
 		for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
 			const line = lines[lineIndex] ?? "";
+			if (includeStart && lineIndex === 0) appendPoint("line", 0, 0, 0);
 			if (lineIndex > 0 && lineIndex % SOURCE_POINT_LINE_STEP === 0) {
 				appendPoint("line", lineIndex, 0, sourceOffset);
 			}
@@ -79,6 +81,33 @@ export function createMessageRenderSourcePointDecorator(
 				} catch {}
 			}
 		}
+	};
+}
+
+export function createMessageRenderSourceBlockPointDecorator(
+	owner: MessageRenderSourceOwnerV1,
+	contentIndex: number,
+	source: string,
+	decorators: readonly MessageRenderSourcePointDecoratorV1[],
+): ((sourceUtf8Offset: number) => string | undefined) | undefined {
+	if (decorators.length === 0) return undefined;
+	const contentDigest = createHash("sha256").update(source.replace(/\t/g, "   "), "utf8").digest("hex");
+	return (sourceOffset) => {
+		const point = Object.freeze({
+			...owner,
+			contentIndex,
+			pointKind: "block" as const,
+			sourceOffset,
+			contentDigest,
+		});
+		const controls: string[] = [];
+		for (const decorate of decorators) {
+			try {
+				const control = decorate(point);
+				if (typeof control === "string") controls.push(control);
+			} catch {}
+		}
+		return controls.length > 0 ? controls.join("") : undefined;
 	};
 }
 

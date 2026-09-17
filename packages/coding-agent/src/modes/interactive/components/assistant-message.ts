@@ -4,6 +4,7 @@ import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 import {
+	createMessageRenderSourceBlockPointDecorator,
 	createMessageRenderSourcePointDecorator,
 	decorateMessageRender,
 	type MessageRenderBoundaryOptionsV1,
@@ -87,12 +88,12 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): string[] {
 		const lines = super.render(width);
-		if (this.hasToolCalls || lines.length === 0) {
-			return lines;
-		}
+		if (lines.length === 0) return lines;
 
-		lines[0] = OSC133_ZONE_START + lines[0];
-		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
+		if (!this.hasToolCalls) {
+			lines[0] = OSC133_ZONE_START + lines[0];
+			lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
+		}
 		return decorateMessageRender(
 			lines,
 			width,
@@ -123,6 +124,7 @@ export class AssistantMessageComponent extends Container {
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
+				const source = content.text.trim();
 				const transform = createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers);
 				let sourceUnchanged = true;
 				const sourcePoints =
@@ -140,16 +142,35 @@ export class AssistantMessageComponent extends Container {
 						i,
 						this.renderBoundaryOptions.sourcePointDecorators,
 					);
+				const sourceBlockPoints =
+					!this.isStreaming &&
+					this.renderBoundaryOptions?.sourcePointDecorators &&
+					createMessageRenderSourceBlockPointDecorator(
+						{
+							entryId: this.renderBoundaryOptions.entryId,
+							...(this.renderBoundaryOptions.ownerEntryId
+								? { ownerEntryId: this.renderBoundaryOptions.ownerEntryId }
+								: {}),
+							role: "assistant",
+							state: "final",
+						},
+						i,
+						source,
+						this.renderBoundaryOptions.sourcePointDecorators,
+					);
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				this.contentContainer.addChild(
-					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
+					new Markdown(source, this.outputPad, 0, this.markdownTheme, undefined, {
 						transform: (markdown, width) => {
 							const transformed = transform(markdown, width);
 							sourceUnchanged = transformed === markdown;
 							return transformed;
 						},
 						decoratePreWrap: sourcePoints ? (lines) => (sourceUnchanged ? sourcePoints(lines) : []) : undefined,
+						decorateBlockStart: sourceBlockPoints
+							? (sourceOffset) => (sourceUnchanged ? sourceBlockPoints(sourceOffset) : undefined)
+							: undefined,
 					}),
 				);
 			} else if (content.type === "thinking") {

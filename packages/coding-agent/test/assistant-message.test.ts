@@ -45,20 +45,49 @@ describe("AssistantMessageComponent", () => {
 		expect(lines[lines.length - 1].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
 	});
 
-	test("does not add OSC 133 zone markers when assistant message contains tool calls", () => {
+	test("keeps semantic boundaries but omits OSC 133 zones when an assistant message contains tool calls", () => {
 		initTheme("dark");
-
+		const semanticPrefix = "\x1b]777;semantic-begin\x07";
+		const semanticSuffix = "\x1b]777;semantic-end\x07";
+		const contexts: unknown[] = [];
 		const component = new AssistantMessageComponent(
 			createAssistantMessage([
 				{ type: "text", text: "calling tool" },
 				{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
 			]),
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[],
+			{
+				entryId: "assistant-tool-use",
+				decorators: [
+					(context) => {
+						contexts.push(context);
+						return { prefix: semanticPrefix, suffix: semanticSuffix };
+					},
+				],
+			},
 		);
-		const rendered = component.render(60).join("\n");
+		const lines = component.render(60);
+		const rendered = lines.join("\n");
 
 		expect(rendered.includes(OSC133_ZONE_START)).toBe(false);
 		expect(rendered.includes(OSC133_ZONE_END)).toBe(false);
 		expect(rendered.includes(OSC133_ZONE_FINAL)).toBe(false);
+		expect(rendered).toContain(semanticPrefix);
+		expect(rendered).toContain(semanticSuffix);
+		expect(contexts).toEqual([
+			{
+				entryId: "assistant-tool-use",
+				role: "assistant",
+				state: "final",
+				outputPad: 1,
+				allocatedColumns: { start: 0, end: 60 },
+				stockRows: { start: 0, end: lines.length },
+			},
+		]);
 	});
 
 	test("renders length stops with neutral truncation wording", () => {

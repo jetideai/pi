@@ -6,6 +6,7 @@ import {
 	applyBackgroundToLine,
 	decoratePreWrapText,
 	type PreWrapTextDecorator,
+	stripTerminalSequences,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "../utils.ts";
@@ -234,7 +235,11 @@ export interface MarkdownOptions {
 	renderLatex?: boolean;
 	/** Add zero-column controls to stable display-source positions before width wrapping. */
 	decoratePreWrap?: PreWrapTextDecorator;
+	/** Add one zero-column control at each stable top-level Markdown-source block start. */
+	decorateBlockStart?: (sourceUtf8Offset: number) => string | undefined;
 }
+
+const STABLE_BLOCK_START_TOKEN_TYPES = new Set(["paragraph", "text", "code", "heading", "list"]);
 
 interface InlineStyleContext {
 	applyText: (text: string) => string;
@@ -316,14 +321,34 @@ export class Markdown implements Component {
 
 		// Convert tokens to styled terminal output
 		const renderedLines: string[] = [];
+		let sourceUtf8Offset = 0;
 
 		for (let i = 0; i < tokens.length; i++) {
 			const token = tokens[i];
 			const nextToken = tokens[i + 1];
 			const tokenLines = this.renderToken(token, contentWidth, nextToken?.type);
+			if (
+				sourceUtf8Offset > 0 &&
+				tokenLines.length > 0 &&
+				STABLE_BLOCK_START_TOKEN_TYPES.has(token.type) &&
+				this.options.decorateBlockStart
+			) {
+				try {
+					const control = this.options.decorateBlockStart(sourceUtf8Offset);
+					if (
+						typeof control === "string" &&
+						!control.includes("\n") &&
+						!control.includes("\r") &&
+						stripTerminalSequences(control) === ""
+					) {
+						tokenLines[0] = control + tokenLines[0];
+					}
+				} catch {}
+			}
 			for (const tokenLine of tokenLines) {
 				renderedLines.push(tokenLine);
 			}
+			sourceUtf8Offset += new TextEncoder().encode(token.raw).length;
 		}
 
 		// Wrap lines (NO padding, NO background yet)

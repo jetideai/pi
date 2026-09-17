@@ -146,7 +146,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 				return "\x1b]777;point\x07";
 			},
 		];
-		const makeBash = (id: string) => {
+		const makeBash = (id: string, text = Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n")) => {
 			const component = new ToolExecutionComponent(
 				"bash",
 				id,
@@ -163,11 +163,15 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 			);
 			component.setExpanded(true);
 			component.updateResult({
-				content: [{ type: "text", text: Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n") }],
+				content: [{ type: "text", text }],
 				isError: false,
 			});
 			return component;
 		};
+		makeBash("tool-short", "ok").render(80);
+		expect(
+			points.splice(0).map(({ entryId, pointKind, sourceOffset }) => ({ entryId, pointKind, sourceOffset })),
+		).toEqual([{ entryId: "tool-short", pointKind: "line", sourceOffset: 0 }]);
 		makeBash("tool-a").render(80);
 		const singleton80 = points.splice(0);
 		makeBash("tool-a").render(120);

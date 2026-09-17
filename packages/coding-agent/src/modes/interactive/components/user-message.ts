@@ -3,6 +3,7 @@ import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 import {
+	createMessageRenderSourceBlockPointDecorator,
 	createMessageRenderSourcePointDecorator,
 	decorateMessageRender,
 	type MessageRenderBoundaryOptionsV1,
@@ -62,6 +63,21 @@ export class UserMessageComponent extends Container {
 				0,
 				this.renderBoundaryOptions.sourcePointDecorators,
 			);
+		const sourceBlockPoints =
+			this.renderBoundaryOptions?.sourcePointDecorators &&
+			createMessageRenderSourceBlockPointDecorator(
+				{
+					entryId: this.renderBoundaryOptions.entryId,
+					...(this.renderBoundaryOptions.ownerEntryId
+						? { ownerEntryId: this.renderBoundaryOptions.ownerEntryId }
+						: {}),
+					role: "user",
+					state: "final",
+				},
+				0,
+				this.text,
+				this.renderBoundaryOptions.sourcePointDecorators,
+			);
 		contentBox.addChild(
 			new Markdown(
 				this.text,
@@ -80,6 +96,9 @@ export class UserMessageComponent extends Container {
 						return transformed;
 					},
 					decoratePreWrap: sourcePoints ? (lines) => (sourceUnchanged ? sourcePoints(lines) : []) : undefined,
+					decorateBlockStart: sourceBlockPoints
+						? (sourceOffset) => (sourceUnchanged ? sourceBlockPoints(sourceOffset) : undefined)
+						: undefined,
 				},
 			),
 		);

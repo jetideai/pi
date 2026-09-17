@@ -63,6 +63,45 @@ describe("Markdown component", () => {
 			assert.deepStrictEqual(calls.at(-1), { source: "updated", availableWidth: 56 });
 			assert.strictEqual(calls.length, 4);
 		});
+
+		it("places stable controls at ordinary block starts around a width-wrapped list", () => {
+			const source = [
+				"Intro paragraph.",
+				"",
+				"1. First list item contains enough text to wrap at the narrow width.",
+				"2. Second list item.",
+				"",
+				"Final paragraph.",
+			].join("\n");
+			const listOffset = Buffer.byteLength(source.slice(0, source.indexOf("1. First")), "utf8");
+			const finalOffset = Buffer.byteLength(source.slice(0, source.indexOf("Final paragraph")), "utf8");
+			const observations: number[][] = [];
+
+			for (const width of [40, 80]) {
+				const offsets: number[] = [];
+				const markdown = new Markdown(source, 0, 0, defaultMarkdownTheme, undefined, {
+					decorateBlockStart: (sourceOffset) => {
+						offsets.push(sourceOffset);
+						return `\x1b]777;block-${sourceOffset}\x07`;
+					},
+				});
+				const rendered = markdown.render(width);
+				observations.push(offsets);
+				assert.ok(
+					rendered.some((line) => line.includes(`block-${listOffset}`) && stripAnsi(line).includes("1. First")),
+				);
+				assert.ok(
+					rendered.some(
+						(line) => line.includes(`block-${finalOffset}`) && stripAnsi(line).includes("Final paragraph"),
+					),
+				);
+			}
+
+			assert.deepStrictEqual(observations, [
+				[listOffset, finalOffset],
+				[listOffset, finalOffset],
+			]);
+		});
 	});
 
 	describe("Lists", () => {

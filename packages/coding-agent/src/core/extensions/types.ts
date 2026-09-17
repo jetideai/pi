@@ -1362,14 +1362,14 @@ export type MessageRenderBoundarySelectorV3 = (
 	candidate: Readonly<MessageRenderBoundaryCandidateV3>,
 ) => MessageRenderBoundaryDecoratorV2 | undefined;
 
-/** One stable point in Pi's canonical pre-wrap display text. */
+/** One stable point in Pi's canonical source. Line and offset use pre-wrap display text; block uses normalized Markdown source. */
 export interface MessageRenderSourcePointV1 {
 	entryId: string;
 	ownerEntryId?: string;
 	role: "user" | "assistant" | "tool";
 	state: "final" | "expanded";
 	contentIndex: number;
-	pointKind: "line" | "offset";
+	pointKind: "line" | "offset" | "block";
 	sourceOffset: number;
 	contentDigest: string;
 	producerSessionId?: string;

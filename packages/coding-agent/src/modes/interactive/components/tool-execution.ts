@@ -593,6 +593,7 @@ export class ToolExecutionComponent extends Container {
 				},
 				0,
 				this.sourcePointDecoratorsV1,
+				true,
 			),
 		);
 		this.decoratedResultText = text;
