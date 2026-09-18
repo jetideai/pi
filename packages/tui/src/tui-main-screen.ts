@@ -13,15 +13,9 @@ function netstring(value: string): string {
 	return `${new TextEncoder().encode(value).length}:${value}`;
 }
 
-function jetideaiRedrawMarker(
-	phase: "begin" | "end",
-	redrawId: string,
-	kind: "render" | "resize",
-	columns: number,
-	rows: number,
-): string {
+function jetideaiResizeRedrawMarker(phase: "begin" | "end", redrawId: string, columns: number, rows: number): string {
 	const metadata = JSON.stringify({ columns, rows });
-	return `\x1b]7799;1;${phase};${netstring(JETIDEAI_REDRAW_NAMESPACE)};${netstring(redrawId)};${netstring(kind)};${netstring(metadata)}\x1b\\`;
+	return `\x1b]7799;1;${phase};${netstring(JETIDEAI_REDRAW_NAMESPACE)};${netstring(redrawId)};6:resize;${netstring(metadata)}\x1b\\`;
 }
 
 /**
@@ -148,7 +142,6 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private maxLinesRendered = 0;
 	private previousViewportTop = 0;
 	private pendingSemanticRedraw: SemanticRedrawRequest | undefined;
-	private semanticRedrawSequence = 0;
 
 	override requestSemanticRedraw(request: SemanticRedrawRequest): boolean {
 		if (
@@ -310,18 +303,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean, semanticRedraw?: SemanticRedrawRequest): void => {
 			this.fullRedrawCount += 1;
-			const correlatedRedraw =
-				semanticRedraw ??
-				(clear && process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED === "1"
-					? {
-							requestId: `pi-redraw-${process.pid}-${++this.semanticRedrawSequence}`,
-							columns: width,
-							rows: height,
-						}
-					: undefined);
-			const redrawKind = semanticRedraw === undefined ? "render" : "resize";
-			if (correlatedRedraw !== undefined) {
-				this.terminal.write(jetideaiRedrawMarker("begin", correlatedRedraw.requestId, redrawKind, width, height));
+			if (semanticRedraw !== undefined) {
+				this.terminal.write(jetideaiResizeRedrawMarker("begin", semanticRedraw.requestId, width, height));
 			}
 			const output = new BoundedTerminalWriter((data) => this.terminal.write(data));
 			output.append("\x1b[?2026h"); // Begin synchronized output
@@ -359,8 +342,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			const bufferLength = Math.max(height, newLines.length);
 			this.previousViewportTop = Math.max(0, bufferLength - height);
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			if (correlatedRedraw !== undefined) {
-				this.terminal.write(jetideaiRedrawMarker("end", correlatedRedraw.requestId, redrawKind, width, height));
+			if (semanticRedraw !== undefined) {
+				this.terminal.write(jetideaiResizeRedrawMarker("end", semanticRedraw.requestId, width, height));
 			}
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);

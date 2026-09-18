@@ -594,34 +594,6 @@ describe("TUI resize handling", () => {
 		});
 	});
 
-	it("reports a content-triggered full redraw before it clears an off-tail viewport", async () => {
-		await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: "1" }, async () => {
-			const terminal = new LoggingVirtualTerminal(40, 10);
-			const tui: TUI = new TuiMainScreen(terminal);
-			const component = new TestComponent();
-			component.lines = Array.from({ length: 30 }, (_, index) => `Line ${index}`);
-			tui.addChild(component);
-			tui.start();
-			await terminal.waitForRender();
-			terminal.clearWrites();
-
-			component.lines[0] = "Changed line 0";
-			tui.requestRender();
-			await terminal.waitForRender();
-
-			const writes = terminal.getWrites();
-			const begin = writes.indexOf("\x1b]7799;1;begin;18:jetideai.redraw.v1;");
-			const clear = writes.indexOf("\x1b[2J\x1b[H\x1b[3J");
-			const end = writes.indexOf("\x1b]7799;1;end;18:jetideai.redraw.v1;");
-			assert.ok(begin >= 0, "content redraw should have a begin marker");
-			assert.ok(begin < clear, "begin should precede the destructive clear");
-			assert.ok(clear < end, "end should follow the destructive redraw");
-			assert.match(writes, /;6:render;/);
-
-			tui.stop();
-		});
-	});
-
 	it("does not report resize redraws outside the JetIDEAI semantic integration", async () => {
 		for (const capability of ["0", undefined]) {
 			await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: capability, TERMUX_VERSION: undefined }, async () => {
