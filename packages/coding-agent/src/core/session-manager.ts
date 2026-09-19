@@ -25,9 +25,16 @@ import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
+	isTerminalAssistantMessage,
 } from "./messages.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
+export const SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE = "pi:semantic-turn-settlement-v1";
+
+export interface SemanticTurnSettlementV1 {
+	readonly userEntryId: string;
+	readonly assistantEntryId: string;
+}
 
 export interface SessionHeader {
 	type: "session";
@@ -1190,6 +1197,107 @@ export class SessionManager {
 		};
 		this._appendEntry(entry);
 		return entry.id;
+	}
+
+	appendSemanticTurnSettlements(): readonly Readonly<SemanticTurnSettlementV1>[] {
+		const candidates: SemanticTurnSettlementV1[] = [];
+		let userEntryId: string | undefined;
+		let assistantEntryId: string | undefined;
+		const collect = (): void => {
+			if (userEntryId && assistantEntryId) candidates.push({ userEntryId, assistantEntryId });
+		};
+		for (const entry of this.getBranch()) {
+			if (entry.type !== "message") continue;
+			if (entry.message.role === "user") {
+				collect();
+				userEntryId = entry.id;
+				assistantEntryId = undefined;
+			} else if (userEntryId && isTerminalAssistantMessage(entry.message)) {
+				assistantEntryId = entry.id;
+			}
+		}
+		collect();
+
+		const settledByUser = new Map(
+			this.getSemanticTurnSettlements().map((settlement) => [settlement.userEntryId, settlement]),
+		);
+		for (const candidate of candidates) {
+			if (settledByUser.has(candidate.userEntryId)) continue;
+			const settlement = Object.freeze({ ...candidate });
+			this.appendCustomEntry(SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE, settlement);
+			settledByUser.set(settlement.userEntryId, settlement);
+		}
+		return Object.freeze(
+			candidates.flatMap((candidate) => {
+				const settlement = settledByUser.get(candidate.userEntryId);
+				return settlement ? [settlement] : [];
+			}),
+		);
+	}
+
+	getSemanticTurnSettlements(): readonly Readonly<SemanticTurnSettlementV1>[] {
+		const branch = this.getBranch();
+		const positions = new Map(branch.map((entry, index) => [entry.id, index]));
+		const userCountBefore = [0];
+		for (const entry of branch) {
+			userCountBefore.push(
+				userCountBefore.at(-1)! + (entry.type === "message" && entry.message.role === "user" ? 1 : 0),
+			);
+		}
+		const settlements: Readonly<SemanticTurnSettlementV1>[] = [];
+		for (const entry of branch) {
+			if (entry.type !== "custom" || entry.customType !== SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE) continue;
+			if (!entry.data || typeof entry.data !== "object") continue;
+			const candidate = entry.data as Partial<SemanticTurnSettlementV1>;
+			if (typeof candidate.userEntryId !== "string" || typeof candidate.assistantEntryId !== "string") continue;
+			const userPosition = positions.get(candidate.userEntryId);
+			const assistantPosition = positions.get(candidate.assistantEntryId);
+			const settlementPosition = positions.get(entry.id);
+			if (
+				userPosition === undefined ||
+				assistantPosition === undefined ||
+				settlementPosition === undefined ||
+				userPosition >= assistantPosition ||
+				assistantPosition >= settlementPosition
+			) {
+				continue;
+			}
+			const user = branch[userPosition];
+			const assistant = branch[assistantPosition];
+			if (
+				user?.type !== "message" ||
+				user.message.role !== "user" ||
+				assistant?.type !== "message" ||
+				!isTerminalAssistantMessage(assistant.message) ||
+				userCountBefore[assistantPosition]! - userCountBefore[userPosition + 1]! > 0
+			) {
+				continue;
+			}
+			settlements.push(
+				Object.freeze({
+					userEntryId: candidate.userEntryId,
+					assistantEntryId: candidate.assistantEntryId,
+				}),
+			);
+		}
+		const assistantByUser = new Map<string, string>();
+		const conflictedUsers = new Set<string>();
+		for (const settlement of settlements) {
+			const existing = assistantByUser.get(settlement.userEntryId);
+			if (existing && existing !== settlement.assistantEntryId) {
+				conflictedUsers.add(settlement.userEntryId);
+			} else if (!existing) {
+				assistantByUser.set(settlement.userEntryId, settlement.assistantEntryId);
+			}
+		}
+		const uniqueUsers = new Set<string>();
+		return Object.freeze(
+			settlements.filter((settlement) => {
+				if (conflictedUsers.has(settlement.userEntryId) || uniqueUsers.has(settlement.userEntryId)) return false;
+				uniqueUsers.add(settlement.userEntryId);
+				return true;
+			}),
+		);
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */

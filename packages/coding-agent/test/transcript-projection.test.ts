@@ -1,12 +1,18 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageRenderProjectionMemberV1 } from "../src/core/extensions/types.ts";
+import type { ExternalAgentOriginV1 } from "../src/core/messages.ts";
 import {
 	buildMessageRenderProjection,
 	publishMessageRenderProjection,
 } from "../src/modes/interactive/components/transcript-projection.ts";
 
-const user = { role: "user", content: "Question", timestamp: 1 } as const;
+const externalInitiator = {
+	namespace: "agent-hub",
+	agentId: "agent-a",
+	registrationGeneration: 3,
+} satisfies ExternalAgentOriginV1;
+const user = { role: "user", content: "Question", timestamp: 1, initiator: externalInitiator } as const;
 const assistant = {
 	role: "assistant",
 	content: [{ type: "text" as const, text: "Answer" }],
@@ -47,7 +53,7 @@ describe("completed transcript projection", () => {
 			renderScopeId: "scope-a",
 			members,
 			mode: "append",
-			completeLastTurn: true,
+			settledTurns: [{ userEntryId: "user-a", assistantEntryId: "assistant-a" }],
 			readMessage: (entryId) => messages.get(entryId),
 		});
 
@@ -63,6 +69,7 @@ describe("completed transcript projection", () => {
 						assistantEntryId: "assistant-a",
 						userPreview: "Question",
 						assistantPreview: "Answer",
+						initiator: externalInitiator,
 					},
 				},
 				{ entryId: "assistant-a", blockId: "assistant-a", role: "assistant" },
@@ -74,13 +81,122 @@ describe("completed transcript projection", () => {
 		expect(Object.isFrozen(projection.members)).toBe(true);
 		expect(Object.isFrozen(projection.members[0])).toBe(true);
 		expect(Object.isFrozen(projection.members[0]?.role === "user" && projection.members[0].completedTurn)).toBe(true);
+		expect(
+			Object.isFrozen(projection.members[0]?.role === "user" && projection.members[0].completedTurn?.initiator),
+		).toBe(true);
+	});
+
+	it("emits exactly two ordered turns from two settled roots", () => {
+		const messages = new Map<string, AgentMessage>([
+			["user-a", user],
+			["assistant-a", assistant],
+			["user-b", { ...user, content: "Second question" }],
+			["assistant-b", { ...assistant, content: [{ type: "text" as const, text: "Second answer" }] }],
+		]);
+		const projection = buildMessageRenderProjection({
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			members: [
+				{ entryId: "user-a", blockId: "user-a", role: "user" },
+				{ entryId: "assistant-a", blockId: "assistant-a", role: "assistant" },
+				{ entryId: "user-b", blockId: "user-b", role: "user" },
+				{ entryId: "assistant-b", blockId: "assistant-b", role: "assistant" },
+			],
+			mode: "replace",
+			settledTurns: [
+				{ userEntryId: "user-a", assistantEntryId: "assistant-a" },
+				{ userEntryId: "user-b", assistantEntryId: "assistant-b" },
+			],
+			readMessage: (entryId) => messages.get(entryId),
+		});
+
+		expect(
+			projection.members.flatMap((member) =>
+				member.role === "user" && member.completedTurn
+					? [[member.entryId, member.completedTurn.assistantEntryId]]
+					: [],
+			),
+		).toEqual([
+			["user-a", "assistant-a"],
+			["user-b", "assistant-b"],
+		]);
+	});
+
+	it("keeps identical initiating text distinct by exact origin and ignores malformed restored origin", () => {
+		const secondOrigin = { ...externalInitiator, agentId: "agent-b", registrationGeneration: 4 };
+		const malformedUser = {
+			...user,
+			initiator: { ...externalInitiator, registrationGeneration: 0 },
+		} as unknown as AgentMessage;
+		const messages = new Map<string, AgentMessage>([
+			["user-a", user],
+			["assistant-a", assistant],
+			["user-b", { ...user, initiator: secondOrigin }],
+			["assistant-b", assistant],
+			["user-malformed", malformedUser],
+			["assistant-malformed", assistant],
+		]);
+		const projection = buildMessageRenderProjection({
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			members: [
+				{ entryId: "user-a", blockId: "user-a", role: "user" },
+				{ entryId: "assistant-a", blockId: "assistant-a", role: "assistant" },
+				{ entryId: "user-b", blockId: "user-b", role: "user" },
+				{ entryId: "assistant-b", blockId: "assistant-b", role: "assistant" },
+				{ entryId: "user-malformed", blockId: "user-malformed", role: "user" },
+				{ entryId: "assistant-malformed", blockId: "assistant-malformed", role: "assistant" },
+			],
+			mode: "replace",
+			settledTurns: [
+				{ userEntryId: "user-a", assistantEntryId: "assistant-a" },
+				{ userEntryId: "user-b", assistantEntryId: "assistant-b" },
+				{ userEntryId: "user-malformed", assistantEntryId: "assistant-malformed" },
+			],
+			readMessage: (entryId) => messages.get(entryId),
+		});
+
+		expect(
+			projection.members.flatMap((member) =>
+				member.role === "user" && member.completedTurn ? [member.completedTurn.initiator] : [],
+			),
+		).toEqual([externalInitiator, secondOrigin, undefined]);
+	});
+
+	it("fails closed without one unambiguous settlement fact", () => {
+		const messages = new Map<string, AgentMessage>([
+			["user-a", user],
+			["assistant-a", assistant],
+			["assistant-b", { ...assistant, content: [{ type: "text" as const, text: "Later" }] }],
+		]);
+		const build = (settledTurns: Array<{ userEntryId: string; assistantEntryId: string }>) =>
+			buildMessageRenderProjection({
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				members: [
+					{ entryId: "user-a", blockId: "user-a", role: "user" },
+					{ entryId: "assistant-a", blockId: "assistant-a", role: "assistant" },
+					{ entryId: "assistant-b", blockId: "assistant-b", role: "assistant" },
+				],
+				mode: "replace",
+				settledTurns,
+				readMessage: (entryId) => messages.get(entryId),
+			});
+
+		expect(build([]).members[0]).not.toHaveProperty("completedTurn");
+		expect(
+			build([
+				{ userEntryId: "user-a", assistantEntryId: "assistant-a" },
+				{ userEntryId: "user-a", assistantEntryId: "assistant-b" },
+			]).members[0],
+		).not.toHaveProperty("completedTurn");
 	});
 
 	it.each([
 		["stop", "length"],
 		["length", "stop"],
 	] as const)(
-		"keeps the first successful %s assistant when an unrelated successful %s assistant follows",
+		"selects the last terminal %s assistant when a later %s assistant follows",
 		(firstStopReason, laterStopReason) => {
 			const messages = new Map<string, AgentMessage>([
 				["user-a", user],
@@ -105,14 +221,16 @@ describe("completed transcript projection", () => {
 					{ entryId: "user-next", blockId: "user-next", role: "user" },
 				],
 				mode: "replace",
+				settledTurns: [{ userEntryId: "user-a", assistantEntryId: "assistant-async" }],
 				readMessage: (entryId) => messages.get(entryId),
 			});
 
 			expect(projection.members[0]).toMatchObject({
 				completedTurn: {
-					assistantEntryId: "assistant-owner",
+					assistantEntryId: "assistant-async",
 					userPreview: "Question",
-					assistantPreview: "Answer",
+					assistantPreview: "Later async answer",
+					initiator: externalInitiator,
 				},
 			});
 		},
@@ -141,6 +259,7 @@ describe("completed transcript projection", () => {
 				{ entryId: "user-next", blockId: "user-next", role: "user" },
 			],
 			mode: "replace",
+			settledTurns: [{ userEntryId: "user-a", assistantEntryId: "assistant-success" }],
 			readMessage: (entryId) => messages.get(entryId),
 		});
 
@@ -173,6 +292,7 @@ describe("completed transcript projection", () => {
 				{ entryId: "user-next", blockId: "user-next", role: "user" },
 			],
 			mode: "replace",
+			settledTurns: [{ userEntryId: "user-a", assistantEntryId: "assistant-terminal" }],
 			readMessage: (entryId) => messages.get(entryId),
 		});
 

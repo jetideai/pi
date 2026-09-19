@@ -6,6 +6,12 @@ import type {
 	MessageRenderProjectionObserverV1,
 	MessageRenderProjectionV1,
 } from "../../../core/extensions/types.ts";
+import {
+	copyExternalAgentOriginV1,
+	type ExternalAgentOriginV1,
+	isTerminalAssistantMessage,
+} from "../../../core/messages.ts";
+import type { SemanticTurnSettlementV1 } from "../../../core/session-manager.ts";
 
 const MAX_COMPLETED_TURN_PREVIEW_BYTES = 4 * 1024;
 const COMPLETED_TURN_PREVIEW_ELLIPSIS = "…";
@@ -16,14 +22,14 @@ export interface BuildMessageRenderProjectionOptions {
 	members: readonly MessageRenderProjectionMemberV1[];
 	mode: "append" | "replace";
 	finalized?: MessageRenderFinalizedEntryV1;
-	completeLastTurn?: boolean;
+	settledTurns?: readonly Readonly<SemanticTurnSettlementV1>[];
 	readMessage(entryId: string): AgentMessage | undefined;
 }
 
 export function buildMessageRenderProjection(
 	options: BuildMessageRenderProjectionOptions,
 ): Readonly<MessageRenderProjectionV1> {
-	const members = attachCompletedTurns(options.members, options.readMessage, options.completeLastTurn ?? false).map(
+	const members = attachCompletedTurns(options.members, options.readMessage, options.settledTurns ?? []).map(
 		(member) =>
 			Object.freeze({
 				...member,
@@ -57,21 +63,38 @@ export function publishMessageRenderProjection(
 function attachCompletedTurns(
 	members: readonly MessageRenderProjectionMemberV1[],
 	readMessage: (entryId: string) => AgentMessage | undefined,
-	completeLastTurn: boolean,
+	settledTurns: readonly Readonly<SemanticTurnSettlementV1>[],
 ): MessageRenderProjectionMemberV1[] {
 	const completedMembers = [...members];
+	const settledAssistantByUser = new Map<string, string>();
+	const conflictedUsers = new Set<string>();
+	for (const settlement of settledTurns) {
+		const existing = settledAssistantByUser.get(settlement.userEntryId);
+		if (existing && existing !== settlement.assistantEntryId) {
+			conflictedUsers.add(settlement.userEntryId);
+		} else if (!existing) {
+			settledAssistantByUser.set(settlement.userEntryId, settlement.assistantEntryId);
+		}
+	}
+	for (const userEntryId of conflictedUsers) settledAssistantByUser.delete(userEntryId);
 	let userIndex: number | undefined;
+	let userEntryId: string | undefined;
 	let userPreview: string | undefined;
-	let terminalAssistant: { entryId: string; preview: string | null } | undefined;
-	let terminalAssistantSucceeded = false;
+	let initiator: Readonly<ExternalAgentOriginV1> | undefined;
+	let terminalAssistants: Array<{ entryId: string; preview: string | null }> = [];
 	const completeTurn = (): void => {
-		if (userIndex === undefined || userPreview === undefined || terminalAssistant === undefined) return;
+		if (userIndex === undefined || userEntryId === undefined || userPreview === undefined) return;
 		const user = completedMembers[userIndex];
 		if (user?.role !== "user" || user.completedTurn) return;
+		const settledAssistantEntryId = settledAssistantByUser.get(userEntryId);
+		if (!settledAssistantEntryId) return;
+		const terminalAssistant = terminalAssistants.find((assistant) => assistant.entryId === settledAssistantEntryId);
+		if (!terminalAssistant) return;
 		const completedTurn: MessageRenderCompletedTurnV1 = {
 			assistantEntryId: terminalAssistant.entryId,
 			userPreview,
 			assistantPreview: terminalAssistant.preview,
+			...(initiator ? { initiator } : {}),
 		};
 		completedMembers[userIndex] = { ...user, completedTurn };
 	};
@@ -79,21 +102,19 @@ function attachCompletedTurns(
 		if (member.role === "user") {
 			completeTurn();
 			userIndex = index;
-			userPreview = userMessagePreview(readMessage(member.entryId));
-			terminalAssistant = undefined;
-			terminalAssistantSucceeded = false;
+			userEntryId = member.entryId;
+			const message = readMessage(member.entryId);
+			userPreview = userMessagePreview(message);
+			initiator = message?.role === "user" ? copyExternalAgentOriginV1(message.initiator) : undefined;
+			terminalAssistants = [];
 			continue;
 		}
 		if (member.role !== "assistant" || userIndex === undefined) continue;
 		const message = readMessage(member.entryId);
 		const preview = terminalAssistantPreview(message);
-		if (preview !== undefined && (terminalAssistant === undefined || !terminalAssistantSucceeded)) {
-			terminalAssistant = { entryId: member.entryId, preview };
-			terminalAssistantSucceeded =
-				message?.role === "assistant" && (message.stopReason === "stop" || message.stopReason === "length");
-		}
+		if (preview !== undefined) terminalAssistants.push({ entryId: member.entryId, preview });
 	}
-	if (completeLastTurn) completeTurn();
+	completeTurn();
 	return completedMembers;
 }
 
@@ -113,14 +134,7 @@ function userMessagePreview(message: AgentMessage | undefined): string | undefin
 }
 
 function terminalAssistantPreview(message: AgentMessage | undefined): string | null | undefined {
-	if (
-		message?.role !== "assistant" ||
-		message.stopReason === "pending" ||
-		message.stopReason === "toolUse" ||
-		message.stopReason === "deferred"
-	) {
-		return undefined;
-	}
+	if (!isTerminalAssistantMessage(message)) return undefined;
 	const text = message.content
 		.filter(
 			(content): content is Extract<(typeof message.content)[number], { type: "text" }> => content.type === "text",

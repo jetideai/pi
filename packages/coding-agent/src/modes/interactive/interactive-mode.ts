@@ -110,7 +110,13 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
-import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
+import {
+	SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE,
+	type SemanticTurnSettlementV1,
+	type SessionEntry,
+	SessionManager,
+	sessionEntryToContextMessages,
+} from "../../core/session-manager.ts";
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
@@ -295,10 +301,6 @@ function isProjectionPrefix(
 	return (
 		prefix.length <= members.length && prefix.every((member, index) => sameProjectionMember(member, members[index]!))
 	);
-}
-
-function isTerminalAssistant(message: AssistantMessage): boolean {
-	return message.stopReason !== "pending" && message.stopReason !== "toolUse" && message.stopReason !== "deferred";
 }
 
 function sameProjection(
@@ -509,6 +511,7 @@ export class InteractiveMode {
 	private semanticStreamingContainer: Container | undefined;
 	private semanticStreamingBaseMemberCount = 0;
 	private messageRenderMembers: MessageRenderProjectionMemberV1[] = [];
+	private messageRenderSettlements: readonly Readonly<SemanticTurnSettlementV1>[] = [];
 	private publishedMessageRenderProjection: Readonly<MessageRenderProjectionV1> | undefined;
 	private messageRenderScopeId = crypto.randomUUID();
 
@@ -2129,6 +2132,7 @@ export class InteractiveMode {
 	private startFreshMessageRenderScope(): void {
 		this.messageRenderScopeId = crypto.randomUUID();
 		this.messageRenderMembers = [];
+		this.messageRenderSettlements = [];
 		this.publishedMessageRenderProjection = undefined;
 	}
 
@@ -2250,7 +2254,6 @@ export class InteractiveMode {
 		members: readonly MessageRenderProjectionMemberV1[],
 		requestedMode: "append" | "replace",
 		finalized?: MessageRenderFinalizedEntryV1,
-		completeLastTurn = false,
 	): void {
 		const observers = this.getMessageRenderProjectionObserversV1();
 		if (observers.length === 0) return;
@@ -2263,7 +2266,7 @@ export class InteractiveMode {
 			members,
 			mode,
 			...(finalized ? { finalized } : {}),
-			completeLastTurn,
+			settledTurns: this.messageRenderSettlements ?? [],
 			readMessage: (entryId) => {
 				if (finalized?.entryId === entryId) return finalized.message;
 				const entry = this.sessionManager.getEntry(entryId);
@@ -3884,12 +3887,10 @@ export class InteractiveMode {
 							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
 							...composition.members,
 						];
-						this.publishMessageRenderProjectionV1(
-							this.messageRenderMembers,
-							"append",
-							{ entryId: event.entryId, message: event.message },
-							isTerminalAssistant(event.message),
-						);
+						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
+							entryId: event.entryId,
+							message: event.message,
+						});
 					}
 					this.renderSemanticAssistantResponse(
 						this.semanticStreamingContainer,
@@ -3926,12 +3927,10 @@ export class InteractiveMode {
 							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
 							...composition.members,
 						];
-						this.publishMessageRenderProjectionV1(
-							this.messageRenderMembers,
-							"append",
-							{ entryId: event.entryId, message: event.message },
-							isTerminalAssistant(event.message),
-						);
+						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
+							entryId: event.entryId,
+							message: event.message,
+						});
 					}
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
@@ -4034,6 +4033,11 @@ export class InteractiveMode {
 				break;
 
 			case "agent_settled":
+				if (this.getMessageRenderProjectionObserversV1().length > 0) {
+					this.messageRenderSettlements = this.sessionManager.getSemanticTurnSettlements();
+					this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
+					this.ui.requestRender();
+				}
 				await this.checkShutdownRequested();
 				break;
 
@@ -4384,7 +4388,8 @@ export class InteractiveMode {
 				}
 			}
 			this.messageRenderMembers = members;
-			this.publishMessageRenderProjectionV1(members, "replace", undefined, true);
+			this.messageRenderSettlements = this.sessionManager.getSemanticTurnSettlements();
+			this.publishMessageRenderProjectionV1(members, "replace");
 		}
 		const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
@@ -4514,7 +4519,7 @@ export class InteractiveMode {
 	): void {
 		const items = entries.flatMap((entry): RenderSessionItem[] => {
 			if (entry.type === "custom") {
-				return [entry];
+				return entry.customType === SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE ? [] : [entry];
 			}
 			const messages = sessionEntryToContextMessages(entry);
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {

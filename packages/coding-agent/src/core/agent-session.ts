@@ -97,7 +97,12 @@ import {
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { StandardPromptLifecycleSource } from "./extensions/ui-prompt-contract.ts";
-import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import {
+	type BashExecutionMessage,
+	type CustomMessage,
+	type ExternalAgentOriginV1,
+	requireExternalAgentOriginV1,
+} from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -642,6 +647,7 @@ export class AgentSession {
 
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
+		this.sessionManager.appendSemanticTurnSettlements();
 		try {
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
@@ -1234,6 +1240,14 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		await this._prompt(text, options);
+	}
+
+	private async _prompt(
+		text: string,
+		options?: PromptOptions,
+		initiator?: Readonly<ExternalAgentOriginV1>,
+	): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let ownsRunAdmission = false;
@@ -1319,9 +1333,9 @@ export class AgentSession {
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(expandedText, currentImages);
+					await this._queueFollowUp(expandedText, currentImages, initiator);
 				} else {
-					await this._queueSteer(expandedText, currentImages);
+					await this._queueSteer(expandedText, currentImages, initiator);
 				}
 				preflightResult?.(true);
 				return;
@@ -1370,6 +1384,7 @@ export class AgentSession {
 				role: "user",
 				content: userContent,
 				timestamp: Date.now(),
+				...(initiator ? { initiator } : {}),
 			});
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
@@ -1533,7 +1548,11 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueSteer(
+		text: string,
+		images?: ImageContent[],
+		initiator?: Readonly<ExternalAgentOriginV1>,
+	): Promise<void> {
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1544,13 +1563,18 @@ export class AgentSession {
 			role: "user",
 			content,
 			timestamp: Date.now(),
+			...(initiator ? { initiator } : {}),
 		});
 	}
 
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueFollowUp(
+		text: string,
+		images?: ImageContent[],
+		initiator?: Readonly<ExternalAgentOriginV1>,
+	): Promise<void> {
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1561,6 +1585,7 @@ export class AgentSession {
 			role: "user",
 			content,
 			timestamp: Date.now(),
+			...(initiator ? { initiator } : {}),
 		});
 	}
 
@@ -1668,8 +1693,14 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			initiator?: ExternalAgentOriginV1;
+		},
 	): Promise<void> {
+		const initiator = options?.initiator === undefined ? undefined : requireExternalAgentOriginV1(options.initiator);
+
 		// Normalize content to text string + optional images
 		let text: string;
 		let images: ImageContent[] | undefined;
@@ -1690,12 +1721,16 @@ export class AgentSession {
 			if (images.length === 0) images = undefined;
 		}
 
-		await this.prompt(text, {
-			expandPromptTemplates: options?.expandPromptTemplates ?? false,
-			streamingBehavior: options?.deliverAs,
-			images,
-			source: "extension",
-		});
+		await this._prompt(
+			text,
+			{
+				expandPromptTemplates: options?.expandPromptTemplates ?? false,
+				streamingBehavior: options?.deliverAs,
+				images,
+				source: "extension",
+			},
+			initiator,
+		);
 	}
 
 	/**

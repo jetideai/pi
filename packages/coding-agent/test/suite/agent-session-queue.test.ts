@@ -3,6 +3,8 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import type { ExternalAgentOriginV1 } from "../../src/core/messages.ts";
+import { buildMessageRenderProjection } from "../../src/modes/interactive/components/transcript-projection.ts";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
 async function createWaitingHarness(
@@ -201,6 +203,31 @@ describe("AgentSession queue characterization", () => {
 			"handled follow-up 1",
 			"handled follow-up 2",
 		]);
+		const branch = harness.sessionManager.getBranch();
+		const projection = buildMessageRenderProjection({
+			producerSessionId: harness.sessionManager.getSessionId(),
+			renderScopeId: "queue-test",
+			members: branch.flatMap((entry) => {
+				if (entry.type !== "message") return [];
+				if (entry.message.role !== "user" && entry.message.role !== "assistant") return [];
+				return [{ entryId: entry.id, blockId: entry.id, role: entry.message.role }];
+			}),
+			mode: "replace",
+			settledTurns: harness.sessionManager.getSemanticTurnSettlements(),
+			readMessage: (entryId) => {
+				const entry = harness.sessionManager.getEntry(entryId);
+				return entry?.type === "message" ? entry.message : undefined;
+			},
+		});
+		const completed = projection.members.flatMap((member) =>
+			member.role === "user" && member.completedTurn ? [member.completedTurn] : [],
+		);
+		expect(completed.map((turn) => turn.assistantPreview)).toEqual([
+			"original turn complete",
+			"handled follow-up 1",
+			"handled follow-up 2",
+		]);
+		expect(harness.sessionManager.getSemanticTurnSettlements()).toHaveLength(3);
 	});
 
 	it("delivers all steering messages in one batch in all mode", async () => {
@@ -256,6 +283,72 @@ describe("AgentSession queue characterization", () => {
 
 		expect(batchedUserMessages).toEqual(["start", "follow-up 1", "follow-up 2"]);
 		expect(getAssistantTexts(harness)).toEqual(["", "original turn complete", "batched follow-up response"]);
+	});
+
+	it.each(["steer", "followUp"] as const)(
+		"retains the exact external initiator for queued %s delivery",
+		async (deliverAs) => {
+			const waiting = await createWaitingHarness();
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+			harnesses.push(harness);
+			const initiator: ExternalAgentOriginV1 = {
+				namespace: "agent-hub",
+				agentId: deliverAs,
+				registrationGeneration: 7,
+			};
+			harness.setResponses(
+				deliverAs === "steer"
+					? [
+							fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+							fauxAssistantMessage("steered"),
+						]
+					: [
+							fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+							fauxAssistantMessage("original complete"),
+							fauxAssistantMessage("follow-up complete"),
+						],
+			);
+
+			await waitForToolStart;
+			const sent = harness.session.sendUserMessage("external request", { deliverAs, initiator });
+			(initiator as { agentId: string }).agentId = "mutated";
+			releaseToolExecution();
+			await sent;
+			await promptPromise;
+			await harness.session.waitForIdle();
+
+			const message = harness.session.messages.find(
+				(candidate) => candidate.role === "user" && getMessageText(candidate) === "external request",
+			);
+			expect(message).toMatchObject({
+				initiator: { namespace: "agent-hub", agentId: deliverAs, registrationGeneration: 7 },
+			});
+		},
+	);
+
+	it("rejects a malformed falsy initiator before queued delivery mutation", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await waitForToolStart;
+		try {
+			await expect(
+				harness.session.sendUserMessage("rejected", {
+					deliverAs: "steer",
+					initiator: false as unknown as ExternalAgentOriginV1,
+				}),
+			).rejects.toThrow("Invalid external agent initiator");
+			expect(harness.session.pendingMessageCount).toBe(0);
+			expect(getUserTexts(harness)).toEqual(["start"]);
+		} finally {
+			releaseToolExecution();
+			await promptPromise;
+		}
 	});
 
 	it("queues custom messages with deliverAs steer while streaming", async () => {

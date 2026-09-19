@@ -52,7 +52,7 @@ import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
-import type { CustomMessage } from "../messages.ts";
+import type { CustomMessage, ExternalAgentOriginV1 } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type {
@@ -416,7 +416,11 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			initiator?: ExternalAgentOriginV1;
+		},
 	): Promise<void>;
 }
 
@@ -1412,6 +1416,7 @@ export interface MessageRenderCompletedTurnV1 {
 	assistantEntryId: string;
 	userPreview: string;
 	assistantPreview: string | null;
+	initiator?: Readonly<ExternalAgentOriginV1>;
 }
 
 export type MessageRenderProjectionMemberV1 =
@@ -1637,7 +1642,11 @@ export interface ExtensionAPI {
 	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			initiator?: ExternalAgentOriginV1;
+		},
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
@@ -1893,7 +1902,11 @@ export type SendMessageHandler = <T = unknown>(
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+	options?: {
+		deliverAs?: "steer" | "followUp";
+		expandPromptTemplates?: boolean;
+		initiator?: ExternalAgentOriginV1;
+	},
 ) => void;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;

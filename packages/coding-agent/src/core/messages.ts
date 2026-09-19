@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 
 export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
@@ -22,6 +22,53 @@ export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch tha
 `;
 
 export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+
+export const EXTERNAL_AGENT_ORIGIN_NAMESPACE_MAX_BYTES = 128;
+export const EXTERNAL_AGENT_ORIGIN_ID_MAX_BYTES = 1024;
+
+export interface ExternalAgentOriginV1 {
+	readonly namespace: string;
+	readonly agentId: string;
+	readonly registrationGeneration: number;
+}
+
+export function copyExternalAgentOriginV1(value: unknown): Readonly<ExternalAgentOriginV1> | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const candidate = value as Partial<ExternalAgentOriginV1>;
+	if (
+		typeof candidate.namespace !== "string" ||
+		candidate.namespace.length === 0 ||
+		Buffer.byteLength(candidate.namespace, "utf8") > EXTERNAL_AGENT_ORIGIN_NAMESPACE_MAX_BYTES ||
+		typeof candidate.agentId !== "string" ||
+		candidate.agentId.length === 0 ||
+		Buffer.byteLength(candidate.agentId, "utf8") > EXTERNAL_AGENT_ORIGIN_ID_MAX_BYTES ||
+		typeof candidate.registrationGeneration !== "number" ||
+		!Number.isSafeInteger(candidate.registrationGeneration) ||
+		candidate.registrationGeneration <= 0
+	) {
+		return undefined;
+	}
+	return Object.freeze({
+		namespace: candidate.namespace,
+		agentId: candidate.agentId,
+		registrationGeneration: candidate.registrationGeneration,
+	});
+}
+
+export function requireExternalAgentOriginV1(value: unknown): Readonly<ExternalAgentOriginV1> {
+	const origin = copyExternalAgentOriginV1(value);
+	if (!origin) throw new Error("Invalid external agent initiator");
+	return origin;
+}
+
+export function isTerminalAssistantMessage(message: AgentMessage | undefined): message is AssistantMessage {
+	return (
+		message?.role === "assistant" &&
+		message.stopReason !== "pending" &&
+		message.stopReason !== "toolUse" &&
+		message.stopReason !== "deferred"
+	);
+}
 
 /**
  * Message type for bash executions via the ! command.
@@ -64,6 +111,12 @@ export interface CompactionSummaryMessage {
 	summary: string;
 	tokensBefore: number;
 	timestamp: number;
+}
+
+declare module "@earendil-works/pi-ai" {
+	interface UserMessage {
+		initiator?: Readonly<ExternalAgentOriginV1>;
+	}
 }
 
 // Extend CustomAgentMessages via declaration merging
@@ -182,6 +235,11 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				case "user":
+					return {
+						role: "user",
+						content: m.content,
+						timestamp: m.timestamp,
+					};
 				case "assistant":
 				case "toolResult":
 					return m;

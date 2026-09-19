@@ -6,6 +6,7 @@ import { fauxAssistantMessage, fauxToolCall, type Model } from "@earendil-works/
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI, InputEvent } from "../../src/core/extensions/index.ts";
+import type { ExternalAgentOriginV1 } from "../../src/core/messages.ts";
 import type { PromptTemplate } from "../../src/core/prompt-templates.ts";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
 import { createTestResourceLoader } from "../utilities.ts";
@@ -318,16 +319,59 @@ describe("AgentSession prompt characterization", () => {
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
-	it("sendUserMessage while idle triggers a turn", async () => {
+	it("sendUserMessage stores a defensive copy of an external initiator on the exact idle message", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
+		const initiator: ExternalAgentOriginV1 = {
+			namespace: "agent-hub",
+			agentId: "agent-a",
+			registrationGeneration: 4,
+		};
 
 		harness.setResponses([fauxAssistantMessage("response")]);
 
-		await harness.session.sendUserMessage("from extension");
+		const sent = harness.session.sendUserMessage("from extension", { initiator });
+		(initiator as { agentId: string }).agentId = "mutated";
+		await sent;
 
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
 		expect(getMessageText(harness.session.messages[0]!)).toBe("from extension");
+		expect(harness.session.messages[0]).toMatchObject({
+			initiator: { namespace: "agent-hub", agentId: "agent-a", registrationGeneration: 4 },
+		});
+		const settlement = harness.sessionManager.getSemanticTurnSettlements();
+		expect(settlement).toHaveLength(1);
+		expect(harness.sessionManager.getEntry(settlement[0]!.userEntryId)).toMatchObject({
+			type: "message",
+			message: { role: "user", initiator: { agentId: "agent-a" } },
+		});
+		expect(harness.sessionManager.getEntry(settlement[0]!.assistantEntryId)).toMatchObject({
+			type: "message",
+			message: { role: "assistant", stopReason: "stop" },
+		});
+	});
+
+	it.each([
+		null,
+		false,
+		0,
+		"",
+		{ namespace: "", agentId: "agent-a", registrationGeneration: 1 },
+		{ namespace: "n".repeat(129), agentId: "agent-a", registrationGeneration: 1 },
+		{ namespace: "agent-hub", agentId: "", registrationGeneration: 1 },
+		{ namespace: "agent-hub", agentId: "a".repeat(1025), registrationGeneration: 1 },
+		{ namespace: "agent-hub", agentId: "agent-a", registrationGeneration: 0 },
+		{ namespace: "agent-hub", agentId: "agent-a", registrationGeneration: Number.MAX_SAFE_INTEGER + 1 },
+	])("rejects malformed external initiator before session mutation", async (initiator) => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await expect(
+			harness.session.sendUserMessage("rejected", { initiator: initiator as ExternalAgentOriginV1 }),
+		).rejects.toThrow("Invalid external agent initiator");
+
+		expect(harness.session.messages).toEqual([]);
+		expect(harness.session.pendingMessageCount).toBe(0);
 	});
 
 	it("queues a concurrent extension message behind the admitted prompt", async () => {

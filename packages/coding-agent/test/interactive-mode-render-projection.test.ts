@@ -21,6 +21,7 @@ import type { CustomMessage } from "../src/core/messages.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
 const user = { role: "user", content: "Question", timestamp: 1 } as const;
@@ -162,6 +163,9 @@ describe("InteractiveMode response projection", () => {
 			entryId: assistantId,
 		});
 		await handleEvent.call(mode, { type: "message_end", message: finalAssistant, entryId: assistantId });
+		expect(projections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
+		sessionManager.appendSemanticTurnSettlements();
+		await handleEvent.call(mode, { type: "agent_settled" });
 		const rendered = chatContainer.render(80).join("\n");
 
 		const completed = projections.flatMap((projection) =>
@@ -211,6 +215,52 @@ describe("InteractiveMode response projection", () => {
 		expect(rendered).toContain("$ Read files, Ran commands");
 	});
 
+	it("completes one live turn at settlement with the last terminal assistant", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const userId = sessionManager.appendMessage(user);
+		const firstAssistant = assistant([{ type: "text", text: "First answer" }], "stop");
+		const finalAssistant = assistant([{ type: "text", text: "Final answer" }], "stop");
+		const firstAssistantId = sessionManager.appendMessage(firstAssistant);
+		const finalAssistantId = sessionManager.appendMessage(finalAssistant);
+		const { mode, projections } = modeHarness(sessionManager);
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+
+		await handleEvent.call(mode, { type: "message_start", message: user, entryId: userId });
+		for (const [entryId, message] of [
+			[firstAssistantId, firstAssistant],
+			[finalAssistantId, finalAssistant],
+		] as const) {
+			await handleEvent.call(mode, {
+				type: "message_start",
+				message: assistant([], "pending"),
+				entryId,
+			});
+			await handleEvent.call(mode, { type: "message_end", message, entryId });
+		}
+		expect(projections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
+		const { mode: unsettledRestoredMode, projections: unsettledRestoredProjections } = modeHarness(sessionManager);
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof unsettledRestoredMode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		renderSessionEntries.call(unsettledRestoredMode, sessionManager.buildTranscriptEntries());
+		expect(unsettledRestoredProjections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
+
+		sessionManager.appendSemanticTurnSettlements();
+		await handleEvent.call(mode, { type: "agent_settled" });
+
+		expect(projections.at(-1)?.members[0]).toMatchObject({
+			completedTurn: {
+				assistantEntryId: finalAssistantId,
+				userPreview: "Question",
+				assistantPreview: "Final answer",
+			},
+		});
+	});
+
 	it("keeps a blank row after a completed-turn footer before a later assistant", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const firstUser = { ...user, content: "Gamma" };
@@ -226,9 +276,6 @@ describe("InteractiveMode response projection", () => {
 		const laterUser = { ...user, content: "Beta" };
 		const firstUserId = sessionManager.appendMessage(firstUser);
 		const firstAssistantId = sessionManager.appendMessage(firstAssistant);
-		const hiddenCustomId = sessionManager.appendCustomMessageEntry("hub-message", "hidden delivery metadata", false);
-		const laterAssistantId = sessionManager.appendMessage(laterAssistant);
-		const laterUserId = sessionManager.appendMessage(laterUser);
 		const { mode, projections, chatContainer, messageDecorator } = modeHarness(sessionManager);
 		const terminal = new VirtualTerminal(80, 24);
 		const tui: TUI = new TuiMainScreen(terminal);
@@ -264,8 +311,12 @@ describe("InteractiveMode response projection", () => {
 			message: firstAssistant,
 			entryId: firstAssistantId,
 		});
+		sessionManager.appendSemanticTurnSettlements();
+		await handleEvent.call(mode, { type: "agent_settled" });
 		await terminal.waitForRender();
 
+		const hiddenCustomId = sessionManager.appendCustomMessageEntry("hub-message", "hidden delivery metadata", false);
+		const laterAssistantId = sessionManager.appendMessage(laterAssistant);
 		await handleEvent.call(mode, {
 			type: "message_start",
 			message: hiddenCustom,
@@ -297,6 +348,11 @@ describe("InteractiveMode response projection", () => {
 			message: laterAssistant,
 			entryId: laterAssistantId,
 		});
+		expect(sessionManager.appendSemanticTurnSettlements()).toContainEqual({
+			userEntryId: firstUserId,
+			assistantEntryId: firstAssistantId,
+		});
+		await handleEvent.call(mode, { type: "agent_settled" });
 		await terminal.waitForRender();
 
 		const renderedTranscript = chatContainer.render(80);
@@ -312,11 +368,23 @@ describe("InteractiveMode response projection", () => {
 		const laterAnswerRow = transcript.findIndex((line) => line.includes("Later async answer"));
 		expect(transcript.slice(firstAnswerRow + 1, laterAnswerRow).map((line) => line.trim())).toEqual(["", "", ""]);
 
+		const laterUserId = sessionManager.appendMessage(laterUser);
 		await handleEvent.call(mode, { type: "message_start", message: laterUser, entryId: laterUserId });
 		await terminal.waitForRender();
 		transcript = terminal.getScrollBuffer();
 		const delayedUserRow = transcript.findIndex((line) => line.includes("Beta"));
 		expect(transcript.slice(laterAnswerRow + 1, delayedUserRow).map((line) => line.trim())).toEqual(["", ""]);
+
+		const { mode: restoredMode, projections: restoredProjections } = modeHarness(sessionManager);
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof restoredMode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		renderSessionEntries.call(restoredMode, sessionManager.buildTranscriptEntries());
+		expect(restoredProjections.at(-1)?.members[0]).toEqual(projections.at(-1)?.members[0]);
+		expect(restoredProjections.at(-1)?.members[0]).toMatchObject({
+			completedTurn: { assistantEntryId: firstAssistantId },
+		});
 		tui.stop();
 	});
 
@@ -365,6 +433,9 @@ describe("InteractiveMode response projection", () => {
 				message: terminalAssistant,
 				entryId: assistantId,
 			});
+			expect(observed.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
+			sessionManager.appendSemanticTurnSettlements();
+			await handleEvent.call(mode, { type: "agent_settled" });
 
 			expect(observed.at(-1)?.members[0]).toMatchObject({
 				entryId: userId,
@@ -419,9 +490,84 @@ describe("InteractiveMode response projection", () => {
 		);
 	});
 
+	it("keeps custom progress and expanded tool content inside the canonical restored turn region", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-turn-region-"));
+		const extensionPath = path.join(tempDir, "progress-renderer.ts");
+		try {
+			fs.writeFileSync(
+				extensionPath,
+				`import { Text } from "@earendil-works/pi-tui";
+export default function (pi) {
+	pi.registerEntryRenderer("ad-process:update", () => new Text("[ad-process:update] working", 0, 0));
+}`,
+			);
+			const loaded = await loadExtensions([extensionPath], tempDir);
+			expect(loaded.errors).toEqual([]);
+			const sessionManager = SessionManager.inMemory();
+			sessionManager.appendMessage(user);
+			const toolOwner = assistant(
+				[{ type: "toolCall", id: "tool-a", name: "read", arguments: { path: "a" } }],
+				"toolUse",
+			);
+			sessionManager.appendMessage(toolOwner);
+			sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: "tool-a",
+				toolName: "read",
+				content: [{ type: "text", text: "expanded result" }],
+				isError: false,
+				timestamp: 2,
+			});
+			sessionManager.appendCustomEntry("ad-process:update", { state: "working" });
+			const terminalAssistant = assistant([{ type: "text", text: "Final answer" }], "stop");
+			const terminalAssistantId = sessionManager.appendMessage(terminalAssistant);
+			sessionManager.appendSemanticTurnSettlements();
+			const runner = new ExtensionRunner(
+				loaded.extensions,
+				loaded.runtime,
+				tempDir,
+				sessionManager,
+				await createInMemoryModelRegistry(AuthStorage.inMemory()),
+			);
+			const { mode, chatContainer, projections } = modeHarness(sessionManager, runner);
+			Object.assign(mode, {
+				getMessageRenderProjectionObserversV1: () => [
+					(projection: Readonly<MessageRenderProjectionV1>) => projections.push(projection),
+				],
+			});
+			mode.toolOutputExpanded = true;
+			const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+				this: typeof mode,
+				entries: ReturnType<SessionManager["getBranch"]>,
+			) => void;
+
+			renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+
+			const rows = chatContainer.render(100).map(stripAnsi);
+			const begin = rows.findIndex((row) => row.includes("Question"));
+			const end = rows.findIndex((row) => row.includes("Final answer"));
+			const progress = rows.findIndex((row) => row.includes("[ad-process:update] working"));
+			const expandedTool = rows.findIndex((row) => row.includes("stock result"));
+			expect(projections.at(-1)?.members[0]).toMatchObject({
+				completedTurn: { assistantEntryId: terminalAssistantId },
+			});
+			expect(begin).toBeGreaterThanOrEqual(0);
+			expect(progress).toBeGreaterThan(begin);
+			expect(expandedTool).toBeGreaterThan(begin);
+			expect(progress).toBeLessThan(end);
+			expect(expandedTool).toBeLessThan(end);
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("restores the same projection identity and order as the live path", async () => {
 		const sessionManager = SessionManager.inMemory();
-		const userId = sessionManager.appendMessage(user);
+		const originUser = {
+			...user,
+			initiator: { namespace: "agent-hub", agentId: "agent-a", registrationGeneration: 5 },
+		};
+		const userId = sessionManager.appendMessage(originUser);
 		const assistantId = sessionManager.appendMessage(finalAssistant);
 		const toolResult = (toolCallId: string): ToolResultMessage => ({
 			role: "toolResult",
@@ -440,7 +586,7 @@ describe("InteractiveMode response projection", () => {
 			this: typeof liveMode,
 			event: AgentSessionEvent,
 		) => Promise<void>;
-		await handleEvent.call(liveMode, { type: "message_start", message: user, entryId: userId });
+		await handleEvent.call(liveMode, { type: "message_start", message: originUser, entryId: userId });
 		await handleEvent.call(liveMode, {
 			type: "message_start",
 			message: assistant([], "pending"),
@@ -461,6 +607,8 @@ describe("InteractiveMode response projection", () => {
 			result: toolResultB,
 			isError: false,
 		});
+		sessionManager.appendSemanticTurnSettlements();
+		await handleEvent.call(liveMode, { type: "agent_settled" });
 
 		const {
 			mode: restoredMode,
@@ -478,6 +626,13 @@ describe("InteractiveMode response projection", () => {
 		expect(restoredProjections).toHaveLength(1);
 		expect(restoredProjections[0]?.mode).toBe("replace");
 		expect(memberIdentity(restoredProjections[0])).toEqual(memberIdentity(liveProjections.at(-1)));
+		expect(restoredProjections[0]?.members[0]).toEqual(liveProjections.at(-1)?.members[0]);
+		expect(restoredProjections[0]?.members[0]).toMatchObject({
+			completedTurn: {
+				assistantEntryId: assistantId,
+				initiator: { namespace: "agent-hub", agentId: "agent-a", registrationGeneration: 5 },
+			},
+		});
 		expect(restoredChat.render(100)).toEqual(liveChat.render(100));
 		expect(memberIdentity(restoredProjections[0])).toEqual([
 			[userId, userId, "user"],
