@@ -36,7 +36,7 @@ describe("external agent origin", () => {
 		const session = SessionManager.create(directory, directory);
 		const entryId = session.appendMessage(userMessage);
 		const assistantEntryId = session.appendMessage(fauxAssistantMessage("Answer"));
-		session.appendSemanticTurnSettlements();
+		session.appendSemanticTurnSettlements(null);
 		const reopened = SessionManager.open(session.getSessionFile()!, directory);
 
 		expect(reopened.getEntry(entryId)).toMatchObject({

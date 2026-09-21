@@ -18,7 +18,7 @@ import type {
 	ToolDefinition,
 } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE, SessionManager } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -164,7 +164,7 @@ describe("InteractiveMode response projection", () => {
 		});
 		await handleEvent.call(mode, { type: "message_end", message: finalAssistant, entryId: assistantId });
 		expect(projections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
-		sessionManager.appendSemanticTurnSettlements();
+		sessionManager.appendSemanticTurnSettlements(null);
 		await handleEvent.call(mode, { type: "agent_settled" });
 		const rendered = chatContainer.render(80).join("\n");
 
@@ -215,7 +215,7 @@ describe("InteractiveMode response projection", () => {
 		expect(rendered).toContain("$ Read files, Ran commands");
 	});
 
-	it("completes one live turn at settlement with the last terminal assistant", async () => {
+	it("keeps a live turn open and infers the saved turn on restore", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const userId = sessionManager.appendMessage(user);
 		const firstAssistant = assistant([{ type: "text", text: "First answer" }], "stop");
@@ -245,11 +245,21 @@ describe("InteractiveMode response projection", () => {
 		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
 			this: typeof unsettledRestoredMode,
 			entries: ReturnType<SessionManager["getBranch"]>,
+			options?: { inferMissingTurns?: boolean },
 		) => void;
-		renderSessionEntries.call(unsettledRestoredMode, sessionManager.buildTranscriptEntries());
-		expect(unsettledRestoredProjections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
+		renderSessionEntries.call(unsettledRestoredMode, sessionManager.buildTranscriptEntries(), {
+			inferMissingTurns: true,
+		});
+		expect(unsettledRestoredProjections.at(-1)?.members[0]).toMatchObject({
+			completedTurn: {
+				assistantEntryId: finalAssistantId,
+				userPreview: "Question",
+				assistantPreview: "Final answer",
+			},
+		});
+		expect(sessionManager.getSemanticTurnSettlements()).toEqual([]);
 
-		sessionManager.appendSemanticTurnSettlements();
+		sessionManager.appendSemanticTurnSettlements(null);
 		await handleEvent.call(mode, { type: "agent_settled" });
 
 		expect(projections.at(-1)?.members[0]).toMatchObject({
@@ -259,6 +269,114 @@ describe("InteractiveMode response projection", () => {
 				assistantPreview: "Final answer",
 			},
 		});
+	});
+
+	it("restores an unmarked disk session without changing its file", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-unmarked-turn-"));
+		try {
+			const original = SessionManager.create(tempDir, tempDir);
+			const userId = original.appendMessage(user);
+			const firstAssistantId = original.appendMessage(assistant([{ type: "text", text: "First answer" }], "stop"));
+			const terminalAssistantId = original.appendMessage(
+				assistant([{ type: "text", text: "Terminal answer" }], "length"),
+			);
+			const sessionFile = original.getSessionFile();
+			expect(sessionFile).toBeDefined();
+			const before = fs.readFileSync(sessionFile!, "utf8");
+
+			for (let activation = 0; activation < 2; activation++) {
+				const restored = SessionManager.open(sessionFile!);
+				const { mode, projections } = modeHarness(restored);
+				const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+					this: typeof mode,
+					entries: ReturnType<SessionManager["getBranch"]>,
+					options?: { inferMissingTurns?: boolean },
+				) => void;
+
+				renderSessionEntries.call(mode, restored.buildTranscriptEntries(), { inferMissingTurns: true });
+
+				expect(projections.at(-1)?.members[0]).toMatchObject({
+					entryId: userId,
+					completedTurn: {
+						assistantEntryId: terminalAssistantId,
+						assistantPreview: "Terminal answer",
+					},
+				});
+				expect(projections.at(-1)?.members[1]).toMatchObject({ entryId: firstAssistantId });
+				expect(restored.getSemanticTurnSettlements()).toEqual([]);
+				expect(fs.readFileSync(sessionFile!, "utf8")).toBe(before);
+			}
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps an unmarked active turn open during a live transcript rebuild", () => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage(user);
+		sessionManager.appendMessage(assistant([{ type: "text", text: "Retryable answer" }], "length"));
+		const { mode, projections } = modeHarness(sessionManager);
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+
+		renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+
+		expect(projections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
+	});
+
+	it("keeps conflicting persisted settlements closed during restore", () => {
+		const sessionManager = SessionManager.inMemory();
+		const userId = sessionManager.appendMessage(user);
+		const firstAssistantId = sessionManager.appendMessage(
+			assistant([{ type: "text", text: "First answer" }], "stop"),
+		);
+		const laterAssistantId = sessionManager.appendMessage(
+			assistant([{ type: "text", text: "Later answer" }], "stop"),
+		);
+		sessionManager.appendCustomEntry(SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE, {
+			userEntryId: userId,
+			assistantEntryId: firstAssistantId,
+		});
+		sessionManager.appendCustomEntry(SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE, {
+			userEntryId: userId,
+			assistantEntryId: laterAssistantId,
+		});
+		const { mode, projections } = modeHarness(sessionManager);
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+			options?: { inferMissingTurns?: boolean },
+		) => void;
+
+		renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries(), { inferMissingTurns: true });
+
+		expect(sessionManager.getSemanticTurnSettlements()).toEqual([
+			{ userEntryId: userId, assistantEntryId: firstAssistantId },
+			{ userEntryId: userId, assistantEntryId: laterAssistantId },
+		]);
+		expect(projections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
+	});
+
+	it("persists exact settlements only for roots created by the current run", () => {
+		const sessionManager = SessionManager.inMemory();
+		const legacyUserId = sessionManager.appendMessage(user);
+		sessionManager.appendMessage(assistant([{ type: "text", text: "Legacy answer" }], "stop"));
+		const runBaseEntryId = sessionManager.getLeafId();
+		const currentUserId = sessionManager.appendMessage({ ...user, content: "Current question" });
+		const currentAssistantId = sessionManager.appendMessage(
+			assistant([{ type: "text", text: "Current answer" }], "stop"),
+		);
+
+		sessionManager.appendSemanticTurnSettlements(runBaseEntryId);
+
+		expect(sessionManager.getSemanticTurnSettlements()).toEqual([
+			{ userEntryId: currentUserId, assistantEntryId: currentAssistantId },
+		]);
+		expect(sessionManager.getSemanticTurnSettlements()).not.toContainEqual(
+			expect.objectContaining({ userEntryId: legacyUserId }),
+		);
 	});
 
 	it("keeps a blank row after a completed-turn footer before a later assistant", async () => {
@@ -311,7 +429,7 @@ describe("InteractiveMode response projection", () => {
 			message: firstAssistant,
 			entryId: firstAssistantId,
 		});
-		sessionManager.appendSemanticTurnSettlements();
+		sessionManager.appendSemanticTurnSettlements(null);
 		await handleEvent.call(mode, { type: "agent_settled" });
 		await terminal.waitForRender();
 
@@ -348,7 +466,7 @@ describe("InteractiveMode response projection", () => {
 			message: laterAssistant,
 			entryId: laterAssistantId,
 		});
-		expect(sessionManager.appendSemanticTurnSettlements()).toContainEqual({
+		expect(sessionManager.appendSemanticTurnSettlements(null)).toContainEqual({
 			userEntryId: firstUserId,
 			assistantEntryId: firstAssistantId,
 		});
@@ -434,7 +552,7 @@ describe("InteractiveMode response projection", () => {
 				entryId: assistantId,
 			});
 			expect(observed.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
-			sessionManager.appendSemanticTurnSettlements();
+			sessionManager.appendSemanticTurnSettlements(null);
 			await handleEvent.call(mode, { type: "agent_settled" });
 
 			expect(observed.at(-1)?.members[0]).toMatchObject({
@@ -521,7 +639,7 @@ export default function (pi) {
 			sessionManager.appendCustomEntry("ad-process:update", { state: "working" });
 			const terminalAssistant = assistant([{ type: "text", text: "Final answer" }], "stop");
 			const terminalAssistantId = sessionManager.appendMessage(terminalAssistant);
-			sessionManager.appendSemanticTurnSettlements();
+			sessionManager.appendSemanticTurnSettlements(null);
 			const runner = new ExtensionRunner(
 				loaded.extensions,
 				loaded.runtime,
@@ -607,7 +725,7 @@ export default function (pi) {
 			result: toolResultB,
 			isError: false,
 		});
-		sessionManager.appendSemanticTurnSettlements();
+		sessionManager.appendSemanticTurnSettlements(null);
 		await handleEvent.call(liveMode, { type: "agent_settled" });
 
 		const {

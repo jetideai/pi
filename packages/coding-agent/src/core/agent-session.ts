@@ -645,9 +645,9 @@ export class AgentSession {
 		resolve();
 	}
 
-	private async _emitAgentSettled(): Promise<void> {
+	private async _emitAgentSettled(runBaseEntryId: string | null): Promise<void> {
 		this._isAgentRunActive = false;
-		this.sessionManager.appendSemanticTurnSettlements();
+		this.sessionManager.appendSemanticTurnSettlements(runBaseEntryId);
 		try {
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
@@ -1179,6 +1179,7 @@ export class AgentSession {
 	}
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], alreadyAdmitted = false): Promise<void> {
+		const runBaseEntryId = this.sessionManager.getLeafId();
 		if (!alreadyAdmitted) {
 			if (this._isAgentRunActive) {
 				throw new Error("Agent is already processing.");
@@ -1196,7 +1197,7 @@ export class AgentSession {
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
 			this._flushPendingCustomMessages();
-			await this._emitAgentSettled();
+			await this._emitAgentSettled(runBaseEntryId);
 		}
 	}
 

@@ -23,20 +23,25 @@ export interface BuildMessageRenderProjectionOptions {
 	mode: "append" | "replace";
 	finalized?: MessageRenderFinalizedEntryV1;
 	settledTurns?: readonly Readonly<SemanticTurnSettlementV1>[];
+	inferMissingTurns?: boolean;
 	readMessage(entryId: string): AgentMessage | undefined;
 }
 
 export function buildMessageRenderProjection(
 	options: BuildMessageRenderProjectionOptions,
 ): Readonly<MessageRenderProjectionV1> {
-	const members = attachCompletedTurns(options.members, options.readMessage, options.settledTurns ?? []).map(
-		(member) =>
-			Object.freeze({
-				...member,
-				...(member.role === "user" && member.completedTurn
-					? { completedTurn: Object.freeze({ ...member.completedTurn }) }
-					: {}),
-			}),
+	const members = attachCompletedTurns(
+		options.members,
+		options.readMessage,
+		options.settledTurns ?? [],
+		options.inferMissingTurns ?? false,
+	).map((member) =>
+		Object.freeze({
+			...member,
+			...(member.role === "user" && member.completedTurn
+				? { completedTurn: Object.freeze({ ...member.completedTurn }) }
+				: {}),
+		}),
 	);
 	return Object.freeze({
 		producerSessionId: options.producerSessionId,
@@ -64,6 +69,7 @@ function attachCompletedTurns(
 	members: readonly MessageRenderProjectionMemberV1[],
 	readMessage: (entryId: string) => AgentMessage | undefined,
 	settledTurns: readonly Readonly<SemanticTurnSettlementV1>[],
+	inferMissingTurns: boolean,
 ): MessageRenderProjectionMemberV1[] {
 	const completedMembers = [...members];
 	const settledAssistantByUser = new Map<string, string>();
@@ -86,9 +92,13 @@ function attachCompletedTurns(
 		if (userIndex === undefined || userEntryId === undefined || userPreview === undefined) return;
 		const user = completedMembers[userIndex];
 		if (user?.role !== "user" || user.completedTurn) return;
+		if (conflictedUsers.has(userEntryId)) return;
 		const settledAssistantEntryId = settledAssistantByUser.get(userEntryId);
-		if (!settledAssistantEntryId) return;
-		const terminalAssistant = terminalAssistants.find((assistant) => assistant.entryId === settledAssistantEntryId);
+		const terminalAssistant = settledAssistantEntryId
+			? terminalAssistants.find((assistant) => assistant.entryId === settledAssistantEntryId)
+			: inferMissingTurns
+				? terminalAssistants.at(-1)
+				: undefined;
 		if (!terminalAssistant) return;
 		const completedTurn: MessageRenderCompletedTurnV1 = {
 			assistantEntryId: terminalAssistant.entryId,

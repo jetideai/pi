@@ -1199,14 +1199,18 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	appendSemanticTurnSettlements(): readonly Readonly<SemanticTurnSettlementV1>[] {
+	appendSemanticTurnSettlements(runBaseEntryId: string | null): readonly Readonly<SemanticTurnSettlementV1>[] {
+		const branch = this.getBranch();
+		const runBaseIndex = runBaseEntryId === null ? -1 : branch.findIndex((entry) => entry.id === runBaseEntryId);
+		if (runBaseEntryId !== null && runBaseIndex < 0) return Object.freeze([]);
+
 		const candidates: SemanticTurnSettlementV1[] = [];
 		let userEntryId: string | undefined;
 		let assistantEntryId: string | undefined;
 		const collect = (): void => {
 			if (userEntryId && assistantEntryId) candidates.push({ userEntryId, assistantEntryId });
 		};
-		for (const entry of this.getBranch()) {
+		for (const entry of branch.slice(runBaseIndex + 1)) {
 			if (entry.type !== "message") continue;
 			if (entry.message.role === "user") {
 				collect();
@@ -1280,24 +1284,7 @@ export class SessionManager {
 				}),
 			);
 		}
-		const assistantByUser = new Map<string, string>();
-		const conflictedUsers = new Set<string>();
-		for (const settlement of settlements) {
-			const existing = assistantByUser.get(settlement.userEntryId);
-			if (existing && existing !== settlement.assistantEntryId) {
-				conflictedUsers.add(settlement.userEntryId);
-			} else if (!existing) {
-				assistantByUser.set(settlement.userEntryId, settlement.assistantEntryId);
-			}
-		}
-		const uniqueUsers = new Set<string>();
-		return Object.freeze(
-			settlements.filter((settlement) => {
-				if (conflictedUsers.has(settlement.userEntryId) || uniqueUsers.has(settlement.userEntryId)) return false;
-				uniqueUsers.add(settlement.userEntryId);
-				return true;
-			}),
-		);
+		return Object.freeze(settlements);
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */

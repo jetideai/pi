@@ -351,6 +351,27 @@ describe("AgentSession prompt characterization", () => {
 		});
 	});
 
+	it("does not backfill an unmarked legacy turn after a new prompt settles", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const legacyUserId = harness.sessionManager.appendMessage({
+			role: "user",
+			content: "Legacy question",
+			timestamp: Date.now(),
+		});
+		harness.sessionManager.appendMessage(fauxAssistantMessage("Legacy answer"));
+		harness.setResponses([fauxAssistantMessage("Current answer")]);
+
+		await harness.session.prompt("Current question");
+
+		const settlements = harness.sessionManager.getSemanticTurnSettlements();
+		expect(settlements).toHaveLength(1);
+		expect(settlements[0]?.userEntryId).not.toBe(legacyUserId);
+		const currentUser = harness.sessionManager.getEntry(settlements[0]!.userEntryId);
+		expect(currentUser).toMatchObject({ type: "message", message: { role: "user" } });
+		expect(currentUser?.type === "message" ? getMessageText(currentUser.message) : "").toBe("Current question");
+	});
+
 	it.each([
 		null,
 		false,

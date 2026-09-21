@@ -163,13 +163,16 @@ describe("completed transcript projection", () => {
 		).toEqual([externalInitiator, secondOrigin, undefined]);
 	});
 
-	it("fails closed without one unambiguous settlement fact", () => {
+	it("infers only unmarked turns and keeps conflicting evidence closed", () => {
 		const messages = new Map<string, AgentMessage>([
 			["user-a", user],
 			["assistant-a", assistant],
 			["assistant-b", { ...assistant, content: [{ type: "text" as const, text: "Later" }] }],
 		]);
-		const build = (settledTurns: Array<{ userEntryId: string; assistantEntryId: string }>) =>
+		const build = (
+			settledTurns: Array<{ userEntryId: string; assistantEntryId: string }>,
+			inferMissingTurns: boolean,
+		) =>
 			buildMessageRenderProjection({
 				producerSessionId: "session-a",
 				renderScopeId: "scope-a",
@@ -180,16 +183,63 @@ describe("completed transcript projection", () => {
 				],
 				mode: "replace",
 				settledTurns,
+				inferMissingTurns,
 				readMessage: (entryId) => messages.get(entryId),
 			});
 
-		expect(build([]).members[0]).not.toHaveProperty("completedTurn");
+		expect(build([], false).members[0]).not.toHaveProperty("completedTurn");
+		expect(build([], true).members[0]).toMatchObject({
+			completedTurn: { assistantEntryId: "assistant-b", assistantPreview: "Later" },
+		});
 		expect(
-			build([
-				{ userEntryId: "user-a", assistantEntryId: "assistant-a" },
-				{ userEntryId: "user-a", assistantEntryId: "assistant-b" },
-			]).members[0],
+			build(
+				[
+					{ userEntryId: "user-a", assistantEntryId: "assistant-a" },
+					{ userEntryId: "user-a", assistantEntryId: "assistant-b" },
+				],
+				true,
+			).members[0],
 		).not.toHaveProperty("completedTurn");
+	});
+
+	it("keeps an exact terminal while inferring a later missing turn", () => {
+		const messages = new Map<string, AgentMessage>([
+			["user-a", user],
+			["assistant-a", assistant],
+			["assistant-later", { ...assistant, content: [{ type: "text" as const, text: "Later A" }] }],
+			["user-b", { ...user, content: "Second question" }],
+			["assistant-b", { ...assistant, content: [{ type: "text" as const, text: "Answer B" }] }],
+			["user-c", { ...user, content: "Incomplete question" }],
+			["assistant-pending", { ...assistant, stopReason: "pending" }],
+		]);
+		const projection = buildMessageRenderProjection({
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			members: [
+				{ entryId: "user-a", blockId: "user-a", role: "user" },
+				{ entryId: "assistant-a", blockId: "assistant-a", role: "assistant" },
+				{ entryId: "assistant-later", blockId: "assistant-later", role: "assistant" },
+				{ entryId: "user-b", blockId: "user-b", role: "user" },
+				{ entryId: "assistant-b", blockId: "assistant-b", role: "assistant" },
+				{ entryId: "user-c", blockId: "user-c", role: "user" },
+				{ entryId: "assistant-pending", blockId: "assistant-pending", role: "assistant" },
+			],
+			mode: "replace",
+			settledTurns: [{ userEntryId: "user-a", assistantEntryId: "assistant-a" }],
+			inferMissingTurns: true,
+			readMessage: (entryId) => messages.get(entryId),
+		});
+
+		expect(
+			projection.members.flatMap((member) =>
+				member.role === "user" && member.completedTurn
+					? [[member.entryId, member.completedTurn.assistantEntryId]]
+					: [],
+			),
+		).toEqual([
+			["user-a", "assistant-a"],
+			["user-b", "assistant-b"],
+		]);
 	});
 
 	it.each([

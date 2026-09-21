@@ -2254,6 +2254,7 @@ export class InteractiveMode {
 		members: readonly MessageRenderProjectionMemberV1[],
 		requestedMode: "append" | "replace",
 		finalized?: MessageRenderFinalizedEntryV1,
+		inferMissingTurns: boolean = false,
 	): void {
 		const observers = this.getMessageRenderProjectionObserversV1();
 		if (observers.length === 0) return;
@@ -2267,6 +2268,7 @@ export class InteractiveMode {
 			mode,
 			...(finalized ? { finalized } : {}),
 			settledTurns: this.messageRenderSettlements ?? [],
+			inferMissingTurns,
 			readMessage: (entryId) => {
 				if (finalized?.entryId === entryId) return finalized.message;
 				const entry = this.sessionManager.getEntry(entryId);
@@ -4370,7 +4372,7 @@ export class InteractiveMode {
 
 	private renderSessionItems(
 		items: readonly RenderSessionItem[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
+		options: { updateFooter?: boolean; populateHistory?: boolean; inferMissingTurns?: boolean } = {},
 	): void {
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
@@ -4389,7 +4391,7 @@ export class InteractiveMode {
 			}
 			this.messageRenderMembers = members;
 			this.messageRenderSettlements = this.sessionManager.getSemanticTurnSettlements();
-			this.publishMessageRenderProjectionV1(members, "replace");
+			this.publishMessageRenderProjectionV1(members, "replace", undefined, options.inferMissingTurns ?? false);
 		}
 		const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
@@ -4515,7 +4517,7 @@ export class InteractiveMode {
 	 */
 	private renderSessionEntries(
 		entries: SessionEntry[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
+		options: { updateFooter?: boolean; populateHistory?: boolean; inferMissingTurns?: boolean } = {},
 	): void {
 		const items = entries.flatMap((entry): RenderSessionItem[] => {
 			if (entry.type === "custom") {
@@ -4610,6 +4612,7 @@ export class InteractiveMode {
 		this.renderSessionEntries(entries, {
 			updateFooter: true,
 			populateHistory: true,
+			inferMissingTurns: true,
 		});
 		this.renderProjectTrustWarningIfNeeded();
 
