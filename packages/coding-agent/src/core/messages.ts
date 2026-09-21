@@ -64,9 +64,10 @@ export function requireExternalAgentOriginV1(value: unknown): Readonly<ExternalA
 export function isTerminalAssistantMessage(message: AgentMessage | undefined): message is AssistantMessage {
 	return (
 		message?.role === "assistant" &&
-		message.stopReason !== "pending" &&
-		message.stopReason !== "toolUse" &&
-		message.stopReason !== "deferred"
+		(message.stopReason === "stop" ||
+			message.stopReason === "length" ||
+			message.stopReason === "error" ||
+			message.stopReason === "aborted")
 	);
 }
 

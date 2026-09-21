@@ -286,6 +286,27 @@ describe("completed transcript projection", () => {
 		},
 	);
 
+	it.each([undefined, "unknown"])("does not infer malformed assistant stop reason %s", (stopReason) => {
+		const malformedAssistant = { ...assistant, stopReason } as unknown as AgentMessage;
+		const messages = new Map<string, AgentMessage>([
+			["user-a", user],
+			["assistant-malformed", malformedAssistant],
+		]);
+		const projection = buildMessageRenderProjection({
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			members: [
+				{ entryId: "user-a", blockId: "user-a", role: "user" },
+				{ entryId: "assistant-malformed", blockId: "assistant-malformed", role: "assistant" },
+			],
+			mode: "replace",
+			inferMissingTurns: true,
+			readMessage: (entryId) => messages.get(entryId),
+		});
+
+		expect(projection.members[0]).not.toHaveProperty("completedTurn");
+	});
+
 	it("selects the successful assistant after a failed retry attempt", () => {
 		const failedAssistant = {
 			...assistant,
