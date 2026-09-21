@@ -359,6 +359,38 @@ describe("InteractiveMode response projection", () => {
 		expect(projections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
 	});
 
+	it("infers only from the selected branch", () => {
+		const sessionManager = SessionManager.inMemory();
+		const userId = sessionManager.appendMessage(user);
+		const otherBranchAssistantId = sessionManager.appendMessage(
+			assistant([{ type: "text", text: "Other branch answer" }], "stop"),
+		);
+		sessionManager.appendCustomEntry(SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE, {
+			userEntryId: userId,
+			assistantEntryId: otherBranchAssistantId,
+		});
+		sessionManager.branch(userId);
+		const selectedAssistantId = sessionManager.appendMessage(
+			assistant([{ type: "text", text: "Selected branch answer" }], "stop"),
+		);
+		const { mode, projections } = modeHarness(sessionManager);
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+			options?: { inferMissingTurns?: boolean },
+		) => void;
+
+		renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries(), { inferMissingTurns: true });
+
+		expect(sessionManager.getSemanticTurnSettlements()).toEqual([]);
+		expect(projections.at(-1)?.members[0]).toMatchObject({
+			completedTurn: {
+				assistantEntryId: selectedAssistantId,
+				assistantPreview: "Selected branch answer",
+			},
+		});
+	});
+
 	it("persists exact settlements only for roots created by the current run", () => {
 		const sessionManager = SessionManager.inMemory();
 		const legacyUserId = sessionManager.appendMessage(user);

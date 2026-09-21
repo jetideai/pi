@@ -342,7 +342,7 @@ describe("completed transcript projection", () => {
 				{ entryId: "user-next", blockId: "user-next", role: "user" },
 			],
 			mode: "replace",
-			settledTurns: [{ userEntryId: "user-a", assistantEntryId: "assistant-terminal" }],
+			inferMissingTurns: true,
 			readMessage: (entryId) => messages.get(entryId),
 		});
 
