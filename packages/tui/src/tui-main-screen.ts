@@ -142,6 +142,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private maxLinesRendered = 0;
 	private previousViewportTop = 0;
 	private pendingSemanticRedraw: SemanticRedrawRequest | undefined;
+	private deferredResizeGrid: string | undefined;
 
 	override requestSemanticRedraw(request: SemanticRedrawRequest): boolean {
 		if (
@@ -183,6 +184,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	}
 
 	protected override resetRenderState(): void {
+		this.deferredResizeGrid = undefined;
 		this.previousLines = [];
 		this.previousWidth = -1;
 		this.previousHeight = -1;
@@ -277,6 +279,23 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
+		const resizeGrid = `${width}x${height}`;
+		const pendingMatchesGrid =
+			this.pendingSemanticRedraw?.columns === width && this.pendingSemanticRedraw.rows === height;
+		if (
+			process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED === "1" &&
+			(widthChanged || (heightChanged && !isTermuxSession())) &&
+			!pendingMatchesGrid &&
+			this.deferredResizeGrid !== resizeGrid
+		) {
+			// Give the redraw request one I/O turn before an unmarked replay blocks input.
+			this.deferredResizeGrid = resizeGrid;
+			setImmediate(() => {
+				if (!this.stopped) this.requestRender();
+			});
+			return;
+		}
+		this.deferredResizeGrid = undefined;
 		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
 		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
 		let viewportTop = prevViewportTop;

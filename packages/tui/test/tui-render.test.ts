@@ -507,6 +507,52 @@ describe("TUI Kitty image cleanup", () => {
 });
 
 describe("TUI resize handling", () => {
+	it("lets a queued semantic redraw tag the width-change replay", async () => {
+		await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: "1" }, async () => {
+			const terminal = new LoggingVirtualTerminal(40, 10);
+			const tui: TUI = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			component.lines = ["A long transcript line", "The final line"];
+			tui.addChild(component);
+			tui.start();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+			const initialRedraws = tui.fullRedraws;
+
+			terminal.resize(50, 10);
+			tui.renderNow();
+			assert.equal(tui.fullRedraws, initialRedraws, "the resize must leave the replay available for its request");
+			assert.equal(tui.requestSemanticRedraw({ requestId: "resize-1", columns: 50, rows: 10 }), true);
+			tui.renderNow();
+
+			assert.equal(tui.fullRedraws, initialRedraws + 1);
+			assert.match(terminal.getWrites(), /8:resize-1;6:resize;/);
+			assert.equal(terminal.getWrites().split("\x1b[2J").length - 1, 1);
+			tui.stop();
+		});
+	});
+
+	it("replays an ordinary resize if no semantic redraw request arrives", async () => {
+		await withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: "1" }, async () => {
+			const terminal = new LoggingVirtualTerminal(40, 10);
+			const tui: TUI = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			component.lines = ["Original content"];
+			tui.addChild(component);
+			tui.start();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+			const initialRedraws = tui.fullRedraws;
+
+			terminal.resize(50, 10);
+			await terminal.waitForRender();
+			assert.equal(tui.fullRedraws, initialRedraws + 1);
+			assert.match(terminal.getWrites(), /Original content/);
+			assert.ok(!terminal.getWrites().includes("jetideai.redraw.v1"));
+			tui.stop();
+		});
+	});
+
 	it("triggers full re-render when terminal height changes", async () => {
 		await withEnv({ TERMUX_VERSION: undefined }, async () => {
 			const terminal = new VirtualTerminal(40, 10);
