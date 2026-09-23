@@ -4,6 +4,9 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAndLoadExtensions } from "../src/core/extensions/loader.ts";
+import { CustomMessageComponent } from "../src/modes/interactive/components/custom-message.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -67,6 +70,40 @@ describe("extensions discovery", () => {
 
 		expect(result.errors).toHaveLength(0);
 		expect(result.extensions).toHaveLength(1);
+	});
+
+	it("loads a standard Markdown renderer through the coding-agent TUI subpath", async () => {
+		fs.writeFileSync(
+			path.join(extensionsDir, "tui-renderer.ts"),
+			`
+				import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+				import { Box, Markdown } from "@earendil-works/pi-coding-agent/tui";
+			export default function(pi) {
+					pi.registerMessageRenderer("tui-proof", (message) => {
+						const card = new Box(1, 1);
+						card.addChild(new Markdown(message.content, 0, 0, getMarkdownTheme()));
+						return card;
+					});
+				}
+			`,
+		);
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+		expect(result.errors).toEqual([]);
+		initTheme("dark");
+		const renderer = result.extensions[0]?.messageRenderers.get("tui-proof");
+		expect(renderer).toBeDefined();
+		const message = {
+			role: "custom" as const,
+			customType: "tui-proof",
+			content: "# Heading\n\n- **Done**",
+			display: true,
+			timestamp: Date.now(),
+		};
+		const rendered = new CustomMessageComponent(message, renderer).render(60).map(stripAnsi).join("\n");
+		expect(rendered).toContain("Heading");
+		expect(rendered).toContain("Done");
+		expect(rendered).not.toContain("# Heading");
+		expect(rendered).not.toContain("Hidden routing");
 	});
 
 	it("keeps the type-only pi-ai OAuth compatibility barrel resolvable", async () => {

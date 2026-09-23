@@ -87,6 +87,10 @@ function getAliases(): Record<string, string> {
 	};
 
 	const piCodingAgentEntry = packageIndex;
+	const piCodingAgentTuiEntry = resolveWorkspaceOrImport(
+		"coding-agent/dist/tui.js",
+		"@earendil-works/pi-coding-agent/tui",
+	);
 	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
 	// Extensions resolve the pi-ai root to the compat entrypoint (a strict
@@ -100,6 +104,7 @@ function getAliases(): Record<string, string> {
 	);
 
 	_aliases = {
+		"@earendil-works/pi-coding-agent/tui": piCodingAgentTuiEntry,
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui": piTuiEntry,

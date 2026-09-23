@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { VIRTUAL_MODULES } from "../src/core/extensions/virtual-modules.ts";
 import { getMarkdownTheme } from "../src/index.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import type { Component, DefaultTextStyle, MarkdownOptions, MarkdownTheme } from "../src/tui.ts";
@@ -15,6 +16,7 @@ describe("coding-agent TUI entry point", () => {
 			import: "./dist/tui.js",
 		});
 		expect(Object.keys(tui).sort()).toEqual(["Box", "Markdown", "Spacer", "Text"]);
+		expect(VIRTUAL_MODULES["@earendil-works/pi-coding-agent/tui"]).toMatchObject(tui);
 		initTheme("dark");
 		const markdownTheme: MarkdownTheme = getMarkdownTheme();
 		const style: DefaultTextStyle = {};
