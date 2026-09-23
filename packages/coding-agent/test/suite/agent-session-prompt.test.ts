@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, InputEvent } from "../../src/core/extensions/index.ts";
 import type { ExternalAgentOriginV1 } from "../../src/core/messages.ts";
 import type { PromptTemplate } from "../../src/core/prompt-templates.ts";
@@ -20,11 +20,25 @@ function createDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) 
 	return { promise, resolve };
 }
 
+const processImage = vi.hoisted(() =>
+	vi.fn(async (_bytes: Uint8Array, mimeType: string) => ({
+		ok: true as const,
+		data: Buffer.from("normalized").toString("base64"),
+		mimeType,
+		hints: [],
+	})),
+);
+vi.mock("../../src/utils/image-process.ts", () => ({ processImage }));
+
+const TINY_PNG_BASE64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
 describe("AgentSession prompt characterization", () => {
 	const harnesses: Harness[] = [];
 	const tempDirs: string[] = [];
 
 	afterEach(() => {
+		processImage.mockClear();
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
@@ -44,8 +58,8 @@ describe("AgentSession prompt characterization", () => {
 
 		await harness.session.prompt("hi");
 
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-		expect(getMessageText(harness.session.messages[0]!)).toBe("hi");
+		expect(harness.session.messages.map((message) => message.role)).toEqual(["system", "user", "assistant"]);
+		expect(getMessageText(harness.session.messages[1]!)).toBe("hi");
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
@@ -77,13 +91,14 @@ describe("AgentSession prompt characterization", () => {
 
 		expect(toolRuns).toEqual(["hello"]);
 		expect(harness.session.messages.map((message) => message.role)).toEqual([
+			"system",
 			"user",
 			"assistant",
 			"toolResult",
 			"assistant",
 		]);
-		expect(harness.session.messages[2]?.role).toBe("toolResult");
-		expect(harness.session.messages[3]?.role).toBe("assistant");
+		expect(harness.session.messages[3]?.role).toBe("toolResult");
+		expect(harness.session.messages[4]?.role).toBe("assistant");
 	});
 
 	it("executes multiple tool calls from one response and continues with a single follow-up response", async () => {
@@ -131,7 +146,7 @@ describe("AgentSession prompt characterization", () => {
 
 		harness.setResponses([
 			(context) => {
-				const user = context.messages.find((message) => message.role === "user");
+				const user = context.messages.filter((message) => message.role === "user").at(-1);
 				sawImage =
 					user?.role === "user" &&
 					typeof user.content !== "string" &&
@@ -151,6 +166,44 @@ describe("AgentSession prompt characterization", () => {
 		});
 
 		expect(sawImage).toBe(true);
+	});
+
+	// Regression test for https://github.com/earendil-works/pi/issues/9631
+	it("uses the model selected by before_agent_start for image normalization", async () => {
+		let strictModel: Model<string> | undefined;
+		const harness = await createHarness({
+			models: [{ id: "wide" }, { id: "strict" }],
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async () => {
+						if (!strictModel) throw new Error("Expected strict model");
+						await pi.setModel(strictModel);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		strictModel = harness.getModel("strict");
+		if (!strictModel) throw new Error("Expected strict model");
+		const resizeOptions = { maxWidth: 1000, maxHeight: 1000, maxBytes: 500000, jpegQuality: 70 };
+		strictModel.inputLimits = { images: { resize: resizeOptions } };
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		await harness.session.prompt("inspect", {
+			images: [{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
+		});
+
+		expect(harness.session.model?.id).toBe("strict");
+		expect(processImage).toHaveBeenCalledWith(expect.any(Uint8Array), "image/png", {
+			autoResizeImages: true,
+			resizeOptions,
+		});
+		const userMessage = harness.session.messages.find((message) => message.role === "user");
+		expect(userMessage?.content).toContainEqual({
+			type: "image",
+			data: Buffer.from("normalized").toString("base64"),
+			mimeType: "image/png",
+		});
 	});
 
 	it("expands skill commands before sending the prompt", async () => {
@@ -187,7 +240,7 @@ describe("AgentSession prompt characterization", () => {
 
 		harness.setResponses([
 			(context) => {
-				const user = context.messages.find((message) => message.role === "user");
+				const user = context.messages.filter((message) => message.role === "user").at(-1);
 				expandedPrompt = user ? getMessageText(user) : "";
 				return fauxAssistantMessage("ok");
 			},
@@ -222,7 +275,7 @@ describe("AgentSession prompt characterization", () => {
 
 		harness.setResponses([
 			(context) => {
-				const user = context.messages.find((message) => message.role === "user");
+				const user = context.messages.filter((message) => message.role === "user").at(-1);
 				expandedPrompt = user ? getMessageText(user) : "";
 				return fauxAssistantMessage("ok");
 			},
@@ -255,7 +308,7 @@ describe("AgentSession prompt characterization", () => {
 
 		harness.setResponses([
 			(context) => {
-				const user = context.messages.find((message) => message.role === "user");
+				const user = context.messages.filter((message) => message.role === "user").at(-1);
 				expandedPrompt = user ? getMessageText(user) : "";
 				return fauxAssistantMessage("ok");
 			},
@@ -334,9 +387,9 @@ describe("AgentSession prompt characterization", () => {
 		(initiator as { agentId: string }).agentId = "mutated";
 		await sent;
 
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-		expect(getMessageText(harness.session.messages[0]!)).toBe("from extension");
-		expect(harness.session.messages[0]).toMatchObject({
+		expect(harness.session.messages.map((message) => message.role)).toEqual(["system", "user", "assistant"]);
+		expect(getMessageText(harness.session.messages[1]!)).toBe("from extension");
+		expect(harness.session.messages[1]).toMatchObject({
 			initiator: { namespace: "agent-hub", agentId: "agent-a", registrationGeneration: 4 },
 		});
 		const settlement = harness.sessionManager.getSemanticTurnSettlements();

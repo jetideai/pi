@@ -153,7 +153,9 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		await runtimeHost.session.prompt("same prompt");
 		unsubscribe();
 
-		const branchMessages = runtimeHost.session.sessionManager.getBranch().filter((entry) => entry.type === "message");
+		const branchMessages = runtimeHost.session.sessionManager
+			.getBranch()
+			.filter((entry) => entry.type === "message" && entry.message.role !== "system");
 		const userStarts = extensionEvents.filter(
 			(event): event is MessageStartEvent => event.type === "message_start" && event.message.role === "user",
 		);

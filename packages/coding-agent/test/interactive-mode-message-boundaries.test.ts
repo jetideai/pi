@@ -49,6 +49,7 @@ describe("InteractiveMode message boundaries", () => {
 			outputPad: 1,
 			streamingComponent: undefined,
 			streamingMessage: undefined,
+			settingsManager: { getShowCacheMissNotices: () => false },
 			session: { retryAttempt: 0 },
 			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 			getMarkdownTransformers: () => [],
@@ -64,7 +65,7 @@ describe("InteractiveMode message boundaries", () => {
 				}
 			).addMessageToChat,
 			updatePendingMessagesDisplay: vi.fn(),
-			maybeShowAssistantDiagnostics: vi.fn(),
+			maybeShowThinkingDropNotice: vi.fn(),
 			maybeShowCacheMissNotice: vi.fn(),
 		};
 		Object.setPrototypeOf(mode, InteractiveMode.prototype);
@@ -119,7 +120,7 @@ describe("InteractiveMode message boundaries", () => {
 				},
 			],
 			updateEditorBorderColor: vi.fn(),
-			maybeShowAssistantDiagnostics: vi.fn(),
+			maybeShowThinkingDropNotice: vi.fn(),
 			maybeShowCacheMissNotice: vi.fn(),
 			addMessageToChat: (
 				InteractiveMode.prototype as unknown as { addMessageToChat: (message: unknown, options?: unknown) => void }
@@ -221,7 +222,7 @@ describe("InteractiveMode message boundaries", () => {
 			],
 			getRegisteredToolDefinition: () => definition,
 			updateEditorBorderColor: vi.fn(),
-			maybeShowAssistantDiagnostics: vi.fn(),
+			maybeShowThinkingDropNotice: vi.fn(),
 			maybeShowCacheMissNotice: vi.fn(),
 			addMessageToChat: Reflect.get(InteractiveMode.prototype, "addMessageToChat"),
 			renderSessionItems: Reflect.get(InteractiveMode.prototype, "renderSessionItems"),
@@ -305,7 +306,7 @@ describe("InteractiveMode message boundaries", () => {
 			],
 			getRegisteredToolDefinition: () => definition,
 			updatePendingMessagesDisplay: vi.fn(),
-			maybeShowAssistantDiagnostics: vi.fn(),
+			maybeShowThinkingDropNotice: vi.fn(),
 			maybeShowCacheMissNotice: vi.fn(),
 		};
 		Object.setPrototypeOf(mode, InteractiveMode.prototype);

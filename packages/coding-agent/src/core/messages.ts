@@ -235,6 +235,8 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						],
 						timestamp: m.timestamp,
 					};
+				case "system":
+					return m;
 				case "user":
 					return {
 						role: "user",

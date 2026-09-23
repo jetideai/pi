@@ -43,16 +43,19 @@ type RenderSessionContextThis = {
 		getImageWidthCells(): number;
 		getShowCacheMissNotices(): boolean;
 	};
-	sessionManager: { getCwd(): string; getEntries(): SessionEntry[] };
+	sessionManager: { getCwd(): string; getEntries(): SessionEntry[]; getSessionId(): string };
 	session: { retryAttempt: number; modelRegistry: { find(provider: string, modelId: string): undefined } };
 	toolOutputExpanded: boolean;
 	isInitialized: boolean;
 	updateEditorBorderColor(): void;
 	getMessageRenderProjectionObserversV1(): [];
+	getMessageRenderBoundaryDecoratorsV1(): [];
+	getMessageRenderSourcePointDecoratorsV1(): [];
 	getMessageRenderBoundarySelectorsV3(): [];
+	messageRenderScopeId: string;
 	getToolExecutionPresentationSelectorsV1(): [];
 	getRegisteredToolDefinition(toolName: string): undefined;
-	maybeShowAssistantDiagnostics(message: AssistantMessage): void;
+	maybeShowThinkingDropNotice(message: AssistantMessage): void;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 	renderSessionItems: RenderSessionItems;
 };
@@ -77,16 +80,19 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 			getImageWidthCells: () => 60,
 			getShowCacheMissNotices: () => false,
 		},
-		sessionManager: { getCwd: () => process.cwd(), getEntries: () => [] },
+		sessionManager: { getCwd: () => process.cwd(), getEntries: () => [], getSessionId: () => "test-session" },
 		session: { retryAttempt: 0, modelRegistry: { find: () => undefined } },
 		toolOutputExpanded: false,
 		isInitialized: true,
 		updateEditorBorderColor: vi.fn(),
 		getMessageRenderProjectionObserversV1: () => [],
+		getMessageRenderBoundaryDecoratorsV1: () => [],
+		getMessageRenderSourcePointDecoratorsV1: () => [],
 		getMessageRenderBoundarySelectorsV3: () => [],
+		messageRenderScopeId: "test-scope",
 		getToolExecutionPresentationSelectorsV1: () => [],
 		getRegisteredToolDefinition: (_toolName: string) => undefined,
-		maybeShowAssistantDiagnostics: vi.fn(),
+		maybeShowThinkingDropNotice: vi.fn(),
 		renderSessionItems: (InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItems })
 			.renderSessionItems,
 		addMessageToChat(message: AgentMessage) {
