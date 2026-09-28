@@ -33,6 +33,7 @@ import type {
 	MessageRenderSourcePointDecoratorV1,
 	ProviderConfig,
 	RegisteredCommand,
+	ReplayTransactionProviderV1,
 	ToolDefinition,
 	ToolExecutionPresentationSelectorV1,
 } from "./types.ts";
@@ -357,6 +358,11 @@ function createExtensionAPI(
 		registerMessageRenderSourcePointDecoratorV1(decorator: MessageRenderSourcePointDecoratorV1): void {
 			assertActive();
 			extension.messageRenderSourcePointDecoratorV1 = decorator;
+		},
+
+		registerReplayTransactionProviderV1(provider: ReplayTransactionProviderV1): void {
+			assertActive();
+			extension.replayTransactionProviderV1 = provider;
 		},
 
 		registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void {

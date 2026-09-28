@@ -4,7 +4,11 @@ import type {
 	MessageRenderBoundarySelectorV3,
 } from "../../../core/extensions/types.ts";
 import { theme } from "../theme/theme.ts";
-import { decorateMessageRenderV2, selectMessageRenderBoundaryDecoratorsV3 } from "./message-render-boundaries.ts";
+import {
+	decorateMessageRenderV2,
+	type SourcePointRevisions,
+	selectMessageRenderBoundaryDecoratorsV3,
+} from "./message-render-boundaries.ts";
 import type { ToolExecutionComponent } from "./tool-execution.ts";
 
 export interface ToolGroupMemberV1 {
@@ -20,6 +24,7 @@ export interface ToolGroupOptions {
 	producerSessionId?: string;
 	renderScopeId?: string;
 	semanticSelectorsV3?: readonly MessageRenderBoundarySelectorV3[];
+	sourcePointRevisions?: SourcePointRevisions;
 }
 
 export class ToolGroupMemberComponent implements Component {
@@ -58,9 +63,11 @@ export class ToolGroupComponent extends Container {
 	private readonly semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[];
 	private readonly members: ToolGroupMemberV1[] = [];
 	private readonly memberComponents: ToolExecutionComponent[] = [];
+	private readonly sourcePointRevisions?: SourcePointRevisions;
 
 	constructor(options: ToolGroupOptions) {
 		super();
+		this.sourcePointRevisions = options.sourcePointRevisions;
 		this.groupId = options.groupId;
 		this.ownerEntryId = options.ownerEntryId;
 		this.closed = options.closed ?? false;
@@ -99,6 +106,15 @@ export class ToolGroupComponent extends Container {
 	}
 
 	override render(width: number): string[] {
+		const revision =
+			this.memberComponents.length >= 2
+				? (this.sourcePointRevisions?.resolve(
+						`${this.groupId}#0`,
+						this.memberComponents.map((member) => member.sourcePointPresentation).join("\n"),
+						this.closed,
+					) ?? 1)
+				: 1;
+		for (const member of this.memberComponents) member.setSourcePointRevision(revision);
 		const body = super.render(width);
 		if (!this.closed || this.members.length < 2 || this.semanticDecoratorsV2.length === 0) return body;
 		const header = truncateToWidth(
@@ -110,6 +126,7 @@ export class ToolGroupComponent extends Container {
 			entryId: this.groupId,
 			...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
 			decorators: this.semanticDecoratorsV2,
+			sourcePointRevision: revision,
 		});
 	}
 

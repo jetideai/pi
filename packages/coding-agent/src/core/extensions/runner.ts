@@ -72,6 +72,7 @@ import type {
 	RegisteredCommand,
 	RegisteredTool,
 	ReplacedSessionContext,
+	ReplayTransactionProviderV1,
 	ResolvedCommand,
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
@@ -789,6 +790,10 @@ export class ExtensionRunner {
 		return this.extensions.flatMap((extension) =>
 			extension.messageRenderSourcePointDecoratorV1 ? [extension.messageRenderSourcePointDecoratorV1] : [],
 		);
+	}
+
+	getReplayTransactionProviderV1(): ReplayTransactionProviderV1 | undefined {
+		return this.extensions.find((extension) => extension.replayTransactionProviderV1)?.replayTransactionProviderV1;
 	}
 
 	getToolExecutionPresentationSelectorsV1(): ToolExecutionPresentationSelectorV1[] {

@@ -39,6 +39,7 @@ import {
 	hyperlink,
 	Markdown,
 	matchesKey,
+	type ReplayTransactionProvider,
 	Spacer,
 	setCapabilityOverrides,
 	setKeybindings,
@@ -168,6 +169,7 @@ import { FooterComponent, formatTokens } from "./components/footer.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
+import { SourcePointRevisions } from "./components/message-render-boundaries.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import {
 	type AuthSelectorProvider,
@@ -551,6 +553,10 @@ export class InteractiveMode {
 	private messageRenderSettlements: readonly Readonly<SemanticTurnSettlementV1>[] = [];
 	private publishedMessageRenderProjection: Readonly<MessageRenderProjectionV1> | undefined;
 	private messageRenderScopeId = crypto.randomUUID();
+	private readonly sourcePointRevisions = new SourcePointRevisions();
+	private readonly replayTransactionProvider: ReplayTransactionProvider = {
+		capture: () => this.session.extensionRunner?.getReplayTransactionProviderV1?.()?.capture(),
+	};
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -687,6 +693,7 @@ export class InteractiveMode {
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+		this.ui.setReplayTransactionProvider(this.replayTransactionProvider);
 		this.headerContainer = new Container();
 		this.loadedResourcesContainer = new Container();
 		this.chatContainer = new Container();
@@ -972,6 +979,7 @@ export class InteractiveMode {
 			fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 		});
 		nextUi.setClearOnShrink(clearOnShrink);
+		nextUi.setReplayTransactionProvider(this.replayTransactionProvider);
 		nextUi.onDebug = onDebug;
 		if (nextUi instanceof TuiMainScreen && this.mainScreenRenderState) {
 			nextUi.restoreRenderState(this.mainScreenRenderState);
@@ -1140,6 +1148,7 @@ export class InteractiveMode {
 
 		// Set up theme file watcher
 		onThemeChange(() => {
+			this.ui.markReplayCause("theme");
 			this.ui.invalidate();
 			this.updateEditorBorderColor();
 			this.ui.requestRender();
@@ -2298,6 +2307,7 @@ export class InteractiveMode {
 				renderScopeId: this.messageRenderScopeId,
 				semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
 				sourcePointDecoratorsV1: this.getMessageRenderSourcePointDecoratorsV1(),
+				sourcePointRevisions: this.sourcePointRevisions,
 				toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 			},
 			this.getRegisteredToolDefinition(content.name),
@@ -2317,6 +2327,7 @@ export class InteractiveMode {
 	): MessageRenderProjectionMemberV1[] {
 		const composition = composeAssistantResponse(entryId, message, streaming, this.hideThinkingBlock);
 		container.clear();
+		let visualIndex = 0;
 		for (const atom of composition.atoms) {
 			if (atom.type === "visual") {
 				container.addChild(
@@ -2331,6 +2342,8 @@ export class InteractiveMode {
 							entryId,
 							decorators: this.getMessageRenderBoundaryDecoratorsV1(),
 							sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
+							sourcePointRevisions: this.sourcePointRevisions,
+							revisionKey: `${entryId}#${visualIndex++}`,
 						},
 					),
 				);
@@ -2349,6 +2362,7 @@ export class InteractiveMode {
 				producerSessionId: this.sessionManager.getSessionId(),
 				renderScopeId: this.messageRenderScopeId,
 				semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
+				sourcePointRevisions: this.sourcePointRevisions,
 			});
 			for (const [index, component] of components.entries()) {
 				const call = atom.calls[index]!;
@@ -3949,6 +3963,7 @@ export class InteractiveMode {
 								entryId: event.entryId,
 								decorators: this.getMessageRenderBoundaryDecoratorsV1(),
 								sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
+								sourcePointRevisions: this.sourcePointRevisions,
 							},
 						);
 						this.chatContainer.addChild(this.streamingComponent);
@@ -4006,6 +4021,7 @@ export class InteractiveMode {
 										producerSessionId: this.sessionManager.getSessionId(),
 										renderScopeId: this.messageRenderScopeId,
 										sourcePointDecoratorsV1: this.getMessageRenderSourcePointDecoratorsV1(),
+										sourcePointRevisions: this.sourcePointRevisions,
 										toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
 									},
 									this.getRegisteredToolDefinition(content.name),
@@ -4234,6 +4250,7 @@ export class InteractiveMode {
 					this.releaseActiveAgentRunRendering();
 					this.releaseSettledMessageRendering();
 					this.startFreshMessageRenderScope();
+					this.ui.markReplayCause("compact");
 					this.chatContainer.clear();
 					this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
 					this.addMessageToChat(
@@ -4469,6 +4486,7 @@ export class InteractiveMode {
 											entryId: options.entryId,
 											decorators: this.getMessageRenderBoundaryDecoratorsV1(),
 											sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
+											sourcePointRevisions: this.sourcePointRevisions,
 										}
 									: undefined,
 							);
@@ -4485,6 +4503,7 @@ export class InteractiveMode {
 										entryId: options.entryId,
 										decorators: this.getMessageRenderBoundaryDecoratorsV1(),
 										sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
+										sourcePointRevisions: this.sourcePointRevisions,
 									}
 								: undefined,
 						);
@@ -4509,6 +4528,7 @@ export class InteractiveMode {
 								entryId: options.entryId,
 								decorators: this.getMessageRenderBoundaryDecoratorsV1(),
 								sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
+								sourcePointRevisions: this.sourcePointRevisions,
 							}
 						: undefined,
 				);
@@ -4615,6 +4635,7 @@ export class InteractiveMode {
 												producerSessionId: this.sessionManager.getSessionId(),
 												renderScopeId: this.messageRenderScopeId,
 												sourcePointDecoratorsV1: this.getMessageRenderSourcePointDecoratorsV1(),
+												sourcePointRevisions: this.sourcePointRevisions,
 											}
 										: {}),
 									toolExecutionPresentationSelectorsV1: this.getToolExecutionPresentationSelectorsV1(),
@@ -6957,6 +6978,7 @@ export class InteractiveMode {
 			this.releaseActiveAgentRunRendering();
 			this.releaseSettledMessageRendering();
 			this.startFreshMessageRenderScope();
+			this.ui.markReplayCause("reload");
 			this.rebuildChatFromMessages();
 			chatRestoredBeforeSessionStart = true;
 		};
@@ -6969,6 +6991,7 @@ export class InteractiveMode {
 				this.releaseActiveAgentRunRendering();
 				this.releaseSettledMessageRendering();
 				this.startFreshMessageRenderScope();
+				this.ui.markReplayCause("reload");
 				this.rebuildChatFromMessages();
 			} else {
 				restoreChatBeforeSessionStart();

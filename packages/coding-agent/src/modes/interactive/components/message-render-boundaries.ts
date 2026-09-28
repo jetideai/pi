@@ -18,6 +18,30 @@ export interface MessageRenderBoundaryOptionsV1 {
 	ownerEntryId?: string;
 	decorators: readonly MessageRenderBoundaryDecoratorV1[];
 	sourcePointDecorators?: readonly MessageRenderSourcePointDecoratorV1[];
+	sourcePointRevisions?: SourcePointRevisions;
+	revisionKey?: string;
+}
+
+export class SourcePointRevisions {
+	private readonly entries = new Map<string, { revision: number; presentation: string; settled: boolean }>();
+
+	resolve(key: string, presentation: string, settled: boolean): number {
+		const entry = this.entries.get(key);
+		if (!entry) {
+			this.entries.set(key, { revision: 1, presentation, settled });
+			return 1;
+		}
+		if (entry.settled && entry.presentation !== presentation) entry.revision += 1;
+		entry.presentation = presentation;
+		entry.settled = settled;
+		return entry.revision;
+	}
+}
+
+export function sourcePointPresentation(...parts: readonly string[]): string {
+	const hash = createHash("sha256");
+	for (const part of parts) hash.update(`${Buffer.byteLength(part, "utf8")}:${part}`);
+	return hash.digest("hex");
 }
 
 export type MessageRenderSourceOwnerV1 = Omit<
@@ -137,6 +161,7 @@ export function decorateMessageRenderV2(
 		ownerEntryId?: string;
 		beginRow?: number;
 		decorators: readonly MessageRenderBoundaryDecoratorV2[];
+		sourcePointRevision?: number;
 	},
 ): string[] {
 	if (!options || options.decorators.length === 0 || lines.length === 0) return lines;
@@ -146,6 +171,7 @@ export function decorateMessageRenderV2(
 		role,
 		state: "expanded" as const,
 		outputPad,
+		sourcePointRevision: options.sourcePointRevision ?? 1,
 		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
 		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
 	});
@@ -177,6 +203,7 @@ export function decorateMessageRender(
 	state: "streaming" | "final",
 	outputPad: number,
 	options?: MessageRenderBoundaryOptionsV1,
+	sourcePointRevision = 1,
 ): string[] {
 	if (!options || options.decorators.length === 0 || lines.length === 0) return lines;
 
@@ -186,6 +213,7 @@ export function decorateMessageRender(
 		role,
 		state,
 		outputPad,
+		sourcePointRevision,
 		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
 		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
 	});

@@ -7,6 +7,7 @@ import {
 	createMessageRenderSourcePointDecorator,
 	decorateMessageRender,
 	type MessageRenderBoundaryOptionsV1,
+	sourcePointPresentation,
 } from "./message-render-boundaries.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -22,6 +23,7 @@ export class UserMessageComponent extends Container {
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
 	private renderBoundaryOptions?: MessageRenderBoundaryOptionsV1;
+	private sourcePointRevision = 1;
 
 	constructor(
 		text: string,
@@ -46,6 +48,12 @@ export class UserMessageComponent extends Container {
 
 	private rebuild(): void {
 		this.clear();
+		this.sourcePointRevision =
+			this.renderBoundaryOptions?.sourcePointRevisions?.resolve(
+				this.renderBoundaryOptions.revisionKey ?? `${this.renderBoundaryOptions.entryId}#0`,
+				sourcePointPresentation(this.text),
+				true,
+			) ?? 1;
 		const contentBox = new Box(this.outputPad, 1, (content: string) => theme.bg("userMessageBg", content));
 		const transform = createMarkdownTransform("user", false, this.markdownTransformers);
 		let sourceUnchanged = true;
@@ -59,6 +67,7 @@ export class UserMessageComponent extends Container {
 						: {}),
 					role: "user",
 					state: "final",
+					sourcePointRevision: this.sourcePointRevision,
 				},
 				0,
 				this.renderBoundaryOptions.sourcePointDecorators,
@@ -73,6 +82,7 @@ export class UserMessageComponent extends Container {
 						: {}),
 					role: "user",
 					state: "final",
+					sourcePointRevision: this.sourcePointRevision,
 				},
 				0,
 				this.text,
@@ -113,6 +123,14 @@ export class UserMessageComponent extends Container {
 
 		lines[0] = OSC133_ZONE_START + lines[0];
 		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
-		return decorateMessageRender(lines, width, "user", "final", this.outputPad, this.renderBoundaryOptions);
+		return decorateMessageRender(
+			lines,
+			width,
+			"user",
+			"final",
+			this.outputPad,
+			this.renderBoundaryOptions,
+			this.sourcePointRevision,
+		);
 	}
 }

@@ -58,6 +58,7 @@ describe("UserMessageComponent", () => {
 				role: "user",
 				state: "final",
 				outputPad: 1,
+				sourcePointRevision: 1,
 				allocatedColumns: { start: 0, end: 20 },
 				stockRows: { start: 0, end: stock.length },
 			},

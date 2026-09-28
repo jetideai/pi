@@ -50,7 +50,9 @@ import { keyHint } from "./keybinding-hints.ts";
 import {
 	createMessageRenderSourcePointDecorator,
 	decorateMessageRenderV2,
+	type SourcePointRevisions,
 	selectMessageRenderBoundaryDecoratorsV3,
+	sourcePointPresentation,
 } from "./message-render-boundaries.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
@@ -64,6 +66,7 @@ export interface ToolExecutionOptions {
 	renderScopeId?: string;
 	semanticSelectorsV3?: readonly MessageRenderBoundarySelectorV3[];
 	sourcePointDecoratorsV1?: readonly MessageRenderSourcePointDecoratorV1[];
+	sourcePointRevisions?: SourcePointRevisions;
 	toolExecutionPresentationSelectorsV1?: readonly ToolExecutionPresentationSelectorV1[];
 }
 
@@ -109,6 +112,9 @@ export class ToolExecutionComponent extends Container {
 	private readonly sourcePointDecoratorsV1: readonly MessageRenderSourcePointDecoratorV1[];
 	private sourcePointFoldRole: "tool" | "tool-group" = "tool";
 	private sourcePointFoldBlockId: string;
+	private readonly sourcePointRevisions?: SourcePointRevisions;
+	private sourcePointRevision = 1;
+	private presentation = "";
 	private decoratedResultText?: Text;
 
 	constructor(
@@ -129,6 +135,7 @@ export class ToolExecutionComponent extends Container {
 		this.producerSessionId = options.producerSessionId;
 		this.renderScopeId = options.renderScopeId;
 		this.sourcePointDecoratorsV1 = options.sourcePointDecoratorsV1 ?? [];
+		this.sourcePointRevisions = options.sourcePointRevisions;
 		this.sourcePointFoldBlockId = toolCallId;
 		this.semanticDecoratorsV2 =
 			options.producerSessionId && options.renderScopeId
@@ -317,6 +324,16 @@ export class ToolExecutionComponent extends Container {
 		this.invalidate();
 	}
 
+	get sourcePointPresentation(): string {
+		return this.presentation;
+	}
+
+	setSourcePointRevision(revision: number): void {
+		if (this.sourcePointFoldRole !== "tool-group" || revision === this.sourcePointRevision) return;
+		this.sourcePointRevision = revision;
+		this.updateResultSourcePoints();
+	}
+
 	setSourcePointContainingFold(blockId: string, role: "tool" | "tool-group"): void {
 		this.sourcePointFoldBlockId = blockId;
 		this.sourcePointFoldRole = role;
@@ -389,6 +406,7 @@ export class ToolExecutionComponent extends Container {
 				...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
 				beginRow: offset + headerRow,
 				decorators: this.semanticDecoratorsV2,
+				sourcePointRevision: this.sourcePointRevision,
 			});
 		} catch {
 			return lines;
@@ -579,6 +597,15 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateResultSourcePoints(): void {
+		this.presentation = `${this.expanded}:${this.isPartial}:${sourcePointPresentation(this.getTextOutput())}`;
+		if (this.sourcePointFoldRole === "tool") {
+			this.sourcePointRevision =
+				this.sourcePointRevisions?.resolve(
+					`${this.sourcePointFoldBlockId}#0`,
+					this.presentation,
+					!this.isPartial,
+				) ?? 1;
+		}
 		if (
 			this.isPartial ||
 			!this.expanded ||
@@ -602,6 +629,7 @@ export class ToolExecutionComponent extends Container {
 					renderScopeId: this.renderScopeId,
 					blockId: this.sourcePointFoldBlockId,
 					foldRole: this.sourcePointFoldRole,
+					sourcePointRevision: this.sourcePointRevision,
 				},
 				0,
 				this.sourcePointDecoratorsV1,

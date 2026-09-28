@@ -8,6 +8,7 @@ import {
 	createMessageRenderSourcePointDecorator,
 	decorateMessageRender,
 	type MessageRenderBoundaryOptionsV1,
+	sourcePointPresentation,
 } from "./message-render-boundaries.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -28,6 +29,7 @@ export class AssistantMessageComponent extends Container {
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
 	private isStreaming = false;
+	private sourcePointRevision = 1;
 	private thinkingVisibilityOverrides = new Map<number, boolean>();
 
 	constructor(
@@ -101,12 +103,21 @@ export class AssistantMessageComponent extends Container {
 			this.isStreaming ? "streaming" : "final",
 			this.outputPad,
 			this.renderBoundaryOptions,
+			this.sourcePointRevision,
 		);
 	}
 
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
 		this.lastMessage = message;
 		this.isStreaming = isStreaming;
+		this.sourcePointRevision =
+			this.renderBoundaryOptions?.sourcePointRevisions?.resolve(
+				this.renderBoundaryOptions.revisionKey ?? `${this.renderBoundaryOptions.entryId}#0`,
+				isStreaming
+					? "streaming"
+					: sourcePointPresentation(...message.content.map((block) => (block.type === "text" ? block.text : ""))),
+				!isStreaming,
+			) ?? 1;
 
 		// Clear content container
 		this.contentContainer.clear();
@@ -138,6 +149,7 @@ export class AssistantMessageComponent extends Container {
 								: {}),
 							role: "assistant",
 							state: "final",
+							sourcePointRevision: this.sourcePointRevision,
 						},
 						i,
 						this.renderBoundaryOptions.sourcePointDecorators,
@@ -153,6 +165,7 @@ export class AssistantMessageComponent extends Container {
 								: {}),
 							role: "assistant",
 							state: "final",
+							sourcePointRevision: this.sourcePointRevision,
 						},
 						i,
 						source,

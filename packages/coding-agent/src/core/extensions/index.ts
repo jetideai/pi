@@ -156,6 +156,10 @@ export type {
 	RegisteredCommand,
 	RegisteredTool,
 	ReplacedSessionContext,
+	ReplayCaptureV1,
+	ReplayCauseV1,
+	ReplayTransactionProviderV1,
+	ReplayTransactionV1,
 	ResolvedCommand,
 	// Events - Resources
 	ResourcesDiscoverEvent,

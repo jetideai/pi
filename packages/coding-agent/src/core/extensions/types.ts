@@ -43,6 +43,10 @@ import type {
 	KeyId,
 	OverlayHandle,
 	OverlayOptions,
+	ReplayCapture,
+	ReplayCause,
+	ReplayTransaction,
+	ReplayTransactionProvider,
 	TUI,
 } from "@earendil-works/pi-tui";
 import type { Static, TSchema } from "typebox";
@@ -1425,6 +1429,8 @@ export interface MessageRenderBoundaryContextV1 {
 	state: "streaming" | "final" | "expanded";
 	/** Horizontal padding configured by the outputPad setting for this render. */
 	outputPad: number;
+	/** Increases for this block when its final or expanded source-point presentation changes. */
+	sourcePointRevision: number;
 	allocatedColumns: Readonly<MessageRenderRangeV1>;
 	stockRows: Readonly<MessageRenderRangeV1>;
 }
@@ -1473,11 +1479,19 @@ export interface MessageRenderSourcePointV1 {
 	pointKind: "line" | "offset" | "block";
 	sourceOffset: number;
 	contentDigest: string;
+	sourcePointRevision: number;
 	producerSessionId?: string;
 	renderScopeId?: string;
 	blockId?: string;
 	foldRole?: "tool" | "tool-group";
 }
+
+export type ReplayCauseV1 = ReplayCause;
+export type ReplayTransactionV1 = ReplayTransaction;
+export type ReplayCaptureV1 = ReplayCapture;
+
+/** Supplies the zero-column begin and end controls of one complete replay, captured once for each render. */
+export type ReplayTransactionProviderV1 = ReplayTransactionProvider;
 
 /** Return one zero-column terminal control for a stable source point. */
 export type MessageRenderSourcePointDecoratorV1 = (point: Readonly<MessageRenderSourcePointV1>) => string | undefined;
@@ -1733,6 +1747,9 @@ export interface ExtensionAPI {
 
 	/** Decorate stable points in built-in pre-wrap display text with zero-column terminal controls. */
 	registerMessageRenderSourcePointDecoratorV1(decorator: MessageRenderSourcePointDecoratorV1): void;
+
+	/** Wrap every complete interactive replay in one pair of zero-column terminal controls. */
+	registerReplayTransactionProviderV1(provider: ReplayTransactionProviderV1): void;
 
 	/** Select the presentation for renderer-owned Tool Call sections. */
 	registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void;
@@ -2178,6 +2195,7 @@ export interface Extension {
 	messageRenderBoundaryDecoratorV1?: MessageRenderBoundaryDecoratorV1;
 	messageRenderBoundarySelectorV3?: MessageRenderBoundarySelectorV3;
 	messageRenderSourcePointDecoratorV1?: MessageRenderSourcePointDecoratorV1;
+	replayTransactionProviderV1?: ReplayTransactionProviderV1;
 	toolExecutionPresentationSelectorV1?: ToolExecutionPresentationSelectorV1;
 	messageRenderProjectionObserverV1?: MessageRenderProjectionObserverV1;
 	entryRenderers?: Map<string, EntryRenderer>;
