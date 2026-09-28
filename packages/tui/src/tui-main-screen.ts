@@ -142,6 +142,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private maxLinesRendered = 0;
 	private previousViewportTop = 0;
 	private pendingSemanticRedraw: SemanticRedrawRequest | undefined;
+	private replayGeneration: string | undefined;
 	private deferredResizeGrid: string | undefined;
 
 	override requestSemanticRedraw(request: SemanticRedrawRequest): boolean {
@@ -276,6 +277,13 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	protected doRender(): void {
 		if (this.stopped) return;
 		const replay = this.replayTransactionProvider?.capture();
+		if (replay?.generation !== this.replayGeneration) {
+			this.replayGeneration = replay?.generation;
+			if (this.previousLines.length > 0) {
+				this.invalidate();
+				this.resetRenderState();
+			}
+		}
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
@@ -284,7 +292,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		const pendingMatchesGrid =
 			this.pendingSemanticRedraw?.columns === width && this.pendingSemanticRedraw.rows === height;
 		if (
-			replay === undefined &&
+			replay?.transaction === undefined &&
 			process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED === "1" &&
 			(widthChanged || (heightChanged && !isTermuxSession())) &&
 			!pendingMatchesGrid &&
@@ -326,7 +334,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean, cause: ReplayCause, semanticRedraw?: SemanticRedrawRequest): void => {
 			this.fullRedrawCount += 1;
-			const transaction = replay?.transaction(markedCause ?? cause, width, height);
+			const transaction = replay?.transaction?.(markedCause ?? cause, width, height);
 			if (transaction !== undefined) {
 				this.terminal.write(transaction.begin);
 			} else if (semanticRedraw !== undefined) {

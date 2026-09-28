@@ -436,7 +436,8 @@ export interface ReplayTransaction {
 }
 
 export interface ReplayCapture {
-	transaction(cause: ReplayCause, columns: number, rows: number): ReplayTransaction | undefined;
+	generation: string;
+	transaction?(cause: ReplayCause, columns: number, rows: number): ReplayTransaction | undefined;
 }
 
 export interface ReplayTransactionProvider {
