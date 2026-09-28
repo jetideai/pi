@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
-import { type SemanticRedrawRequest, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
+import { type ReplayCause, type SemanticRedrawRequest, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
@@ -275,6 +275,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 	protected doRender(): void {
 		if (this.stopped) return;
+		const replay = this.replayTransactionProvider?.capture();
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
@@ -283,6 +284,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		const pendingMatchesGrid =
 			this.pendingSemanticRedraw?.columns === width && this.pendingSemanticRedraw.rows === height;
 		if (
+			replay === undefined &&
 			process.env.JETIDEAI_SEMANTIC_LAYERS_ENABLED === "1" &&
 			(widthChanged || (heightChanged && !isTermuxSession())) &&
 			!pendingMatchesGrid &&
@@ -296,6 +298,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			return;
 		}
 		this.deferredResizeGrid = undefined;
+		const markedCause = this.pendingReplayCause;
+		this.pendingReplayCause = undefined;
 		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
 		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
 		let viewportTop = prevViewportTop;
@@ -320,9 +324,12 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		newLines = this.applyLineResets(newLines);
 
 		// Helper to clear scrollback and viewport and render all new lines
-		const fullRender = (clear: boolean, semanticRedraw?: SemanticRedrawRequest): void => {
+		const fullRender = (clear: boolean, cause: ReplayCause, semanticRedraw?: SemanticRedrawRequest): void => {
 			this.fullRedrawCount += 1;
-			if (semanticRedraw !== undefined) {
+			const transaction = replay?.transaction(markedCause ?? cause, width, height);
+			if (transaction !== undefined) {
+				this.terminal.write(transaction.begin);
+			} else if (semanticRedraw !== undefined) {
 				this.terminal.write(jetideaiResizeRedrawMarker("begin", semanticRedraw.requestId, width, height));
 			}
 			const output = new BoundedTerminalWriter((data) => this.terminal.write(data));
@@ -361,7 +368,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			const bufferLength = Math.max(height, newLines.length);
 			this.previousViewportTop = Math.max(0, bufferLength - height);
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			if (semanticRedraw !== undefined) {
+			if (transaction !== undefined) {
+				this.terminal.write(transaction.end);
+			} else if (semanticRedraw !== undefined) {
 				this.terminal.write(jetideaiResizeRedrawMarker("end", semanticRedraw.requestId, width, height));
 			}
 			this.previousLines = newLines;
@@ -383,21 +392,21 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		if (semanticRedraw?.columns === width && semanticRedraw.rows === height) {
 			this.pendingSemanticRedraw = undefined;
 			logRedraw(`requested semantic redraw (${semanticRedraw.requestId})`);
-			fullRender(true, semanticRedraw);
+			fullRender(true, "resize", semanticRedraw);
 			return;
 		}
 
 		// First render - just output everything without clearing (assumes clean screen)
 		if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
 			logRedraw("first render");
-			fullRender(false);
+			fullRender(false, "first-load");
 			return;
 		}
 
 		// Width changes always need a full re-render because wrapping changes.
 		if (widthChanged) {
 			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
-			fullRender(true);
+			fullRender(true, this.previousWidth === -1 ? "rebuild" : "resize");
 			return;
 		}
 
@@ -406,7 +415,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// In that environment, a full redraw causes the entire history to replay on every toggle.
 		if (heightChanged && !isTermuxSession()) {
 			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
-			fullRender(true);
+			fullRender(true, "resize");
 			return;
 		}
 
@@ -415,7 +424,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Configurable via setClearOnShrink()
 		if (this.getClearOnShrink() && newLines.length < this.maxLinesRendered && !this.hasOverlayEntries) {
 			logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
-			fullRender(true);
+			fullRender(true, "rebuild");
 			return;
 		}
 
@@ -466,7 +475,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				const targetRow = Math.max(0, newLines.length - 1);
 				if (targetRow < prevViewportTop) {
 					logRedraw(`deleted lines moved viewport up (${targetRow} < ${prevViewportTop})`);
-					fullRender(true);
+					fullRender(true, "rebuild");
 					return;
 				}
 				const lineDiff = computeLineDiff(targetRow);
@@ -477,7 +486,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				const extraLines = this.previousLines.length - newLines.length;
 				if (extraLines > height) {
 					logRedraw(`extraLines > height (${extraLines} > ${height})`);
-					fullRender(true);
+					fullRender(true, "rebuild");
 					return;
 				}
 				const clearStartOffset = newLines.length === 0 ? 0 : 1;
@@ -510,7 +519,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// If the first changed line is above the previous viewport, we need a full redraw.
 		if (firstChanged < prevViewportTop) {
 			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
-			fullRender(true);
+			fullRender(true, "rebuild");
 			return;
 		}
 
@@ -558,7 +567,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 					logRedraw(
 						`kitty image pre-clear would scroll (${imageStartScreenRow} + ${imageReservedRows} > ${height})`,
 					);
-					fullRender(true);
+					fullRender(true, "rebuild");
 					return;
 				}
 

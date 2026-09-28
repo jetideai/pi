@@ -428,6 +428,21 @@ export interface SemanticRedrawRequest {
 	rows: number;
 }
 
+export type ReplayCause = "first-load" | "reload" | "compact" | "theme" | "resize" | "rebuild";
+
+export interface ReplayTransaction {
+	begin: string;
+	end: string;
+}
+
+export interface ReplayCapture {
+	transaction(cause: ReplayCause, columns: number, rows: number): ReplayTransaction | undefined;
+}
+
+export interface ReplayTransactionProvider {
+	capture(): ReplayCapture | undefined;
+}
+
 export interface TUI extends Component {
 	readonly mode: TuiMode;
 	children: Component[];
@@ -450,6 +465,8 @@ export interface TUI extends Component {
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
 	requestSemanticRedraw(request: SemanticRedrawRequest): boolean;
+	setReplayTransactionProvider(provider: ReplayTransactionProvider | undefined): void;
+	markReplayCause(cause: ReplayCause): void;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
@@ -486,6 +503,8 @@ export abstract class TuiBase extends Container implements TUI {
 	private clearOnShrink = false;
 	protected fullRedrawCount = 0;
 	protected stopped = false;
+	protected replayTransactionProvider: ReplayTransactionProvider | undefined;
+	protected pendingReplayCause: ReplayCause | undefined;
 	private pendingOsc11BackgroundReplies = 0;
 	private pendingOsc11BackgroundQueries: PendingOsc11BackgroundQuery[] = [];
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
@@ -969,6 +988,14 @@ export abstract class TuiBase extends Container implements TUI {
 
 	requestSemanticRedraw(_request: SemanticRedrawRequest): boolean {
 		return false;
+	}
+
+	setReplayTransactionProvider(provider: ReplayTransactionProvider | undefined): void {
+		this.replayTransactionProvider = provider;
+	}
+
+	markReplayCause(cause: ReplayCause): void {
+		this.pendingReplayCause = cause;
 	}
 
 	private requestImmediateRender(): void {
