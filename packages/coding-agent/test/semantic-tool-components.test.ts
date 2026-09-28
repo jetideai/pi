@@ -234,6 +234,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 			handleMouse: vi.fn(() => ({ handled: true as const })),
 			setSemanticBoundariesEnabled: vi.fn(),
 			setSourcePointContainingFold: vi.fn(),
+			setSourcePointRevision: vi.fn(),
 		});
 		const first = makeChild(["first-0", "first-1"]);
 		const second = makeChild(["second-0"]);

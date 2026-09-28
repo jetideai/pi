@@ -115,6 +115,7 @@ type ReloadCommandContext = {
 	ui: {
 		setFocus: (component: unknown) => void;
 		requestRender: (force?: boolean) => void;
+		markReplayCause: (cause: string) => void;
 		setShowHardwareCursor: (enabled: boolean) => void;
 		setClearOnShrink: (enabled: boolean) => void;
 	};
@@ -189,6 +190,7 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 		ui: {
 			setFocus: () => {},
 			requestRender: () => {},
+			markReplayCause: () => {},
 			setShowHardwareCursor: () => {},
 			setClearOnShrink: () => {},
 			...overrides.ui,
@@ -469,6 +471,7 @@ describe("regression #5943: session_start transient UI", () => {
 			},
 			ui: {
 				requestRender: (force) => events.push(`render:${force === true}`),
+				markReplayCause: () => {},
 			},
 			releaseActiveAgentRunRendering: () => events.push("release-active-render"),
 			releaseSettledMessageRendering: () => events.push("release-settled-render"),
@@ -546,6 +549,7 @@ describe("regression #5943: session_start transient UI", () => {
 				setFocus: (component) => {
 					focused = component;
 				},
+				markReplayCause: () => {},
 			},
 			rebuildChatFromMessages: () => {
 				chatRestored = true;

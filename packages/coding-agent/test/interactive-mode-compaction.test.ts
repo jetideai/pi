@@ -155,7 +155,7 @@ describe("InteractiveMode compaction events", () => {
 			clearStatusIndicator: vi.fn(),
 			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
 			settingsManager: { getShowTerminalProgress: () => false },
-			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
+			ui: { requestRender: vi.fn(), markReplayCause: vi.fn(), terminal: { setProgress: vi.fn() } },
 		};
 
 		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
@@ -224,7 +224,7 @@ describe("InteractiveMode compaction events", () => {
 			showWorkingStatusIndicator: vi.fn(),
 			clearStatusIndicator: vi.fn(),
 			settingsManager: { getShowTerminalProgress: () => true },
-			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
+			ui: { requestRender: vi.fn(), markReplayCause: vi.fn(), terminal: { setProgress: vi.fn() } },
 		};
 		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 			this: typeof fakeThis,
