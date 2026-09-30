@@ -1484,6 +1484,14 @@ export interface MessageRenderSourcePointV1 {
 	renderScopeId?: string;
 	blockId?: string;
 	foldRole?: "tool" | "tool-group";
+	/** "call" marks a point in the body of a tool call. A point without it is in the other source Text. */
+	sourcePart?: "call";
+}
+
+/** Options of one source point decorator registration. */
+export interface MessageRenderSourcePointRegistrationV1 {
+	/** Accept the points of tool call bodies. Without it, the decorator gets no point with a source part. */
+	callSourcePoints?: boolean;
 }
 
 export type ReplayCauseV1 = ReplayCause;
@@ -1746,7 +1754,10 @@ export interface ExtensionAPI {
 	registerMessageRenderBoundarySelectorV3(selector: MessageRenderBoundarySelectorV3): void;
 
 	/** Decorate stable points in built-in pre-wrap display text with zero-column terminal controls. */
-	registerMessageRenderSourcePointDecoratorV1(decorator: MessageRenderSourcePointDecoratorV1): void;
+	registerMessageRenderSourcePointDecoratorV1(
+		decorator: MessageRenderSourcePointDecoratorV1,
+		registration?: MessageRenderSourcePointRegistrationV1,
+	): void;
 
 	/** Wrap every complete interactive replay in one pair of zero-column terminal controls. */
 	registerReplayTransactionProviderV1(provider: ReplayTransactionProviderV1): void;

@@ -254,7 +254,9 @@ describe("source point revisions", () => {
 		const collapsed = await h.frame();
 		for (const key of groupKeys) {
 			const own = collapsed.markers.filter((e) => e.key === key);
-			expect(own.map((e) => e.phase)).toEqual(["begin", "body", "end"]);
+			const initialMarks = initial.markers.filter((e) => e.key === key && e.phase === "mark").length;
+			expect(own.filter((e) => e.phase !== "mark").map((e) => e.phase)).toEqual(["begin", "body", "end"]);
+			expect(own.filter((e) => e.phase === "mark").length).toBeLessThan(initialMarks);
 			expect(own.every((e) => e.revision === 2)).toBe(true);
 		}
 
@@ -358,8 +360,8 @@ describe("source point revisions", () => {
 			const reexpanded = revisions((await h.frame()).markers);
 
 			expect(expanded.size).toBeGreaterThan(0);
-			expect(collapsed.size).toBe(0);
-			expect(Math.min(...reexpanded)).toBeGreaterThan(Math.max(...expanded));
+			expect(Math.min(...collapsed)).toBeGreaterThan(Math.max(...expanded));
+			expect(Math.min(...reexpanded)).toBeGreaterThan(Math.max(...collapsed));
 		},
 	);
 

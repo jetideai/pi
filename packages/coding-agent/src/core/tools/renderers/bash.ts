@@ -6,7 +6,7 @@
  * tool definition, so the tool's public shape is unchanged.
  */
 
-import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
 import { theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
@@ -130,12 +130,27 @@ function rebuildBashResultRenderComponent(
 	}
 }
 
-/** Shell renderers are shared by bash and powershell, which differ only in the prompt they display. */
-export function createShellRenderers(prompt: string): Pick<
+const shellRenderers = new Map<string, ReturnType<typeof buildShellRenderers>>();
+
+/**
+ * Shell renderers are shared by bash and powershell, which differ only in the prompt they display.
+ * One prompt gets one renderer set, so a tool definition and the built-in renderers share identity.
+ */
+export function createShellRenderers(prompt: string): ReturnType<typeof buildShellRenderers> {
+	let renderers = shellRenderers.get(prompt);
+	if (!renderers) {
+		renderers = buildShellRenderers(prompt);
+		shellRenderers.set(prompt, renderers);
+	}
+	return renderers;
+}
+
+function buildShellRenderers(prompt: string): Pick<
 	ToolDefinition<any, any>,
 	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
 > & {
 	semanticSourceTextRenderer: ToolDefinition<any, any>["renderResult"];
+	getRenderCallSourceText: (component: Component) => Text | undefined;
 } {
 	const renderers: Pick<
 		ToolDefinition<any, any>,
@@ -183,5 +198,9 @@ export function createShellRenderers(prompt: string): Pick<
 			return component;
 		},
 	};
-	return { ...renderers, semanticSourceTextRenderer: renderers.renderResult };
+	return {
+		...renderers,
+		semanticSourceTextRenderer: renderers.renderResult,
+		getRenderCallSourceText: (component) => (component instanceof SectionedToolCallHeader ? component : undefined),
+	};
 }

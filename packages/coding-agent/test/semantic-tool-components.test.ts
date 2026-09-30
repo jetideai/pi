@@ -116,6 +116,50 @@ function renderEdit(diff: ReturnType<typeof editDiff>, width: number, decorate: 
 	return { rows: component.render(width), points };
 }
 
+function bashComponent(
+	command: string,
+	points: MessageRenderSourcePointV1[],
+	id = "tool-bash",
+	withCallSource = true,
+): ToolExecutionComponent {
+	const renderers = withBuiltInRenderers("bash", createBashToolDefinition(process.cwd()) as unknown as ToolRenderers)!;
+	const component = new ToolExecutionComponent(
+		"bash",
+		id,
+		{ command },
+		{
+			ownerEntryId: "assistant-a",
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			sourcePointDecoratorsV1: [
+				(source: Readonly<MessageRenderSourcePointV1>) => {
+					points.push({ ...source });
+					return EDIT_POINT;
+				},
+			],
+		},
+		withCallSource ? renderers : { ...renderers, getRenderCallSourceText: undefined },
+		{ requestRender() {} } as unknown as TUI,
+		process.cwd(),
+	);
+	component.setExpanded(true);
+	return component;
+}
+
+function renderBashSources(command: string, result: string, width: number, withCallSource = true) {
+	const points: MessageRenderSourcePointV1[] = [];
+	const component = bashComponent(command, points, "tool-bash", withCallSource);
+	component.updateResult({ content: [{ type: "text", text: result }], isError: false });
+	component.render(width);
+	return {
+		call: points.filter((point) => point.sourcePart === "call"),
+		result: points.filter((point) => point.sourcePart === undefined),
+	};
+}
+
+const numbered = (prefix: string, count: number) =>
+	Array.from({ length: count }, (_, index) => `${prefix}-${index}`).join("\n");
+
 describe("semantic Tool Call and Tool Group presentation", () => {
 	beforeAll(() => initTheme("dark"));
 
@@ -224,7 +268,10 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		};
 		makeBash("tool-short", "ok").render(80);
 		expect(
-			points.splice(0).map(({ entryId, pointKind, sourceOffset }) => ({ entryId, pointKind, sourceOffset })),
+			points
+				.splice(0)
+				.filter((point) => point.sourcePart === undefined)
+				.map(({ entryId, pointKind, sourceOffset }) => ({ entryId, pointKind, sourceOffset })),
 		).toEqual([{ entryId: "tool-short", pointKind: "line", sourceOffset: 0 }]);
 		makeBash("tool-a").render(80);
 		const singleton80 = points.splice(0);
@@ -341,13 +388,14 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 			content: [{ type: "text", text: Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n") }],
 			isError: false,
 		});
-		expect(component.render(80).join("")).toContain(EDIT_POINT);
+		component.render(80);
+		expect(points.some((point) => point.sourcePart === undefined)).toBe(true);
 		points.splice(0);
 
 		component.setExpanded(false);
+		component.render(80);
 
-		expect(component.render(80).join("")).not.toContain(EDIT_POINT);
-		expect(points).toEqual([]);
+		expect(points.filter((point) => point.sourcePart === undefined)).toEqual([]);
 	});
 
 	it("marks call-body diff source points of a settled edit whose tool output is not expanded", () => {
@@ -457,6 +505,122 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(member.render(80)).toEqual(childRows.length === 0 ? [] : ["", ...childRows]);
 		expect(component.render).toHaveBeenCalledOnce();
+	});
+
+	it("marks call source points inside a long bash command and keeps its result points", () => {
+		const sources = renderBashSources(numbered("echo command", 40), "done", 80);
+
+		expect(sources.call.filter((point) => point.sourceOffset > 0).length).toBeGreaterThan(0);
+		expect(sources.result.length).toBeGreaterThan(0);
+	});
+
+	it("keeps the result points of a long bash result equal to the points without a call source", () => {
+		const output = numbered("out", 40);
+
+		const both = renderBashSources("echo short", output, 80);
+		const resultOnly = renderBashSources("echo short", output, 80, false);
+
+		expect(both.call.length).toBeGreaterThan(0);
+		expect(resultOnly.call).toEqual([]);
+		expect(both.result.length).toBeGreaterThan(1);
+		expect(both.result).toEqual(resultOnly.result);
+	});
+
+	it("distinguishes identical call and result source text only by the call source part", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const call = new Text("same text", 0, 0);
+		const renderResult = () => new Text("same text", 0, 0);
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-same",
+			{},
+			{
+				ownerEntryId: "assistant-a",
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				sourcePointDecoratorsV1: [
+					(source: Readonly<MessageRenderSourcePointV1>) => {
+						points.push({ ...source });
+						return EDIT_POINT;
+					},
+				],
+			},
+			{
+				renderCall: () => call,
+				getRenderCallSourceText: () => call,
+				renderResult,
+				semanticSourceTextRenderer: renderResult,
+			},
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.setExpanded(true);
+		component.updateResult({ content: [{ type: "text", text: "same text" }], isError: false });
+		component.render(80);
+		const identity = ({ sourcePart: _, ...point }: MessageRenderSourcePointV1) => point;
+		const callPoints = points.filter((point) => point.sourcePart === "call");
+		const resultPoints = points.filter((point) => point.sourcePart === undefined);
+
+		expect(callPoints.length).toBeGreaterThan(0);
+		expect(callPoints.map(identity)).toEqual(resultPoints.map(identity));
+	});
+
+	it("keeps bash call and result source points equal across widths", () => {
+		const command = numbered("echo command", 40);
+		const output = numbered("out", 40);
+
+		expect(renderBashSources(command, output, 80)).toEqual(renderBashSources(command, output, 120));
+	});
+
+	it("keeps bash call source points when the settled result collapses", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = bashComponent(numbered("echo command", 40), points);
+		component.updateResult({ content: [{ type: "text", text: numbered("out", 40) }], isError: false });
+		component.render(80);
+		points.splice(0);
+
+		component.setExpanded(false);
+		component.render(80);
+
+		expect(points.some((point) => point.sourcePart === "call")).toBe(true);
+		expect(points.some((point) => point.sourcePart === undefined)).toBe(false);
+	});
+
+	it("gives bash call and result source points the containing Tool Group fold", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const first = bashComponent("echo first", points, "tool-a");
+		const second = bashComponent("echo second", points, "tool-b");
+		for (const member of [first, second])
+			member.updateResult({ content: [{ type: "text", text: "out" }], isError: false });
+		const group = new ToolGroupComponent({ groupId: "tool-group:assistant-a:tool-a", closed: true });
+		group.addTool(first, { toolName: "bash", toolCallId: "tool-a" });
+		group.addTool(second, { toolName: "bash", toolCallId: "tool-b" });
+
+		group.render(80);
+
+		for (const sourcePart of ["call", undefined]) {
+			expect(points.filter((point) => point.sourcePart === sourcePart)).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						entryId: "tool-a",
+						blockId: "tool-group:assistant-a:tool-a",
+						foldRole: "tool-group",
+					}),
+					expect.objectContaining({
+						entryId: "tool-b",
+						blockId: "tool-group:assistant-a:tool-a",
+						foldRole: "tool-group",
+					}),
+				]),
+			);
+		}
+	});
+
+	it("marks settled edit call body points as call source points", () => {
+		const { points } = renderEdit(editDiff(40, "after"), 80, true);
+
+		expect(points.filter((point) => point.sourceOffset > 0).length).toBeGreaterThan(0);
+		expect(points.filter((point) => point.sourceOffset > 0).every((point) => point.sourcePart === "call")).toBe(true);
 	});
 
 	it("leaves a singleton on its existing Tool Call path", () => {

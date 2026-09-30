@@ -117,7 +117,7 @@ export class ToolExecutionComponent extends Container {
 	private readonly sourcePointRevisions?: SourcePointRevisions;
 	private sourcePointRevision = 1;
 	private presentation = "";
-	private decoratedSourceText?: Text;
+	private decoratedSourceTexts: Text[] = [];
 
 	constructor(
 		toolName: string,
@@ -596,10 +596,10 @@ export class ToolExecutionComponent extends Container {
 		this.updateSourcePoints();
 	}
 
-	/** Decorate one canonical source Text. Use the built-in call body or the eligible result Text. */
+	/** Decorate the built-in call body and the eligible result Text as two sources of one tool. */
 	private updateSourcePoints(): void {
-		this.decoratedSourceText?.setPreWrapDecorator(undefined);
-		this.decoratedSourceText = undefined;
+		for (const text of this.decoratedSourceTexts) text.setPreWrapDecorator(undefined);
+		this.decoratedSourceTexts = [];
 		const callText = this.callRendererComponent
 			? this.toolDefinition?.getRenderCallSourceText?.(this.callRendererComponent)
 			: undefined;
@@ -624,32 +624,32 @@ export class ToolExecutionComponent extends Container {
 		) {
 			return;
 		}
+		const owner = {
+			entryId: this.toolCallId,
+			...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
+			role: "tool" as const,
+			state: "expanded" as const,
+			producerSessionId: this.producerSessionId,
+			renderScopeId: this.renderScopeId,
+			blockId: this.sourcePointFoldBlockId,
+			foldRole: this.sourcePointFoldRole,
+			sourcePointRevision: this.sourcePointRevision,
+		};
 		// The call body renders in full. A collapsed result renders only a preview, so it needs expansion.
-		const text =
-			callText ??
-			(this.expanded && this.toolDefinition?.renderResult === this.toolDefinition?.semanticSourceTextRenderer
+		const resultText =
+			this.expanded && this.toolDefinition?.renderResult === this.toolDefinition?.semanticSourceTextRenderer
 				? findFirstText(this.resultRendererComponent)
-				: undefined);
-		if (!text) return;
-		text.setPreWrapDecorator(
-			createMessageRenderSourcePointDecorator(
-				{
-					entryId: this.toolCallId,
-					...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
-					role: "tool",
-					state: "expanded",
-					producerSessionId: this.producerSessionId,
-					renderScopeId: this.renderScopeId,
-					blockId: this.sourcePointFoldBlockId,
-					foldRole: this.sourcePointFoldRole,
-					sourcePointRevision: this.sourcePointRevision,
-				},
-				0,
-				this.sourcePointDecoratorsV1,
-				true,
-			),
-		);
-		this.decoratedSourceText = text;
+				: undefined;
+		const sources = [
+			...(callText ? [{ text: callText, owner: { ...owner, sourcePart: "call" as const } }] : []),
+			...(resultText && resultText !== callText ? [{ text: resultText, owner }] : []),
+		];
+		for (const { text, owner: sourceOwner } of sources) {
+			text.setPreWrapDecorator(
+				createMessageRenderSourcePointDecorator(sourceOwner, 0, this.sourcePointDecoratorsV1, true),
+			);
+			this.decoratedSourceTexts.push(text);
+		}
 	}
 
 	private getTextOutput(): string {

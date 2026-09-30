@@ -31,6 +31,7 @@ import type {
 	MessageRenderer,
 	MessageRenderProjectionObserverV1,
 	MessageRenderSourcePointDecoratorV1,
+	MessageRenderSourcePointRegistrationV1,
 	ProviderConfig,
 	RegisteredCommand,
 	ReplayTransactionProviderV1,
@@ -355,9 +356,14 @@ function createExtensionAPI(
 			extension.messageRenderBoundarySelectorV3 = selector;
 		},
 
-		registerMessageRenderSourcePointDecoratorV1(decorator: MessageRenderSourcePointDecoratorV1): void {
+		registerMessageRenderSourcePointDecoratorV1(
+			decorator: MessageRenderSourcePointDecoratorV1,
+			registration?: MessageRenderSourcePointRegistrationV1,
+		): void {
 			assertActive();
-			extension.messageRenderSourcePointDecoratorV1 = decorator;
+			extension.messageRenderSourcePointDecoratorV1 = registration?.callSourcePoints
+				? decorator
+				: (point) => (point.sourcePart === undefined ? decorator(point) : undefined);
 		},
 
 		registerReplayTransactionProviderV1(provider: ReplayTransactionProviderV1): void {

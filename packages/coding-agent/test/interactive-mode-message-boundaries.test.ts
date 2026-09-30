@@ -184,7 +184,7 @@ describe("InteractiveMode message boundaries", () => {
 		expectedTool.updateResult(result);
 		const expectedVisible = stripTerminalSequences([...expectedAssistant, ...expectedTool.render(80)].join("\n"));
 		const contexts: MessageRenderBoundaryContextV1[] = [];
-		const points: Array<{ entryId: string; sourceOffset: number }> = [];
+		const points: Array<{ entryId: string; sourceOffset: number; sourcePart?: "call" }> = [];
 		const chatContainer = new Container();
 		const mode = {
 			pendingTools: new Map(),
@@ -215,7 +215,7 @@ describe("InteractiveMode message boundaries", () => {
 				},
 			],
 			getMessageRenderSourcePointDecoratorsV1: () => [
-				(point: { entryId: string; sourceOffset: number }) => {
+				(point: { entryId: string; sourceOffset: number; sourcePart?: "call" }) => {
 					points.push(point);
 					return "\x1b]777;point\x07";
 				},
@@ -248,7 +248,11 @@ describe("InteractiveMode message boundaries", () => {
 				stockRows: { start: 0, end: rendered.length },
 			}),
 		]);
-		expect(points).toEqual([expect.objectContaining({ entryId: "tool-a", sourceOffset: 0 })]);
+		expect(points).toEqual([
+			expect.objectContaining({ entryId: "tool-a", sourceOffset: 0, sourcePart: "call" }),
+			expect.objectContaining({ entryId: "tool-a", sourceOffset: 0 }),
+		]);
+		expect(points[1]?.sourcePart).toBeUndefined();
 	});
 
 	it("keeps a live stock tool inside its assistant parent", async () => {
@@ -263,7 +267,7 @@ describe("InteractiveMode message boundaries", () => {
 			createBashToolDefinition(process.cwd()) as unknown as ToolRenderers,
 		);
 		const contexts: MessageRenderBoundaryContextV1[] = [];
-		const points: Array<{ entryId: string; sourceOffset: number }> = [];
+		const points: Array<{ entryId: string; sourceOffset: number; sourcePart?: "call" }> = [];
 		const chatContainer = new Container();
 		const mode = {
 			isInitialized: true,
@@ -299,7 +303,7 @@ describe("InteractiveMode message boundaries", () => {
 				},
 			],
 			getMessageRenderSourcePointDecoratorsV1: () => [
-				(point: { entryId: string; sourceOffset: number }) => {
+				(point: { entryId: string; sourceOffset: number; sourcePart?: "call" }) => {
 					points.push(point);
 					return "\x1b]777;point\x07";
 				},
@@ -343,6 +347,10 @@ describe("InteractiveMode message boundaries", () => {
 		expect(contexts.at(-1)).toEqual(
 			expect.objectContaining({ entryId: "assistant-live", stockRows: { start: 0, end: rendered.length } }),
 		);
-		expect(points).toEqual([expect.objectContaining({ entryId: "tool-live", sourceOffset: 0 })]);
+		expect(points).toEqual([
+			expect.objectContaining({ entryId: "tool-live", sourceOffset: 0, sourcePart: "call" }),
+			expect.objectContaining({ entryId: "tool-live", sourceOffset: 0 }),
+		]);
+		expect(points[1]?.sourcePart).toBeUndefined();
 	});
 });

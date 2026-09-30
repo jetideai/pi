@@ -134,6 +134,7 @@ export type {
 	MessageRenderRangeV1,
 	MessageRenderRoleV1,
 	MessageRenderSourcePointDecoratorV1,
+	MessageRenderSourcePointRegistrationV1,
 	MessageRenderSourcePointV1,
 	MessageStartEvent,
 	MessageUpdateEvent,
