@@ -50,7 +50,7 @@ function withText(message: AssistantMessage, text: string): AssistantMessage {
 	return { ...message, content: message.content.map((block) => (block.type === "text" ? { ...block, text } : block)) };
 }
 
-function harness(options: { bashTools?: boolean } = {}) {
+function harness(options: { bashTools?: boolean; singleTools?: boolean; toolOutputExpanded?: boolean } = {}) {
 	const boundary: MessageRenderBoundaryDecoratorV1 = (context) => {
 		const key = `${context.role}:${context.entryId}`;
 		return {
@@ -76,17 +76,25 @@ function harness(options: { bashTools?: boolean } = {}) {
 		header: "exact-one-row",
 		settled: "canonical-initial-collapsed",
 	});
+	const kept = new Set<string>();
 	const sessionManager = SessionManager.inMemory();
 	for (const { message } of createSyntheticLongTranscript().messages.slice(0, 9)) {
+		if (options.singleTools && message.role === "assistant") {
+			const first = message.content.find((block) => block.type === "toolCall");
+			if (first?.type === "toolCall") kept.add(first.id);
+		}
+		if (options.singleTools && message.role === "toolResult" && !kept.has(message.toolCallId)) continue;
 		const converted =
 			options.bashTools && message.role === "assistant"
 				? {
 						...message,
-						content: message.content.map((block) =>
-							block.type === "toolCall"
-								? { ...block, name: "bash", arguments: { command: `echo ${block.id}` } }
-								: block,
-						),
+						content: message.content
+							.filter((block) => !options.singleTools || block.type !== "toolCall" || kept.has(block.id))
+							.map((block) =>
+								block.type === "toolCall"
+									? { ...block, name: "bash", arguments: { command: `echo ${block.id}` } }
+									: block,
+							),
 					}
 				: options.bashTools && message.role === "toolResult"
 					? {
@@ -120,7 +128,9 @@ function harness(options: { bashTools?: boolean } = {}) {
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		outputPad: 1,
-		toolOutputExpanded: options.bashTools === true,
+		toolOutputExpanded: options.toolOutputExpanded ?? options.bashTools === true,
+		loadedResourcesContainer: new Container(),
+		showStatus: vi.fn(),
 		streamingComponent: undefined,
 		streamingMessage: undefined,
 		semanticStreamingContainer: undefined,
@@ -171,7 +181,12 @@ function harness(options: { bashTools?: boolean } = {}) {
 	const assistants = () =>
 		components().filter((c): c is AssistantMessageComponent => c instanceof AssistantMessageComponent);
 	const tools = () => components().filter((c): c is ToolExecutionComponent => c instanceof ToolExecutionComponent);
-	return { frame, rebuild, assistants, tools };
+	const setToolsExpanded = Reflect.get(InteractiveMode.prototype, "setToolsExpanded") as (
+		this: typeof mode,
+		expanded: boolean,
+	) => void;
+	const expandTools = (expanded: boolean) => setToolsExpanded.call(mode, expanded);
+	return { frame, rebuild, assistants, tools, expandTools };
 }
 
 function keyOf(component: AssistantMessageComponent): string {
@@ -309,6 +324,44 @@ describe("source point revisions", () => {
 			expect(own.every((e) => e.revision === 3)).toBe(true);
 		}
 	});
+
+	it("marks restored Tool Call result source points after tool output expands", async () => {
+		const h = harness({ bashTools: true, toolOutputExpanded: false });
+		await h.frame();
+
+		h.expandTools(true);
+		const { markers } = await h.frame();
+
+		expect(markers.some((entry) => entry.phase === "mark" && entry.key.startsWith("tool"))).toBe(true);
+	});
+
+	it.each([
+		["grouped", "tool-group", false],
+		["single", "tool", true],
+	] as const)(
+		"follows expand, collapse, and expand of %s restored Tool Calls with new revisions",
+		async (_name, kind, singleTools) => {
+			const h = harness({ bashTools: true, singleTools, toolOutputExpanded: false });
+			await h.frame();
+			const revisions = (markers: readonly Marker[]) =>
+				new Set(
+					markers
+						.filter((entry) => entry.phase === "mark" && entry.key.startsWith(`${kind}:`))
+						.map((entry) => entry.revision),
+				);
+
+			h.expandTools(true);
+			const expanded = revisions((await h.frame()).markers);
+			h.expandTools(false);
+			const collapsed = revisions((await h.frame()).markers);
+			h.expandTools(true);
+			const reexpanded = revisions((await h.frame()).markers);
+
+			expect(expanded.size).toBeGreaterThan(0);
+			expect(collapsed.size).toBe(0);
+			expect(Math.min(...reexpanded)).toBeGreaterThan(Math.max(...expanded));
+		},
+	);
 
 	it("uses one revision for every marker of a key in one render", async () => {
 		const h = harness({ bashTools: true });

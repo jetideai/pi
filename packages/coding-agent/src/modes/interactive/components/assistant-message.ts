@@ -66,6 +66,15 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	/** Expand or collapse Tool Calls rendered under this message. The message content and thinking stay as they are. */
+	setExpanded(expanded: boolean): void {
+		for (const child of this.children) {
+			if (child !== this.contentContainer && "setExpanded" in child && typeof child.setExpanded === "function") {
+				child.setExpanded(expanded);
+			}
+		}
+	}
+
 	setHideThinkingBlock(hide: boolean): void {
 		this.hideThinkingBlock = hide;
 		this.thinkingVisibilityOverrides.clear();

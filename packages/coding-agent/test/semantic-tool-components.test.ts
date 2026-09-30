@@ -10,7 +10,10 @@ import type {
 	ToolExecutionPresentationSelectorV1,
 } from "../src/core/extensions/types.ts";
 import { createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { createEditToolDefinition } from "../src/core/tools/edit.ts";
+import { generateDiffString } from "../src/core/tools/edit-diff.ts";
 import { withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
+import { SourcePointRevisions } from "../src/modes/interactive/components/message-render-boundaries.ts";
 import type { ToolRenderers } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolGroupComponent, ToolGroupMemberComponent } from "../src/modes/interactive/components/tool-group.ts";
@@ -60,6 +63,57 @@ function tool(
 		process.cwd(),
 	);
 	return component;
+}
+
+const EDIT_POINT = "\x1b]777;point\x07";
+const EDIT_SUCCESS = "Successfully replaced 1 block(s) in src/long.ts.";
+
+function editDiff(lines: number, name: string) {
+	const oldText = Array.from({ length: lines }, (_, index) => `const before${index} = ${index};`).join("\n");
+	const newText = Array.from({ length: lines }, (_, index) => `const ${name}${index} = ${index * 2};`).join("\n");
+	return generateDiffString(oldText, newText);
+}
+
+function editRenderersFor(): ToolRenderers {
+	return withBuiltInRenderers("edit", createEditToolDefinition(process.cwd()) as unknown as ToolRenderers)!;
+}
+
+function editComponent(
+	definition: ToolRenderers,
+	points: MessageRenderSourcePointV1[] | undefined,
+	sourcePointRevisions?: SourcePointRevisions,
+): ToolExecutionComponent {
+	const component = new ToolExecutionComponent(
+		"edit",
+		"tool-edit",
+		{ path: "src/long.ts", edits: [{ oldText: "a", newText: "b" }] },
+		{
+			ownerEntryId: "assistant-a",
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			sourcePointRevisions,
+			sourcePointDecoratorsV1: points
+				? [
+						(source: Readonly<MessageRenderSourcePointV1>) => {
+							points.push({ ...source });
+							return EDIT_POINT;
+						},
+					]
+				: [],
+		},
+		definition,
+		{ requestRender() {} } as unknown as TUI,
+		process.cwd(),
+	);
+	component.setExpanded(true);
+	return component;
+}
+
+function renderEdit(diff: ReturnType<typeof editDiff>, width: number, decorate: boolean) {
+	const points: MessageRenderSourcePointV1[] = [];
+	const component = editComponent(editRenderersFor(), decorate ? points : undefined);
+	component.updateResult({ content: [{ type: "text", text: EDIT_SUCCESS }], details: diff, isError: false });
+	return { rows: component.render(width), points };
 }
 
 describe("semantic Tool Call and Tool Group presentation", () => {
@@ -207,6 +261,119 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 				}),
 			]),
 		);
+	});
+
+	it("marks stable source points inside a settled expanded edit diff", () => {
+		const long = editDiff(40, "after");
+		const at80 = renderEdit(long, 80, true);
+		const at120 = renderEdit(long, 120, true);
+		expect(stripAnsi(at80.rows.join("\n"))).toContain("const after39 = 78;");
+		const interior = at80.points.filter((source) => source.entryId === "tool-edit" && source.sourceOffset > 0);
+		expect(interior.length).toBeGreaterThan(0);
+		expect(interior[0]).toMatchObject({ role: "tool", state: "expanded", blockId: "tool-edit", foldRole: "tool" });
+		expect(at80.points).toEqual(at120.points);
+	});
+
+	it.each([80, 120])("keeps decorated edit diff rows visually equal to the undecorated rows at width %i", (width) => {
+		const long = editDiff(40, "after");
+		const decorated = renderEdit(long, width, true).rows.map((row) => row.split(EDIT_POINT).join(""));
+		expect(decorated).toEqual(renderEdit(long, width, false).rows);
+	});
+
+	it("revises edit diff points when only the diff changes", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = editComponent(editRenderersFor(), points, new SourcePointRevisions());
+		const settle = (diff: ReturnType<typeof editDiff>) =>
+			component.updateResult({ content: [{ type: "text", text: EDIT_SUCCESS }], details: diff, isError: false });
+		settle(editDiff(20, "first"));
+		component.render(80);
+		const before = points.splice(0);
+
+		settle(editDiff(20, "second"));
+		component.render(80);
+		const after = points.splice(0);
+
+		expect(before[0]?.sourcePointRevision).toBe(1);
+		expect(after[0]?.sourcePointRevision).toBe(2);
+		expect(after[0]?.contentDigest).not.toBe(before[0]?.contentDigest);
+	});
+
+	it("keeps the same call-body diff points when the settled edit collapses", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = editComponent(editRenderersFor(), points);
+		component.updateResult({
+			content: [{ type: "text", text: EDIT_SUCCESS }],
+			details: editDiff(20, "after"),
+			isError: false,
+		});
+		component.render(80);
+		const expanded = points.splice(0).map(({ sourceOffset, contentDigest }) => ({ sourceOffset, contentDigest }));
+
+		component.setExpanded(false);
+		component.render(80);
+
+		expect(points.map(({ sourceOffset, contentDigest }) => ({ sourceOffset, contentDigest }))).toEqual(expanded);
+	});
+
+	it("clears result source points when a settled bash result collapses", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = new ToolExecutionComponent(
+			"bash",
+			"tool-bash",
+			{ command: "printf lines" },
+			{
+				ownerEntryId: "assistant-a",
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				sourcePointDecoratorsV1: [
+					(source: Readonly<MessageRenderSourcePointV1>) => {
+						points.push({ ...source });
+						return EDIT_POINT;
+					},
+				],
+			},
+			withBuiltInRenderers("bash", createBashToolDefinition(process.cwd()) as unknown as ToolRenderers),
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.setExpanded(true);
+		component.updateResult({
+			content: [{ type: "text", text: Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n") }],
+			isError: false,
+		});
+		expect(component.render(80).join("")).toContain(EDIT_POINT);
+		points.splice(0);
+
+		component.setExpanded(false);
+
+		expect(component.render(80).join("")).not.toContain(EDIT_POINT);
+		expect(points).toEqual([]);
+	});
+
+	it("marks call-body diff source points of a settled edit whose tool output is not expanded", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = editComponent(editRenderersFor(), points);
+		component.setExpanded(false);
+		component.updateResult({
+			content: [{ type: "text", text: EDIT_SUCCESS }],
+			details: editDiff(20, "after"),
+			isError: false,
+		});
+
+		component.render(80);
+
+		expect(
+			points.filter((source) => source.entryId === "tool-edit" && source.sourceOffset > 0).length,
+		).toBeGreaterThan(0);
+	});
+
+	it("does not give a custom edit call renderer the built-in call source text", () => {
+		const custom = withBuiltInRenderers("edit", {
+			...createEditToolDefinition(process.cwd()),
+			renderCall: () => new Text("custom edit call", 0, 0),
+		} as unknown as ToolRenderers);
+
+		expect(custom?.getRenderCallSourceText).toBeUndefined();
 	});
 
 	it("keeps capability-off group bytes on the direct-child path", () => {

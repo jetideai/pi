@@ -6,7 +6,7 @@
  * definition, so the tool's public shape is unchanged.
  */
 
-import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, type Component, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { renderDiff } from "../../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../../extensions/types.ts";
@@ -34,6 +34,7 @@ class EditCallRenderComponent extends Box {
 	previewArgsKey?: string;
 	previewPending = false;
 	settledError = false;
+	bodyText?: Text;
 	private renderedWidth = 0;
 
 	constructor() {
@@ -145,6 +146,7 @@ function buildEditCallComponent(
 	cwd: string,
 ): EditCallRenderComponent {
 	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+	component.bodyText = undefined;
 	component.clear();
 	component.addChild(new Text(formatEditCall(args, theme, cwd), 0, 0));
 
@@ -154,8 +156,9 @@ function buildEditCallComponent(
 
 	const body =
 		"error" in component.preview ? theme.fg("error", component.preview.error) : renderDiff(component.preview.diff);
+	component.bodyText = new Text(body, 0, 0);
 	component.addChild(new Spacer(1));
-	component.addChild(new Text(body, 0, 0));
+	component.addChild(component.bodyText);
 	return component;
 }
 function setEditPreview(
@@ -181,7 +184,9 @@ function setEditPreview(
 export const editRenderers: Pick<
 	ToolDefinition<any, any>,
 	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
-> = {
+> & { getRenderCallSourceText: (component: Component) => Text | undefined } = {
+	getRenderCallSourceText: (component) =>
+		component instanceof EditCallRenderComponent ? component.bodyText : undefined,
 	getRenderCallHeaderRow: (component) => (component instanceof EditCallRenderComponent ? 1 : undefined),
 	getRenderCallBodyRow: (component) => (component instanceof EditCallRenderComponent ? component.bodyRow : undefined),
 	renderCall(args, theme, context) {

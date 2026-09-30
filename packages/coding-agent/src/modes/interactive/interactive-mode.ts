@@ -241,6 +241,16 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
+/** One semantic assistant response. It owns its Tool Call and Tool Group children. */
+class SemanticAssistantResponse extends Container implements Expandable {
+	setExpanded(expanded: boolean): void {
+		for (const child of this.children) {
+			if (child instanceof ToolExecutionComponent || child instanceof ToolGroupComponent)
+				child.setExpanded(expanded);
+		}
+	}
+}
+
 class ExpandableText extends Text implements Expandable {
 	private readonly getCollapsedText: () => string;
 	private readonly getExpandedText: () => string;
@@ -3943,7 +3953,7 @@ export class InteractiveMode {
 						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
 					}
 					if (semanticSelectors.length > 0) {
-						this.semanticStreamingContainer = new Container();
+						this.semanticStreamingContainer = new SemanticAssistantResponse();
 						this.chatContainer.addChild(this.semanticStreamingContainer);
 						this.renderSemanticAssistantResponse(
 							this.semanticStreamingContainer,
@@ -4599,7 +4609,7 @@ export class InteractiveMode {
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				if (entryId && semanticSelectors.length > 0) {
-					const container = new Container();
+					const container = new SemanticAssistantResponse();
 					this.chatContainer.addChild(container);
 					this.renderSemanticAssistantResponse(container, entryId, message, false);
 					for (const content of message.content) {

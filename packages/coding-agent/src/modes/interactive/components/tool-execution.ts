@@ -7,6 +7,7 @@ import {
 	Image,
 	MouseRegion,
 	Spacer,
+	stripTerminalSequences,
 	Text,
 	type TUI,
 	type TuiMouseEvent,
@@ -34,6 +35,7 @@ export interface ToolRenderers {
 	semanticSourceTextRenderer?: ToolDefinition<any, any>["renderResult"];
 	renderCall?: (args: any, theme: Theme, context: ToolRenderContext<any, any>) => Component;
 	getRenderCallHeaderRow?: (component: Component) => number | undefined;
+	getRenderCallSourceText?: (component: Component) => Text | undefined;
 	getRenderCallBodyRow?: (component: Component) => number | undefined;
 	renderResult?: (
 		result: AgentToolResult<any>,
@@ -115,7 +117,7 @@ export class ToolExecutionComponent extends Container {
 	private readonly sourcePointRevisions?: SourcePointRevisions;
 	private sourcePointRevision = 1;
 	private presentation = "";
-	private decoratedResultText?: Text;
+	private decoratedSourceText?: Text;
 
 	constructor(
 		toolName: string,
@@ -331,13 +333,13 @@ export class ToolExecutionComponent extends Container {
 	setSourcePointRevision(revision: number): void {
 		if (this.sourcePointFoldRole !== "tool-group" || revision === this.sourcePointRevision) return;
 		this.sourcePointRevision = revision;
-		this.updateResultSourcePoints();
+		this.updateSourcePoints();
 	}
 
 	setSourcePointContainingFold(blockId: string, role: "tool" | "tool-group"): void {
 		this.sourcePointFoldBlockId = blockId;
 		this.sourcePointFoldRole = role;
-		this.updateResultSourcePoints();
+		this.updateSourcePoints();
 	}
 
 	setShowImages(show: boolean): void {
@@ -484,8 +486,6 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
-		this.decoratedResultText?.setPreWrapDecorator(undefined);
-		this.decoratedResultText = undefined;
 		const bgFn = this.isPartial
 			? (text: string) => theme.bg("toolPendingBg", text)
 			: this.result?.isError
@@ -593,11 +593,21 @@ export class ToolExecutionComponent extends Container {
 		if (this.hasRendererDefinition() && !hasContent && this.imageComponents.length === 0) {
 			this.hideComponent = true;
 		}
-		this.updateResultSourcePoints();
+		this.updateSourcePoints();
 	}
 
-	private updateResultSourcePoints(): void {
-		this.presentation = `${this.expanded}:${this.isPartial}:${sourcePointPresentation(this.getTextOutput())}`;
+	/** Decorate one canonical source Text. Use the built-in call body or the eligible result Text. */
+	private updateSourcePoints(): void {
+		this.decoratedSourceText?.setPreWrapDecorator(undefined);
+		this.decoratedSourceText = undefined;
+		const callText = this.callRendererComponent
+			? this.toolDefinition?.getRenderCallSourceText?.(this.callRendererComponent)
+			: undefined;
+		const output = this.getTextOutput();
+		const source = callText
+			? sourcePointPresentation(stripTerminalSequences(callText.getText().replace(/\t/g, "   ")), output)
+			: sourcePointPresentation(output);
+		this.presentation = `${this.expanded}:${this.isPartial}:${source}`;
 		if (this.sourcePointFoldRole === "tool") {
 			this.sourcePointRevision =
 				this.sourcePointRevisions?.resolve(
@@ -608,15 +618,18 @@ export class ToolExecutionComponent extends Container {
 		}
 		if (
 			this.isPartial ||
-			!this.expanded ||
 			this.sourcePointDecoratorsV1.length === 0 ||
-			this.toolDefinition?.renderResult !== this.toolDefinition?.semanticSourceTextRenderer ||
 			!this.producerSessionId ||
 			!this.renderScopeId
 		) {
 			return;
 		}
-		const text = findFirstText(this.resultRendererComponent);
+		// The call body renders in full. A collapsed result renders only a preview, so it needs expansion.
+		const text =
+			callText ??
+			(this.expanded && this.toolDefinition?.renderResult === this.toolDefinition?.semanticSourceTextRenderer
+				? findFirstText(this.resultRendererComponent)
+				: undefined);
 		if (!text) return;
 		text.setPreWrapDecorator(
 			createMessageRenderSourcePointDecorator(
@@ -636,7 +649,7 @@ export class ToolExecutionComponent extends Container {
 				true,
 			),
 		);
-		this.decoratedResultText = text;
+		this.decoratedSourceText = text;
 	}
 
 	private getTextOutput(): string {

@@ -6,6 +6,7 @@
  * graph out of a process that only renders.
  */
 
+import type { Component, Text } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "../../extensions/types.ts";
 import type { ToolName } from "../index.ts";
 import { createShellRenderers } from "./bash.ts";
@@ -19,7 +20,10 @@ import { writeRenderers } from "./write.ts";
 export type ToolRenderers = Pick<
 	ToolDefinition<any, any>,
 	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
-> & { semanticSourceTextRenderer?: ToolDefinition<any, any>["renderResult"] };
+> & {
+	semanticSourceTextRenderer?: ToolDefinition<any, any>["renderResult"];
+	getRenderCallSourceText?: (component: Component) => Text | undefined;
+};
 
 export {
 	createShellRenderers,
@@ -63,6 +67,7 @@ export function withBuiltInRenderers<TDefinition extends ToolRenderers>(
 	if (!definition) return builtIn;
 	if (!builtIn) return definition;
 	const usesBuiltInCallRenderer = definition.renderCall === undefined;
+	const rendersBuiltInCall = usesBuiltInCallRenderer || definition.renderCall === builtIn.renderCall;
 	const usesBuiltInResultRenderer = definition.renderResult === undefined;
 	const usesSemanticSourceTextRenderer =
 		usesBuiltInResultRenderer ||
@@ -81,5 +86,6 @@ export function withBuiltInRenderers<TDefinition extends ToolRenderers>(
 		semanticSourceTextRenderer: usesSemanticSourceTextRenderer
 			? (definition.renderResult ?? builtIn.renderResult)
 			: undefined,
+		getRenderCallSourceText: rendersBuiltInCall ? builtIn.getRenderCallSourceText : undefined,
 	};
 }

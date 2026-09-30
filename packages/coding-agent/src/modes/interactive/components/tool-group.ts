@@ -101,6 +101,11 @@ export class ToolGroupComponent extends Container {
 		}
 	}
 
+	/** Expand or collapse the output of every member Tool Call. */
+	setExpanded(expanded: boolean): void {
+		for (const component of this.memberComponents) component.setExpanded(expanded);
+	}
+
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;
 	}

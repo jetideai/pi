@@ -26,6 +26,10 @@ export class Text implements Component {
 		this.customBgFn = customBgFn;
 	}
 
+	getText(): string {
+		return this.text;
+	}
+
 	setText(text: string): void {
 		if (this.text !== text) this.prepared = undefined;
 		this.text = text;
