@@ -1,14 +1,11 @@
 /**
- * Prototype policy: one section contains four complete turns. This is a fixture size, not a work bound.
- */
-export const TRANSCRIPT_WINDOW_SECTION_TURNS = 4;
-
-/**
- * "user" starts a turn, "turn" continues the current turn, and "attached" belongs to the next turn.
- * Attached items after the last turn stay in the last turn.
+ * Prototype policy: a section is the interval of the selected branch between two compaction entries.
+ * The window is the section of the target, plus the adjacent section in the requested direction.
+ * An empty section has no items, so the adjacent section is the nearest one that has items.
  */
 export interface TranscriptWindowItem {
-	readonly kind: "user" | "turn" | "attached";
+	/** The number of compaction entries before the item on the selected branch. */
+	readonly section: number;
 	readonly entryId?: string;
 }
 
@@ -26,23 +23,21 @@ export function selectTranscriptWindow(
 	items: readonly TranscriptWindowItem[],
 	target: TranscriptWindowTarget,
 ): TranscriptWindowSelection {
-	const sectionTurns = TRANSCRIPT_WINDOW_SECTION_TURNS;
 	const targetIndex = items.findIndex((item) => item.entryId === target.entryId);
 	if (targetIndex < 0) return { status: "missing" };
-	const turnStarts = [0];
-	for (const [index, item] of items.entries()) {
-		if (item.kind !== "user") continue;
+	const sectionStart = (index: number): number => {
 		let start = index;
-		while (start > 0 && items[start - 1]!.kind === "attached") start -= 1;
-		if (start > turnStarts.at(-1)!) turnStarts.push(start);
-	}
-	const sectionStart = (section: number): number => turnStarts[section * sectionTurns] ?? items.length;
-	const sectionCount = Math.ceil(turnStarts.length / sectionTurns);
-	let targetTurn = 0;
-	while (turnStarts[targetTurn + 1] !== undefined && turnStarts[targetTurn + 1]! <= targetIndex) targetTurn += 1;
-	const section = Math.floor(targetTurn / sectionTurns);
-	const first = target.adjacent === "previous" ? Math.max(section - 1, 0) : section;
-	const last = target.adjacent === "next" ? Math.min(section + 1, sectionCount - 1) : section;
-	const end = sectionStart(last + 1);
-	return { status: "selected", start: sectionStart(first), end, liveTail: end === items.length };
+		while (start > 0 && items[start - 1]!.section === items[index]!.section) start -= 1;
+		return start;
+	};
+	const sectionEnd = (index: number): number => {
+		let end = index + 1;
+		while (end < items.length && items[end]!.section === items[index]!.section) end += 1;
+		return end;
+	};
+	let start = sectionStart(targetIndex);
+	let end = sectionEnd(targetIndex);
+	if (target.adjacent === "previous" && start > 0) start = sectionStart(start - 1);
+	if (target.adjacent === "next" && end < items.length) end = sectionEnd(end);
+	return { status: "selected", start, end, liveTail: end === items.length };
 }

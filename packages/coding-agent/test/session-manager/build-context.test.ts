@@ -4,7 +4,9 @@ import {
 	buildContextEntries,
 	buildSessionContext,
 	buildTranscriptEntries,
+	buildTranscriptSections,
 	type CompactionEntry,
+	type ContextEditEntry,
 	type CustomEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
@@ -207,6 +209,64 @@ describe("buildSessionContext", () => {
 
 			expect(buildTranscriptEntries(entries, "6").map((entry) => entry.id)).toEqual(["1", "2", "3", "4", "6"]);
 			expect(buildContextEntries(entries, "6").map((entry) => entry.id)).toEqual(["5", "3", "4", "6"]);
+		});
+
+		it("splits the selected branch at each compaction entry and never at its first kept entry", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "first"),
+				msg("2", "1", "assistant", "response1"),
+				compaction("c1", "2", "Summary 1", "1"),
+				msg("3", "c1", "assistant", "continuation"),
+				compaction("c2", "3", "Summary 2", "2"),
+				compaction("c3", "c2", "Summary 3", "3"),
+				msg("4", "c3", "user", "second"),
+			];
+
+			expect(buildTranscriptSections(entries, "4").map((section) => section.map((entry) => entry.id))).toEqual([
+				["1", "2"],
+				["3"],
+				[],
+				["4"],
+			]);
+			expect(buildTranscriptSections(entries, "4").flat()).toEqual(buildTranscriptEntries(entries, "4"));
+		});
+
+		it("cuts only at the compaction entries of the selected branch", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "first"),
+				msg("2", "1", "assistant", "response1"),
+				compaction("off-branch", "2", "Summary", "1"),
+				msg("off-branch-answer", "off-branch", "assistant", "other branch"),
+				branchSummary("3", "2", "Branch summary", "off-branch-answer"),
+				msg("4", "3", "user", "selected branch"),
+			];
+
+			expect(buildTranscriptSections(entries, "4").map((section) => section.map((entry) => entry.id))).toEqual([
+				["1", "2", "3", "4"],
+			]);
+		});
+
+		it("keeps branch summaries and context edits inside their compaction interval", () => {
+			const edit: ContextEditEntry = {
+				type: "context_edit",
+				id: "edit",
+				parentId: "3",
+				timestamp: "2025-01-01T00:00:00Z",
+				targetId: "1",
+				replacement: null,
+			};
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "first"),
+				compaction("c1", "1", "Summary", "1"),
+				branchSummary("3", "c1", "Branch summary", "1"),
+				edit,
+				msg("4", "edit", "user", "after"),
+			];
+
+			expect(buildTranscriptSections(entries, "4").map((section) => section.map((entry) => entry.id))).toEqual([
+				["1"],
+				["3", "edit", "4"],
+			]);
 		});
 
 		it("keeps settings from the full path after compaction", () => {

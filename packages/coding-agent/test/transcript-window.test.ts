@@ -28,113 +28,154 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { selectTranscriptWindow, type TranscriptWindowItem } from "../src/modes/interactive/transcript-window.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
-function turns(count: number): TranscriptWindowItem[] {
-	return Array.from({ length: count }, (_, index) => [
-		{ kind: "user" as const, entryId: `user-${index}` },
-		{ kind: "turn" as const, entryId: `assistant-${index}` },
-	]).flat();
+/** One item per entry; each size is one compaction interval, and 0 is an empty interval. */
+function intervals(...sizes: number[]): TranscriptWindowItem[] {
+	return sizes.flatMap((size, section) =>
+		Array.from({ length: size }, (_, index) => ({ section, entryId: `s${section}-${index}` })),
+	);
 }
 
 describe("selectTranscriptWindow", () => {
-	it("selects the section of four complete turns that contains the target", () => {
-		expect(selectTranscriptWindow(turns(9), { entryId: "assistant-5" })).toEqual({
+	it("selects every item as one section without a compaction", () => {
+		expect(selectTranscriptWindow(intervals(3), { entryId: "s0-1" })).toEqual({
 			status: "selected",
-			start: 8,
-			end: 16,
+			start: 0,
+			end: 3,
+			liveTail: true,
+		});
+	});
+
+	it("selects the exact compaction interval that contains the target", () => {
+		expect(selectTranscriptWindow(intervals(2, 3, 2), { entryId: "s1-0" })).toEqual({
+			status: "selected",
+			start: 2,
+			end: 5,
 			liveTail: false,
 		});
 	});
 
-	it("marks the last section as the live tail", () => {
-		expect(selectTranscriptWindow(turns(9), { entryId: "user-8" })).toEqual({
+	it("selects a short open tail as the live tail", () => {
+		expect(selectTranscriptWindow(intervals(4, 1), { entryId: "s1-0" })).toEqual({
 			status: "selected",
-			start: 16,
-			end: 18,
+			start: 4,
+			end: 5,
 			liveTail: true,
 		});
 	});
 
-	it("keeps tool calls and results in the turn of their user message", () => {
-		const items: TranscriptWindowItem[] = [
-			...turns(3),
-			{ kind: "user", entryId: "user-3" },
-			{ kind: "turn", entryId: "assistant-3" },
-			{ kind: "turn", entryId: "result-3" },
-			{ kind: "turn", entryId: "assistant-3b" },
-			{ kind: "user", entryId: "user-4" },
-		];
-
-		expect(selectTranscriptWindow(items, { entryId: "result-3" })).toEqual({
+	it("adds the adjacent interval in the requested direction", () => {
+		expect(selectTranscriptWindow(intervals(2, 3, 2), { entryId: "s1-1", adjacent: "previous" })).toEqual({
 			status: "selected",
 			start: 0,
-			end: 10,
+			end: 5,
 			liveTail: false,
 		});
-	});
-
-	it("attaches leading and between-turn items to the next turn and keeps trailing items in the last turn", () => {
-		const items: TranscriptWindowItem[] = [
-			{ kind: "attached" },
-			...turns(4),
-			{ kind: "attached", entryId: "compaction" },
-			{ kind: "attached" },
-			{ kind: "user", entryId: "user-4" },
-			{ kind: "turn", entryId: "assistant-4" },
-			{ kind: "attached", entryId: "trailing-notice" },
-		];
-
-		expect(selectTranscriptWindow(items, { entryId: "user-0" })).toMatchObject({ start: 0, end: 9 });
-		expect(selectTranscriptWindow(items, { entryId: "compaction" })).toEqual({
+		expect(selectTranscriptWindow(intervals(2, 3, 2), { entryId: "s1-1", adjacent: "next" })).toEqual({
 			status: "selected",
-			start: 9,
-			end: 14,
-			liveTail: true,
-		});
-		expect(selectTranscriptWindow(items, { entryId: "trailing-notice" })).toMatchObject({ start: 9, end: 14 });
-	});
-
-	it("adds the adjacent section in the requested direction", () => {
-		expect(selectTranscriptWindow(turns(12), { entryId: "user-5", adjacent: "previous" })).toMatchObject({
-			start: 0,
-			end: 16,
-		});
-		expect(selectTranscriptWindow(turns(12), { entryId: "user-5", adjacent: "next" })).toEqual({
-			status: "selected",
-			start: 8,
-			end: 24,
+			start: 2,
+			end: 7,
 			liveTail: true,
 		});
 	});
 
-	it("keeps one section when no adjacent section exists in the requested direction", () => {
-		expect(selectTranscriptWindow(turns(8), { entryId: "user-1", adjacent: "previous" })).toMatchObject({
+	it("keeps one interval when no interval exists in the requested direction", () => {
+		expect(selectTranscriptWindow(intervals(2, 3, 2), { entryId: "s0-0", adjacent: "previous" })).toMatchObject({
 			start: 0,
-			end: 8,
+			end: 2,
 		});
-		expect(selectTranscriptWindow(turns(8), { entryId: "user-6", adjacent: "next" })).toMatchObject({
-			start: 8,
-			end: 16,
+		expect(selectTranscriptWindow(intervals(2, 3, 2), { entryId: "s2-0", adjacent: "next" })).toMatchObject({
+			start: 5,
+			end: 7,
 		});
 	});
 
-	it("reports a missing target instead of selecting the tail", () => {
-		expect(selectTranscriptWindow(turns(9), { entryId: "unknown" })).toEqual({ status: "missing" });
-	});
-
-	it("selects all items as one section when no user message exists", () => {
-		const items: TranscriptWindowItem[] = [{ kind: "attached", entryId: "notice" }, { kind: "turn" }];
-
-		expect(selectTranscriptWindow(items, { entryId: "notice" })).toEqual({
+	it("passes over an empty interval to the adjacent interval that has items", () => {
+		expect(selectTranscriptWindow(intervals(2, 0, 3), { entryId: "s2-0", adjacent: "previous" })).toEqual({
+			status: "selected",
+			start: 0,
+			end: 5,
+			liveTail: true,
+		});
+		expect(selectTranscriptWindow(intervals(2, 0), { entryId: "s0-0", adjacent: "next" })).toEqual({
 			status: "selected",
 			start: 0,
 			end: 2,
 			liveTail: true,
 		});
 	});
+
+	it("reports a missing target instead of selecting the tail", () => {
+		expect(selectTranscriptWindow(intervals(2, 2), { entryId: "unknown" })).toEqual({ status: "missing" });
+	});
 });
+
+function toolResult(id: string): ToolResultMessage {
+	return {
+		role: "toolResult",
+		toolCallId: id,
+		toolName: "read",
+		content: [{ type: "text", text: `${id} output` }],
+		isError: false,
+		timestamp: 2,
+	};
+}
+
+function toolCalls(...ids: string[]): AssistantMessage {
+	return {
+		...fauxAssistantMessage(""),
+		content: ids.map((id) => ({ type: "toolCall" as const, id, name: "read", arguments: { path: `path-${id}` } })),
+	};
+}
+
+function nineTurns(sessionManager: SessionManager): string[][] {
+	sessionManager.appendMessage(bashNotice("leading-notice"));
+	const turnEntryIds: string[][] = [];
+	for (let index = 0; index < 9; index++) {
+		if (index === 4 || index === 8) sessionManager.appendCompaction("summary", turnEntryIds.at(-1)![0]!, 100);
+		const userId = sessionManager.appendMessage({ role: "user", content: `Question ${index}`, timestamp: 1 });
+		if (index !== 2) {
+			turnEntryIds.push([userId, sessionManager.appendMessage(fauxAssistantMessage(`Answer ${index}`))]);
+			continue;
+		}
+		const toolCall: AssistantMessage = {
+			...fauxAssistantMessage(""),
+			content: [
+				{ type: "toolCall", id: "tool-a", name: "read", arguments: { path: "a" } },
+				{ type: "toolCall", id: "tool-b", name: "read", arguments: { path: "b" } },
+			],
+		};
+		const toolCallId = sessionManager.appendMessage(toolCall);
+		turnEntryIds.push([
+			userId,
+			toolCallId,
+			sessionManager.appendMessage(toolResult("tool-a")),
+			sessionManager.appendMessage(toolResult("tool-b")),
+			sessionManager.appendMessage(fauxAssistantMessage(`Answer ${index}`)),
+		]);
+	}
+	sessionManager.appendMessage(bashNotice("trailing-notice"));
+	return turnEntryIds;
+}
+
+/** One turn with a compaction after each of its first two tool steps; the open tail is short. */
+function oneTurnWithTwoCompactions(sessionManager: SessionManager) {
+	const user = sessionManager.appendMessage({ role: "user", content: "Question one", timestamp: 1 });
+	sessionManager.appendMessage(toolCalls("t1"));
+	sessionManager.appendMessage(toolResult("t1"));
+	sessionManager.appendCompaction("summary 1", user, 100);
+	const second = sessionManager.appendMessage(toolCalls("t2", "t3"));
+	sessionManager.appendMessage(toolResult("t2"));
+	sessionManager.appendMessage(toolResult("t3"));
+	sessionManager.appendCompaction("summary 2", second, 100);
+	sessionManager.appendMessage(toolCalls("t4"));
+	sessionManager.appendMessage(toolResult("t4"));
+	const final = sessionManager.appendMessage(fauxAssistantMessage("Final answer"));
+	return { user, second, final };
+}
 
 interface WindowedMode {
 	chatContainer: Container;
+	pendingTools: Map<string, unknown>;
 	documentContainer: Container;
 	renderer: {
 		addChild(component: Container): void;
@@ -165,8 +206,10 @@ describe("InteractiveMode transcript window", () => {
 		}
 	});
 
-	/** Nine turns with a leading notice, a tool turn, a compaction and a trailing notice. */
-	async function createWindowedMode(options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void } = {}) {
+	async function openWindowedSession<T>(
+		journal: (sessionManager: SessionManager) => T,
+		options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void } = {},
+	) {
 		initTheme("dark");
 		const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 		cleanups.push(async () => {
@@ -256,41 +299,7 @@ describe("InteractiveMode transcript window", () => {
 			if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 		});
 
-		const sessionManager = runtimeHost.session.sessionManager;
-		sessionManager.appendMessage(bashNotice("leading-notice"));
-		const turnEntryIds: string[][] = [];
-		for (let index = 0; index < 9; index++) {
-			const userId = sessionManager.appendMessage({ role: "user", content: `Question ${index}`, timestamp: 1 });
-			if (index === 6) sessionManager.appendCompaction("summary", userId, 100);
-			if (index !== 2) {
-				turnEntryIds.push([userId, sessionManager.appendMessage(fauxAssistantMessage(`Answer ${index}`))]);
-				continue;
-			}
-			const toolCall: AssistantMessage = {
-				...fauxAssistantMessage(""),
-				content: [
-					{ type: "toolCall", id: "tool-a", name: "read", arguments: { path: "a" } },
-					{ type: "toolCall", id: "tool-b", name: "read", arguments: { path: "b" } },
-				],
-			};
-			const toolCallId = sessionManager.appendMessage(toolCall);
-			const result = (id: string): ToolResultMessage => ({
-				role: "toolResult",
-				toolCallId: id,
-				toolName: "read",
-				content: [{ type: "text", text: `${id} output` }],
-				isError: false,
-				timestamp: 2,
-			});
-			turnEntryIds.push([
-				userId,
-				toolCallId,
-				sessionManager.appendMessage(result("tool-a")),
-				sessionManager.appendMessage(result("tool-b")),
-				sessionManager.appendMessage(fauxAssistantMessage(`Answer ${index}`)),
-			]);
-		}
-		sessionManager.appendMessage(bashNotice("trailing-notice"));
+		const journalIds = journal(runtimeHost.session.sessionManager);
 		const sessionFile = runtimeHost.session.sessionFile;
 		if (!sessionFile) throw new Error("Expected a persisted session");
 
@@ -306,16 +315,11 @@ describe("InteractiveMode transcript window", () => {
 			if (!ui?.requestTranscriptWindow) throw new Error("Expected the transcript window request of the UI context");
 			return ui.requestTranscriptWindow(request);
 		};
-		const turnOf = (member: Readonly<MessageRenderProjectionMemberV1>): number =>
-			turnEntryIds.findIndex(
-				(ids) => ids.includes(member.entryId) || ("ownerEntryId" in member && ids.includes(member.ownerEntryId)),
-			);
 		return {
 			mode,
 			runtimeHost,
 			requestWindow,
-			window: (turn: number, adjacent?: "previous" | "next") =>
-				requestWindow({ entryId: turnEntryIds[turn]![0]!, role: "user", ...(adjacent ? { adjacent } : {}) }),
+			journal: journalIds,
 			render: () => {
 				terminal.writes = [];
 				mode.renderer.renderNow();
@@ -327,14 +331,34 @@ describe("InteractiveMode transcript window", () => {
 				return terminal.writes.join("");
 			},
 			projections,
-			userId: (turn: number) => turnEntryIds[turn]![0]!,
-			toolCallEntryId: turnEntryIds[2]![1]!,
 			unwindowed: () => projections[0]!,
 			latest: () => projections.at(-1)!,
+			text: () => stripAnsi(mode.chatContainer.render(120).join("\n")),
+			pendingTools: () => [...mode.pendingTools.keys()],
+		};
+	}
+
+	/** Nine turns with a leading notice, a tool turn, compactions before turns 4 and 8 and a trailing notice. */
+	async function createWindowedMode(options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void } = {}) {
+		const session = await openWindowedSession(nineTurns, options);
+		const turnEntryIds = session.journal;
+		const turnOf = (member: Readonly<MessageRenderProjectionMemberV1>): number =>
+			turnEntryIds.findIndex(
+				(ids) => ids.includes(member.entryId) || ("ownerEntryId" in member && ids.includes(member.ownerEntryId)),
+			);
+		return {
+			...session,
+			window: (turn: number, adjacent?: "previous" | "next") =>
+				session.requestWindow({
+					entryId: turnEntryIds[turn]![0]!,
+					role: "user",
+					...(adjacent ? { adjacent } : {}),
+				}),
+			userId: (turn: number) => turnEntryIds[turn]![0]!,
+			toolCallEntryId: turnEntryIds[2]![1]!,
 			loadedTurns: (projection: Readonly<MessageRenderProjectionV1>) => [
 				...new Set(projection.members.filter((member) => member.loaded !== false).map(turnOf)),
 			],
-			text: () => stripAnsi(mode.chatContainer.render(120).join("\n")),
 		};
 	}
 
@@ -507,5 +531,58 @@ describe("InteractiveMode transcript window", () => {
 		const replayed = stripAnsi(output.slice(begin, end));
 		expect(replayed).toContain("Question 3");
 		expect(replayed).not.toContain("Question 4");
+	});
+	describe("with two compactions inside one turn", () => {
+		const markers = ["Question one", "path-t1", "path-t2", "path-t3", "path-t4", "Final answer"];
+		const counts = (text: string) => markers.map((marker) => text.split(marker).length - 1);
+		const loadedKeys = (projection: Readonly<MessageRenderProjectionV1>) =>
+			projection.members
+				.filter((member) => member.loaded !== false)
+				.map((member) => `${member.role}:${member.entryId}`);
+
+		it("renders each compaction interval of the turn as its own window with the full metadata", async () => {
+			const { requestWindow, journal, text, unwindowed, latest, pendingTools } =
+				await openWindowedSession(oneTurnWithTwoCompactions);
+			const requests: TranscriptWindowRequestV1[] = [
+				{ entryId: journal.user, role: "user" },
+				{ entryId: journal.second, role: "assistant" },
+				{ entryId: journal.final, role: "assistant" },
+			];
+
+			const windows = requests.map((request) => ({
+				status: requestWindow(request).status,
+				counts: counts(text()),
+				liveTail: latest().liveTail,
+				loaded: loadedKeys(latest()),
+				metadata: withoutLoaded(latest()),
+				pending: pendingTools(),
+			}));
+
+			expect(windows.map((window) => window.status)).toEqual(["applied", "applied", "applied"]);
+			expect(windows.map((window) => window.counts)).toEqual([
+				[1, 1, 0, 0, 0, 0],
+				[0, 0, 1, 1, 0, 0],
+				[0, 0, 0, 0, 1, 1],
+			]);
+			expect(windows.map((window) => window.liveTail)).toEqual([false, false, true]);
+			expect(windows.flatMap((window) => window.loaded)).toEqual(
+				unwindowed().members.map((member) => `${member.role}:${member.entryId}`),
+			);
+			for (const window of windows) expect(window.metadata).toEqual(unwindowed().members);
+			expect(windows.map((window) => window.pending)).toEqual([[], [], []]);
+		});
+
+		it("adds the previous or the next interval of the turn once and keeps the full metadata", async () => {
+			const { requestWindow, journal, text, unwindowed, latest } =
+				await openWindowedSession(oneTurnWithTwoCompactions);
+
+			requestWindow({ entryId: journal.second, role: "assistant", adjacent: "previous" });
+			const previous = { counts: counts(text()), liveTail: latest().liveTail, metadata: withoutLoaded(latest()) };
+			requestWindow({ entryId: journal.second, role: "assistant", adjacent: "next" });
+			const next = { counts: counts(text()), liveTail: latest().liveTail, metadata: withoutLoaded(latest()) };
+
+			expect(previous).toEqual({ counts: [1, 1, 1, 1, 0, 0], liveTail: false, metadata: unwindowed().members });
+			expect(next).toEqual({ counts: [0, 0, 1, 1, 1, 1], liveTail: true, metadata: unwindowed().members });
+		});
 	});
 });

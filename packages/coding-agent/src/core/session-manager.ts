@@ -531,7 +531,26 @@ export function buildTranscriptEntries(
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
 ): SessionEntry[] {
-	return buildSessionPath(entries, leafId, byId).filter((entry) => entry.type !== "compaction");
+	return buildTranscriptSections(entries, leafId, byId).flat();
+}
+
+/**
+ * Build the transcript of the selected session branch, split at its compaction entries.
+ *
+ * Section k contains the entries after the k-th compaction entry and before the next one.
+ * A section can be empty. The cut is the compaction entry itself, not its firstKeptEntryId.
+ */
+export function buildTranscriptSections(
+	entries: SessionEntry[],
+	leafId?: string | null,
+	byId?: Map<string, SessionEntry>,
+): SessionEntry[][] {
+	const sections: SessionEntry[][] = [[]];
+	for (const entry of buildSessionPath(entries, leafId, byId)) {
+		if (entry.type === "compaction") sections.push([]);
+		else sections.at(-1)!.push(entry);
+	}
+	return sections;
 }
 
 /**
@@ -1629,6 +1648,11 @@ export class SessionManager {
 	/** Build the selected branch for transcript display. */
 	buildTranscriptEntries(): SessionEntry[] {
 		return buildTranscriptEntries(this.getEntries(), this.leafId, this.byId);
+	}
+
+	/** Build the selected branch for transcript display, split at its compaction entries. */
+	buildTranscriptSections(): SessionEntry[][] {
+		return buildTranscriptSections(this.getEntries(), this.leafId, this.byId);
 	}
 
 	/**

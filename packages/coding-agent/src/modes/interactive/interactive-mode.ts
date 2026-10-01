@@ -372,15 +372,9 @@ function sessionEntryRenderItems(entries: readonly SessionEntry[]): RenderSessio
 	});
 }
 
-function transcriptWindowItem(item: RenderSessionItem): TranscriptWindowItem {
-	if (isRenderMessageItem(item)) {
-		const { role } = item.message;
-		const kind = role === "user" ? "user" : role === "assistant" || role === "toolResult" ? "turn" : "attached";
-		return { kind, entryId: item.entryId };
-	}
-	return isCustomSessionEntry(item) || isUsageSessionEntry(item)
-		? { kind: "attached", entryId: item.id }
-		: { kind: "attached" };
+function transcriptWindowItem(item: RenderSessionItem, section: number): TranscriptWindowItem {
+	if (isRenderMessageItem(item)) return { section, entryId: item.entryId };
+	return isCustomSessionEntry(item) || isUsageSessionEntry(item) ? { section, entryId: item.id } : { section };
 }
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
@@ -4771,11 +4765,15 @@ export class InteractiveMode {
 	 */
 	private requestTranscriptWindow(request: TranscriptWindowRequestV1): TranscriptWindowResultV1 {
 		if (!this.session.isIdle) return { status: "streaming" };
-		const items = sessionEntryRenderItems(this.sessionManager.buildTranscriptEntries());
+		const sections = this.sessionManager.buildTranscriptSections().map(sessionEntryRenderItems);
+		const items = sections.flat();
 		const target = items.some(
 			(item) => isRenderMessageItem(item) && item.entryId === request.entryId && item.message.role === request.role,
 		);
-		const selection = target ? selectTranscriptWindow(items.map(transcriptWindowItem), request) : undefined;
+		const windowItems = sections.flatMap((sectionItems, section) =>
+			sectionItems.map((item) => transcriptWindowItem(item, section)),
+		);
+		const selection = target ? selectTranscriptWindow(windowItems, request) : undefined;
 		if (selection?.status !== "selected") return { status: "missing" };
 		this.chatContainer.clear();
 		this.renderSessionItems(items, { inferMissingTurns: true, window: selection });
