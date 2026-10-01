@@ -25,8 +25,8 @@ export type TranscriptWindowSelection =
 export function selectTranscriptWindow(
 	items: readonly TranscriptWindowItem[],
 	target: TranscriptWindowTarget,
-	sectionTurns: number = TRANSCRIPT_WINDOW_SECTION_TURNS,
 ): TranscriptWindowSelection {
+	const sectionTurns = TRANSCRIPT_WINDOW_SECTION_TURNS;
 	const targetIndex = items.findIndex((item) => item.entryId === target.entryId);
 	if (targetIndex < 0) return { status: "missing" };
 	const turnStarts = [0];

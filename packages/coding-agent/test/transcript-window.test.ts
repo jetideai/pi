@@ -229,21 +229,25 @@ describe("InteractiveMode transcript window", () => {
 			}
 			const toolCall: AssistantMessage = {
 				...fauxAssistantMessage(""),
-				content: [{ type: "toolCall", id: "tool-a", name: "read", arguments: { path: "a" } }],
+				content: [
+					{ type: "toolCall", id: "tool-a", name: "read", arguments: { path: "a" } },
+					{ type: "toolCall", id: "tool-b", name: "read", arguments: { path: "b" } },
+				],
 			};
 			const toolCallId = sessionManager.appendMessage(toolCall);
-			const result: ToolResultMessage = {
+			const result = (id: string): ToolResultMessage => ({
 				role: "toolResult",
-				toolCallId: "tool-a",
+				toolCallId: id,
 				toolName: "read",
-				content: [{ type: "text", text: "tool output" }],
+				content: [{ type: "text", text: `${id} output` }],
 				isError: false,
 				timestamp: 2,
-			};
+			});
 			turnEntryIds.push([
 				userId,
 				toolCallId,
-				sessionManager.appendMessage(result),
+				sessionManager.appendMessage(result("tool-a")),
+				sessionManager.appendMessage(result("tool-b")),
 				sessionManager.appendMessage(fauxAssistantMessage(`Answer ${index}`)),
 			]);
 		}
@@ -269,6 +273,7 @@ describe("InteractiveMode transcript window", () => {
 			mode,
 			projections,
 			userId: (turn: number) => turnEntryIds[turn]![0]!,
+			toolCallEntryId: turnEntryIds[2]![1]!,
 			unwindowed: () => projections[0]!,
 			latest: () => projections.at(-1)!,
 			loadedTurns: (projection: Readonly<MessageRenderProjectionV1>) => [
@@ -302,6 +307,33 @@ describe("InteractiveMode transcript window", () => {
 		expect(withoutLoaded(latest())).toEqual(unwindowed().members);
 		expect(loadedTurns(latest())).toEqual([0, 1, 2, 3]);
 		expect(latest()).toMatchObject({ mode: "replace", liveTail: false });
+	});
+
+	it("keeps the tool group, its ownership and the completed turn while the tool turn is unloaded and after return", async () => {
+		const { mode, userId, toolCallEntryId, unwindowed, latest } = await createWindowedMode();
+		const toolTurn = (projection: Readonly<MessageRenderProjectionV1>) =>
+			projection.members
+				.filter(
+					(member) =>
+						member.entryId === userId(2) || ("ownerEntryId" in member && member.ownerEntryId === toolCallEntryId),
+				)
+				.map(({ loaded: _loaded, ...member }) => member);
+		const expected = toolTurn(unwindowed());
+
+		mode.renderTranscriptWindow({ entryId: userId(5) });
+		const unloaded = latest();
+		mode.renderTranscriptWindow({ entryId: userId(1) });
+
+		expect(expected).toContainEqual(
+			expect.objectContaining({ role: "tool-group", ownerEntryId: toolCallEntryId, groupClosed: true }),
+		);
+		expect(expected.filter((member) => member.role === "tool")).toEqual([
+			expect.objectContaining({ entryId: "tool-a", ownerEntryId: toolCallEntryId, groupId: expect.any(String) }),
+			expect.objectContaining({ entryId: "tool-b", ownerEntryId: toolCallEntryId, groupId: expect.any(String) }),
+		]);
+		expect(expected[0]).toMatchObject({ role: "user", completedTurn: expect.any(Object) });
+		expect(toolTurn(unloaded)).toEqual(expected);
+		expect(toolTurn(latest())).toEqual(expected);
 	});
 
 	it("builds components only for the loaded section", async () => {
