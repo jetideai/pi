@@ -136,6 +136,7 @@ export type {
 	MessageRenderFinalizedEntryV1,
 	MessageRenderOptions,
 	MessageRenderProjectionMemberV1,
+	MessageRenderProjectionObserverRegistrationV1,
 	MessageRenderProjectionObserverV1,
 	MessageRenderProjectionV1,
 	MessageRenderRangeV1,

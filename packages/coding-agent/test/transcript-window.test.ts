@@ -167,10 +167,33 @@ function oneTurnWithTwoCompactions(sessionManager: SessionManager) {
 	sessionManager.appendMessage(toolResult("t2"));
 	sessionManager.appendMessage(toolResult("t3"));
 	sessionManager.appendCompaction("summary 2", second, 100);
-	sessionManager.appendMessage(toolCalls("t4"));
+	const third = sessionManager.appendMessage(toolCalls("t4"));
 	sessionManager.appendMessage(toolResult("t4"));
 	const final = sessionManager.appendMessage(fauxAssistantMessage("Final answer"));
-	return { user, second, final };
+	return { user, second, third, final };
+}
+
+const BRANCH_COMMAND = "transcript-window-test-branch";
+
+/** Three turns without a compaction entry. */
+function threeTurns(sessionManager: SessionManager): string[] {
+	return [0, 1, 2].map((index) => {
+		const userId = sessionManager.appendMessage({ role: "user", content: `Question ${index}`, timestamp: 1 });
+		sessionManager.appendMessage(fauxAssistantMessage(`Answer ${index}`));
+		return userId;
+	});
+}
+
+/** Two sections of two turns; the last entry is a compaction, so the last interval is empty. */
+function emptyLastInterval(sessionManager: SessionManager): string[] {
+	const users: string[] = [];
+	for (let index = 0; index < 4; index++) {
+		if (index === 2) sessionManager.appendCompaction("summary", users.at(-1)!, 100);
+		users.push(sessionManager.appendMessage({ role: "user", content: `Question ${index}`, timestamp: 1 }));
+		sessionManager.appendMessage(fauxAssistantMessage(`Answer ${index}`));
+	}
+	sessionManager.appendCompaction("summary", users.at(-1)!, 100);
+	return users;
 }
 
 interface WindowedMode {
@@ -208,7 +231,7 @@ describe("InteractiveMode transcript window", () => {
 
 	async function openWindowedSession<T>(
 		journal: (sessionManager: SessionManager) => T,
-		options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void } = {},
+		options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void; transcriptWindows?: boolean } = {},
 	) {
 		initTheme("dark");
 		const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -255,9 +278,19 @@ describe("InteractiveMode transcript window", () => {
 				resourceLoaderOptions: {
 					extensionFactories: [
 						(pi) => {
-							pi.registerMessageRenderProjectionObserverV1((projection) => {
-								projections.push(projection);
-								if (projection.mode === "replace") generation += 1;
+							pi.registerMessageRenderProjectionObserverV1(
+								(projection) => {
+									projections.push(projection);
+									if (projection.mode === "replace") generation += 1;
+								},
+								options.transcriptWindows ? { transcriptWindows: true } : undefined,
+							);
+							// The interactive command context navigates the session tree the same way as /tree.
+							pi.registerCommand(BRANCH_COMMAND, {
+								description: "Navigate the session tree",
+								handler: async (entryId, ctx) => {
+									await ctx.navigateTree(entryId);
+								},
 							});
 							pi.registerReplayTransactionProviderV1({
 								capture: () => {
@@ -320,6 +353,10 @@ describe("InteractiveMode transcript window", () => {
 			runtimeHost,
 			requestWindow,
 			journal: journalIds,
+			branch: (entryId: string) => runtimeHost.session.prompt(`/${BRANCH_COMMAND} ${entryId}`),
+			/** All terminal output since the session was opened, without a new render. */
+			written: () => stripAnsi(terminal.writes.join("")),
+			history: () => [...(mode as unknown as { editor: { history: string[] } }).editor.history],
 			render: () => {
 				terminal.writes = [];
 				mode.renderer.renderNow();
@@ -583,6 +620,86 @@ describe("InteractiveMode transcript window", () => {
 
 			expect(previous).toEqual({ counts: [1, 1, 1, 1, 0, 0], liveTail: false, metadata: unwindowed().members });
 			expect(next).toEqual({ counts: [0, 0, 1, 1, 1, 1], liveTail: true, metadata: unwindowed().members });
+		});
+	});
+	describe("with an observer that accepts transcript windows", () => {
+		const declared = { transcriptWindows: true };
+		const loadedEntries = (projection: Readonly<MessageRenderProjectionV1>) => [
+			...new Set(projection.members.filter((member) => member.loaded !== false).map((member) => member.entryId)),
+		];
+
+		it("opens a compacted session with only its last section and publishes every member", async () => {
+			const { projections, journal, written, mode } = await openWindowedSession(nineTurns, declared);
+			mode.renderer.renderNow();
+
+			expect(projections).toHaveLength(1);
+			expect(projections[0]).toMatchObject({ mode: "replace", liveTail: true });
+			expect(
+				projections[0]!.members.filter((member) => member.role === "user").map((member) => member.entryId),
+			).toEqual(journal.map((turn) => turn[0]));
+			expect(loadedEntries(projections[0]!)).toEqual(journal[8]);
+			expect(written()).toContain("Question 8");
+			expect(written()).not.toContain("Question 7");
+			expect(written()).not.toContain("leading-notice");
+		});
+
+		it("opens a path without a compaction entry as one whole section", async () => {
+			const { latest, journal, text } = await openWindowedSession(threeTurns, declared);
+
+			expect(latest()).toMatchObject({ liveTail: true });
+			expect(latest().members.every((member) => member.loaded !== false)).toBe(true);
+			expect(
+				latest()
+					.members.filter((member) => member.role === "user")
+					.map((member) => member.entryId),
+			).toEqual(journal);
+			expect(text()).toContain("Question 0");
+		});
+
+		it("opens the last section that has items when the path ends with a compaction entry", async () => {
+			const { latest, journal, text } = await openWindowedSession(emptyLastInterval, declared);
+
+			expect(latest()).toMatchObject({ liveTail: true });
+			expect(
+				latest()
+					.members.filter((member) => member.role === "user" && member.loaded !== false)
+					.map((member) => member.entryId),
+			).toEqual(journal.slice(2));
+			expect(text()).not.toContain("Question 1");
+		});
+
+		it("opens one turn with two compactions at its last cut", async () => {
+			const { latest, journal, text } = await openWindowedSession(oneTurnWithTwoCompactions, declared);
+
+			expect(loadedEntries(latest())).toEqual([journal.third, "t4", journal.final]);
+			expect(latest()).toMatchObject({ liveTail: true });
+			expect(text()).toContain("path-t4");
+			expect(text()).toContain("Final answer");
+			expect(text()).not.toContain("path-t2");
+			expect(text()).not.toContain("Question one");
+		});
+
+		it("adds every user message of the session to the editor history as a full render does", async () => {
+			const windowed = await openWindowedSession(nineTurns, declared);
+			const full = await openWindowedSession(nineTurns);
+
+			expect(windowed.history()).toEqual(full.history());
+			expect(windowed.history()).toEqual(Array.from({ length: 9 }, (_, index) => `Question ${8 - index}`));
+		});
+
+		it("opens the last section of the new path after a branch change", async () => {
+			const { branch, latest, journal, text } = await openWindowedSession(nineTurns, declared);
+
+			await branch(journal[6]![0]!);
+
+			expect(latest()).toMatchObject({ mode: "replace", liveTail: true });
+			expect(
+				latest()
+					.members.filter((member) => member.role === "user" && member.loaded !== false)
+					.map((member) => member.entryId),
+			).toEqual([journal[4]![0], journal[5]![0]]);
+			expect(text()).toContain("Question 5");
+			expect(text()).not.toContain("Question 3");
 		});
 	});
 });

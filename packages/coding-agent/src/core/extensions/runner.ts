@@ -802,6 +802,18 @@ export class ExtensionRunner {
 		);
 	}
 
+	/** Whether a projection observer of this runner declared transcript windows. A stale runner declares none. */
+	acceptsTranscriptWindowsV1(): boolean {
+		return (
+			!this.staleMessage &&
+			this.extensions.some(
+				(extension) =>
+					extension.messageRenderProjectionObserverV1 !== undefined &&
+					extension.messageRenderProjectionTranscriptWindowsV1 === true,
+			)
+		);
+	}
+
 	getMessageRenderProjectionObserversV1(): MessageRenderProjectionObserverV1[] {
 		return this.extensions.flatMap((extension) =>
 			extension.messageRenderProjectionObserverV1 ? [extension.messageRenderProjectionObserverV1] : [],

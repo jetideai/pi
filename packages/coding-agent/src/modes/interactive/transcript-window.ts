@@ -9,10 +9,10 @@ export interface TranscriptWindowItem {
 	readonly entryId?: string;
 }
 
-export interface TranscriptWindowTarget {
-	readonly entryId: string;
-	readonly adjacent?: "previous" | "next";
-}
+/** A member of the transcript, or the logical tail: the latest section that has items. */
+export type TranscriptWindowTarget =
+	| { readonly entryId: string; readonly adjacent?: "previous" | "next" }
+	| { readonly tail: true };
 
 /** The loaded item interval is [start, end). */
 export type TranscriptWindowSelection =
@@ -23,8 +23,9 @@ export function selectTranscriptWindow(
 	items: readonly TranscriptWindowItem[],
 	target: TranscriptWindowTarget,
 ): TranscriptWindowSelection {
-	const targetIndex = items.findIndex((item) => item.entryId === target.entryId);
+	const targetIndex = "tail" in target ? items.length - 1 : items.findIndex((item) => item.entryId === target.entryId);
 	if (targetIndex < 0) return { status: "missing" };
+	const adjacent = "tail" in target ? undefined : target.adjacent;
 	const sectionStart = (index: number): number => {
 		let start = index;
 		while (start > 0 && items[start - 1]!.section === items[index]!.section) start -= 1;
@@ -37,7 +38,7 @@ export function selectTranscriptWindow(
 	};
 	let start = sectionStart(targetIndex);
 	let end = sectionEnd(targetIndex);
-	if (target.adjacent === "previous" && start > 0) start = sectionStart(start - 1);
-	if (target.adjacent === "next" && end < items.length) end = sectionEnd(end);
+	if (adjacent === "previous" && start > 0) start = sectionStart(start - 1);
+	if (adjacent === "next" && end < items.length) end = sectionEnd(end);
 	return { status: "selected", start, end, liveTail: end === items.length };
 }

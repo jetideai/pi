@@ -1503,6 +1503,16 @@ export interface MessageRenderSourcePointV1 {
 	sourcePart?: "call";
 }
 
+/** Options of one projection observer registration. */
+export interface MessageRenderProjectionObserverRegistrationV1 {
+	/**
+	 * Experimental: accept projections of a transcript window, with members that are not loaded and the liveTail
+	 * fact. Interactive mode then builds only the latest compaction section of the selected branch when it renders
+	 * the transcript of a session.
+	 */
+	transcriptWindows?: boolean;
+}
+
 /** Options of one source point decorator registration. */
 export interface MessageRenderSourcePointRegistrationV1 {
 	/** Accept the points of tool call bodies. Without it, the decorator gets no point with a source part. */
@@ -1787,7 +1797,10 @@ export interface ExtensionAPI {
 	registerToolExecutionPresentationSelectorV1(selector: ToolExecutionPresentationSelectorV1): void;
 
 	/** Observe complete membership selected by the interactive transcript composer. */
-	registerMessageRenderProjectionObserverV1(observer: MessageRenderProjectionObserverV1): void;
+	registerMessageRenderProjectionObserverV1(
+		observer: MessageRenderProjectionObserverV1,
+		registration?: MessageRenderProjectionObserverRegistrationV1,
+	): void;
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
@@ -2230,6 +2243,7 @@ export interface Extension {
 	replayTransactionProviderV1?: ReplayTransactionProviderV1;
 	toolExecutionPresentationSelectorV1?: ToolExecutionPresentationSelectorV1;
 	messageRenderProjectionObserverV1?: MessageRenderProjectionObserverV1;
+	messageRenderProjectionTranscriptWindowsV1?: boolean;
 	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

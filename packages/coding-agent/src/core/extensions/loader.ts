@@ -29,6 +29,7 @@ import type {
 	MessageRenderBoundaryDecoratorV1,
 	MessageRenderBoundarySelectorV3,
 	MessageRenderer,
+	MessageRenderProjectionObserverRegistrationV1,
 	MessageRenderProjectionObserverV1,
 	MessageRenderSourcePointDecoratorV1,
 	MessageRenderSourcePointRegistrationV1,
@@ -376,9 +377,13 @@ function createExtensionAPI(
 			extension.toolExecutionPresentationSelectorV1 = selector;
 		},
 
-		registerMessageRenderProjectionObserverV1(observer: MessageRenderProjectionObserverV1): void {
+		registerMessageRenderProjectionObserverV1(
+			observer: MessageRenderProjectionObserverV1,
+			registration?: MessageRenderProjectionObserverRegistrationV1,
+		): void {
 			assertActive();
 			extension.messageRenderProjectionObserverV1 = observer;
+			extension.messageRenderProjectionTranscriptWindowsV1 = registration?.transcriptWindows === true;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {

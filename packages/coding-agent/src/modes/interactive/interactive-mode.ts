@@ -216,7 +216,12 @@ import {
 	theme,
 } from "./theme/theme.ts";
 import { InteractiveThemeController } from "./theme/theme-controller.ts";
-import { selectTranscriptWindow, type TranscriptWindowItem } from "./transcript-window.ts";
+import {
+	selectTranscriptWindow,
+	type TranscriptWindowItem,
+	type TranscriptWindowSelection,
+	type TranscriptWindowTarget,
+} from "./transcript-window.ts";
 import { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
 
 export { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
@@ -4453,7 +4458,7 @@ export class InteractiveMode {
 
 	private addMessageToChat(
 		message: AgentMessage,
-		options?: { populateHistory?: boolean; entryId?: string },
+		options?: { entryId?: string },
 	): AssistantMessageComponent | undefined {
 		switch (message.role) {
 			case "bashExecution": {
@@ -4551,9 +4556,6 @@ export class InteractiveMode {
 						);
 						this.chatContainer.addChild(userComponent);
 					}
-					if (options?.populateHistory) {
-						this.editor.addToHistory?.(textContent);
-					}
 				}
 				break;
 			}
@@ -4592,7 +4594,6 @@ export class InteractiveMode {
 		items: readonly RenderSessionItem[],
 		options: {
 			updateFooter?: boolean;
-			populateHistory?: boolean;
 			inferMissingTurns?: boolean;
 			window?: { start: number; end: number; liveTail: boolean };
 		} = {},
@@ -4736,7 +4737,7 @@ export class InteractiveMode {
 				}
 			} else {
 				// All other messages use standard rendering
-				this.addMessageToChat(message, { ...options, entryId });
+				this.addMessageToChat(message, { entryId });
 			}
 		}
 
@@ -4750,11 +4751,10 @@ export class InteractiveMode {
 	 * Render session entries to chat. Used for initial load and transcript rebuilds.
 	 * @param entries Session entries to render
 	 * @param options.updateFooter Update footer state
-	 * @param options.populateHistory Add user messages to editor history
 	 */
 	private renderSessionEntries(
 		entries: SessionEntry[],
-		options: { updateFooter?: boolean; populateHistory?: boolean; inferMissingTurns?: boolean } = {},
+		options: { updateFooter?: boolean; inferMissingTurns?: boolean } = {},
 	): void {
 		this.renderSessionItems(sessionEntryRenderItems(entries), options);
 	}
@@ -4765,19 +4765,43 @@ export class InteractiveMode {
 	 */
 	private requestTranscriptWindow(request: TranscriptWindowRequestV1): TranscriptWindowResultV1 {
 		if (!this.session.isIdle) return { status: "streaming" };
-		const sections = this.sessionManager.buildTranscriptSections().map(sessionEntryRenderItems);
-		const items = sections.flat();
-		const target = items.some(
+		const transcript = this.selectTranscript(request);
+		const target = transcript.items.some(
 			(item) => isRenderMessageItem(item) && item.entryId === request.entryId && item.message.role === request.role,
 		);
+		if (!target || !transcript.window) return { status: "missing" };
+		this.chatContainer.clear();
+		this.renderSessionItems(transcript.items, { inferMissingTurns: true, window: transcript.window });
+		return { status: "applied" };
+	}
+
+	/**
+	 * Select the transcript of the selected branch before any component is built. The items are the full
+	 * transcript; a target selects the compaction sections whose components are built.
+	 */
+	private selectTranscript(target?: TranscriptWindowTarget): {
+		items: RenderSessionItem[];
+		window?: Extract<TranscriptWindowSelection, { status: "selected" }>;
+	} {
+		const sections = this.sessionManager.buildTranscriptSections().map(sessionEntryRenderItems);
+		const items = sections.flat();
+		if (!target) return { items };
 		const windowItems = sections.flatMap((sectionItems, section) =>
 			sectionItems.map((item) => transcriptWindowItem(item, section)),
 		);
-		const selection = target ? selectTranscriptWindow(windowItems, request) : undefined;
-		if (selection?.status !== "selected") return { status: "missing" };
-		this.chatContainer.clear();
-		this.renderSessionItems(items, { inferMissingTurns: true, window: selection });
-		return { status: "applied" };
+		const selection = selectTranscriptWindow(windowItems, target);
+		return selection.status === "selected" ? { items, window: selection } : { items };
+	}
+
+	/** Add the user messages of all transcript items to the editor history, also those without components. */
+	private addUserMessagesToHistory(items: readonly RenderSessionItem[]): void {
+		for (const item of items) {
+			if (isCustomSessionEntry(item) || isUsageSessionEntry(item) || isCompactionCostNotice(item)) continue;
+			const message = isRenderMessageItem(item) ? item.message : item;
+			if (message.role !== "user") continue;
+			const text = this.getUserMessageText(message);
+			if (text) this.editor.addToHistory?.(text);
+		}
 	}
 
 	private addCacheWarmingUsage(entry: UsageEntry): void {
@@ -4875,11 +4899,14 @@ export class InteractiveMode {
 	}
 
 	renderInitialMessages(): void {
-		const entries = this.sessionManager.buildTranscriptEntries();
-		this.renderSessionEntries(entries, {
+		const transcript = this.selectTranscript(
+			this.session.extensionRunner?.acceptsTranscriptWindowsV1?.() === true ? { tail: true } : undefined,
+		);
+		this.addUserMessagesToHistory(transcript.items);
+		this.renderSessionItems(transcript.items, {
 			updateFooter: true,
-			populateHistory: true,
 			inferMissingTurns: true,
+			...(transcript.window ? { window: transcript.window } : {}),
 		});
 		this.renderProjectTrustWarningIfNeeded();
 
