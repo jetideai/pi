@@ -214,6 +214,12 @@ import {
 	theme,
 } from "./theme/theme.ts";
 import { InteractiveThemeController } from "./theme/theme-controller.ts";
+import {
+	selectTranscriptWindow,
+	type TranscriptWindowItem,
+	type TranscriptWindowSelection,
+	type TranscriptWindowTarget,
+} from "./transcript-window.ts";
 import { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
 
 export { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
@@ -315,7 +321,8 @@ function sameProjectionMember(
 		("groupId" in left ? left.groupId : undefined) === ("groupId" in right ? right.groupId : undefined) &&
 		("groupOrder" in left ? left.groupOrder : undefined) === ("groupOrder" in right ? right.groupOrder : undefined) &&
 		("groupClosed" in left ? left.groupClosed : undefined) ===
-			("groupClosed" in right ? right.groupClosed : undefined)
+			("groupClosed" in right ? right.groupClosed : undefined) &&
+		left.loaded === right.loaded
 	);
 }
 
@@ -334,6 +341,7 @@ function sameProjection(
 ): boolean {
 	return (
 		left !== undefined &&
+		left.liveTail === right.liveTail &&
 		left.members.length === right.members.length &&
 		left.members.every((member, index) => {
 			const other = right.members[index]!;
@@ -346,6 +354,36 @@ function sameProjection(
 
 function isUsageSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "usage" }> {
 	return "type" in item && item.type === "usage";
+}
+
+function sessionEntryRenderItems(entries: readonly SessionEntry[]): RenderSessionItem[] {
+	return entries.flatMap((entry): RenderSessionItem[] => {
+		if (entry.type === "custom") {
+			return entry.customType === SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE ? [] : [entry];
+		}
+		if (entry.type === "usage" && entry.kind === "cache_warm") {
+			return [entry];
+		}
+		const messages = sessionEntryToContextMessages(entry);
+		if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {
+			return [...messages, { type: "compaction_cost", kind: entry.type, usage: entry.usage }];
+		}
+		if (entry.type === "message") {
+			return messages.map((message) => ({ message, entryId: entry.id }));
+		}
+		return messages;
+	});
+}
+
+function transcriptWindowItem(item: RenderSessionItem): TranscriptWindowItem {
+	if (isRenderMessageItem(item)) {
+		const { role } = item.message;
+		const kind = role === "user" ? "user" : role === "assistant" || role === "toolResult" ? "turn" : "attached";
+		return { kind, entryId: item.entryId };
+	}
+	return isCustomSessionEntry(item) || isUsageSessionEntry(item)
+		? { kind: "attached", entryId: item.id }
+		: { kind: "attached" };
 }
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
@@ -2388,6 +2426,7 @@ export class InteractiveMode {
 		requestedMode: "append" | "replace",
 		finalized?: MessageRenderFinalizedEntryV1,
 		inferMissingTurns: boolean = false,
+		liveTail?: boolean,
 	): void {
 		const observers = this.getMessageRenderProjectionObserversV1();
 		if (observers.length === 0) return;
@@ -2402,6 +2441,7 @@ export class InteractiveMode {
 			...(finalized ? { finalized } : {}),
 			settledTurns: this.messageRenderSettlements ?? [],
 			inferMissingTurns,
+			...(liveTail !== undefined ? { liveTail } : {}),
 			readMessage: (entryId) => {
 				if (finalized?.entryId === entryId) return finalized.message;
 				const entry = this.sessionManager.getEntry(entryId);
@@ -4558,26 +4598,41 @@ export class InteractiveMode {
 
 	private renderSessionItems(
 		items: readonly RenderSessionItem[],
-		options: { updateFooter?: boolean; populateHistory?: boolean; inferMissingTurns?: boolean } = {},
+		options: {
+			updateFooter?: boolean;
+			populateHistory?: boolean;
+			inferMissingTurns?: boolean;
+			window?: { start: number; end: number; liveTail: boolean };
+		} = {},
 	): void {
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
+		const { window } = options;
 		const projectionObservers = this.getMessageRenderProjectionObserversV1();
 		if (projectionObservers.length > 0) {
 			const members: MessageRenderProjectionMemberV1[] = [];
-			for (const item of items) {
+			for (const [index, item] of items.entries()) {
 				if (!isRenderMessageItem(item)) continue;
-				if (item.message.role === "user") {
-					members.push({ entryId: item.entryId, blockId: item.entryId, role: "user" });
-				} else if (item.message.role === "assistant") {
-					members.push(
-						...composeAssistantResponse(item.entryId, item.message, false, this.hideThinkingBlock).members,
-					);
-				}
+				const itemMembers: MessageRenderProjectionMemberV1[] =
+					item.message.role === "user"
+						? [{ entryId: item.entryId, blockId: item.entryId, role: "user" }]
+						: item.message.role === "assistant"
+							? composeAssistantResponse(item.entryId, item.message, false, this.hideThinkingBlock).members
+							: [];
+				const loaded = !window || (index >= window.start && index < window.end);
+				members.push(
+					...(loaded ? itemMembers : itemMembers.map((member) => ({ ...member, loaded: false as const }))),
+				);
 			}
 			this.messageRenderMembers = members;
 			this.messageRenderSettlements = this.sessionManager.getSemanticTurnSettlements();
-			this.publishMessageRenderProjectionV1(members, "replace", undefined, options.inferMissingTurns ?? false);
+			this.publishMessageRenderProjectionV1(
+				members,
+				"replace",
+				undefined,
+				options.inferMissingTurns ?? false,
+				window?.liveTail,
+			);
 		}
 		const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
 		// Cache misses are not persisted, unlike successful cache-warming usage.
@@ -4591,7 +4646,7 @@ export class InteractiveMode {
 			this.updateEditorBorderColor();
 		}
 
-		for (const item of items) {
+		for (const item of window ? items.slice(window.start, window.end) : items) {
 			if (isCustomSessionEntry(item)) {
 				this.addCustomEntryToChat(item);
 				continue;
@@ -4709,23 +4764,21 @@ export class InteractiveMode {
 		entries: SessionEntry[],
 		options: { updateFooter?: boolean; populateHistory?: boolean; inferMissingTurns?: boolean } = {},
 	): void {
-		const items = entries.flatMap((entry): RenderSessionItem[] => {
-			if (entry.type === "custom") {
-				return entry.customType === SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE ? [] : [entry];
-			}
-			if (entry.type === "usage" && entry.kind === "cache_warm") {
-				return [entry];
-			}
-			const messages = sessionEntryToContextMessages(entry);
-			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {
-				return [...messages, { type: "compaction_cost", kind: entry.type, usage: entry.usage }];
-			}
-			if (entry.type === "message") {
-				return messages.map((message) => ({ message, entryId: entry.id }));
-			}
-			return messages;
-		});
-		this.renderSessionItems(items, options);
+		this.renderSessionItems(sessionEntryRenderItems(entries), options);
+	}
+
+	/**
+	 * Experimental: replace the chat with one transcript window. Nothing outside tests calls it yet.
+	 * A missing target leaves the chat unchanged.
+	 * @internal
+	 */
+	renderTranscriptWindow(target: TranscriptWindowTarget): TranscriptWindowSelection {
+		const items = sessionEntryRenderItems(this.sessionManager.buildTranscriptEntries());
+		const selection = selectTranscriptWindow(items.map(transcriptWindowItem), target);
+		if (selection.status === "missing") return selection;
+		this.chatContainer.clear();
+		this.renderSessionItems(items, { inferMissingTurns: true, window: selection });
+		return selection;
 	}
 
 	private addCacheWarmingUsage(entry: UsageEntry): void {

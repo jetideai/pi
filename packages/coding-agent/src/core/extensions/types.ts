@@ -1538,7 +1538,7 @@ export interface MessageRenderCompletedTurnV1 {
 	initiator?: Readonly<ExternalAgentOriginV1>;
 }
 
-export type MessageRenderProjectionMemberV1 =
+export type MessageRenderProjectionMemberV1 = (
 	| {
 			entryId: string;
 			blockId: string;
@@ -1561,7 +1561,11 @@ export type MessageRenderProjectionMemberV1 =
 			ownerEntryId: string;
 			groupId?: string;
 			groupOrder?: number;
-	  };
+	  }
+) & {
+	/** Experimental: false when a transcript window does not render this member. Absent means rendered. */
+	loaded?: false;
+};
 
 export interface MessageRenderFinalizedEntryV1 {
 	entryId: string;
@@ -1574,6 +1578,8 @@ export interface MessageRenderProjectionV1 {
 	members: readonly Readonly<MessageRenderProjectionMemberV1>[];
 	mode: "append" | "replace";
 	finalized?: Readonly<MessageRenderFinalizedEntryV1>;
+	/** Experimental: present only for a transcript window; true when the window ends at the newest entry. */
+	liveTail?: boolean;
 }
 
 export type MessageRenderProjectionObserverV1 = (projection: Readonly<MessageRenderProjectionV1>) => void;

@@ -24,6 +24,7 @@ export interface BuildMessageRenderProjectionOptions {
 	finalized?: MessageRenderFinalizedEntryV1;
 	settledTurns?: readonly Readonly<SemanticTurnSettlementV1>[];
 	inferMissingTurns?: boolean;
+	liveTail?: boolean;
 	readMessage(entryId: string): AgentMessage | undefined;
 }
 
@@ -49,6 +50,7 @@ export function buildMessageRenderProjection(
 		members: Object.freeze(members),
 		mode: options.mode,
 		...(options.finalized ? { finalized: Object.freeze({ ...options.finalized }) } : {}),
+		...(options.liveTail !== undefined ? { liveTail: options.liveTail } : {}),
 	});
 }
 
