@@ -208,6 +208,8 @@ export type {
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	ToolResultEventResult,
+	TranscriptWindowRequestV1,
+	TranscriptWindowResultV1,
 	TreePreparation,
 	TurnEndEvent,
 	TurnEndEventResult,

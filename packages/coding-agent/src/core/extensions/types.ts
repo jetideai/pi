@@ -140,6 +140,18 @@ export interface SemanticRedrawRequest {
 	rows: number;
 }
 
+/** Experimental: the message that a transcript window must contain. */
+export interface TranscriptWindowRequestV1 {
+	entryId: string;
+	role: "user" | "assistant";
+	adjacent?: "previous" | "next";
+}
+
+/** Experimental: "applied" means that the window is composed and its projection is published; replay follows. */
+export interface TranscriptWindowResultV1 {
+	status: "applied" | "missing" | "streaming";
+}
+
 /**
  * UI context for extensions to request interactive UI.
  * Each mode (interactive, RPC, print) provides its own implementation.
@@ -168,6 +180,9 @@ export interface ExtensionUIContext {
 
 	/** Request one correlated full redraw from the interactive main-screen renderer. */
 	requestSemanticRedraw(request: SemanticRedrawRequest): boolean;
+
+	/** Experimental: replace the chat with the transcript window that contains one message. Interactive mode only. */
+	requestTranscriptWindow?(request: TranscriptWindowRequestV1): TranscriptWindowResultV1;
 
 	/** Set status text in the footer/status bar. Pass undefined to clear. */
 	setStatus(key: string, text: string | undefined): void;

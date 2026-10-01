@@ -200,6 +200,8 @@ export type {
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	ToolResultEventResult,
+	TranscriptWindowRequestV1,
+	TranscriptWindowResultV1,
 	TurnEndEvent,
 	TurnEndEventResult,
 	TurnStartEvent,

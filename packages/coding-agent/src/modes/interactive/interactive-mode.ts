@@ -95,6 +95,8 @@ import type {
 	MessageRenderSourcePointDecoratorV1,
 	ProjectTrustContext,
 	ToolExecutionPresentationSelectorV1,
+	TranscriptWindowRequestV1,
+	TranscriptWindowResultV1,
 	UIPromptControlResult,
 	UIPromptId,
 	UIPromptResponse,
@@ -214,12 +216,7 @@ import {
 	theme,
 } from "./theme/theme.ts";
 import { InteractiveThemeController } from "./theme/theme-controller.ts";
-import {
-	selectTranscriptWindow,
-	type TranscriptWindowItem,
-	type TranscriptWindowSelection,
-	type TranscriptWindowTarget,
-} from "./transcript-window.ts";
+import { selectTranscriptWindow, type TranscriptWindowItem } from "./transcript-window.ts";
 import { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
 
 export { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
@@ -2860,6 +2857,7 @@ export class InteractiveMode {
 			notify: (message, type) => this.showExtensionNotify(message, type),
 			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
 			requestSemanticRedraw: (request) => this.ui.requestSemanticRedraw(request),
+			requestTranscriptWindow: (request) => this.requestTranscriptWindow(request),
 			setStatus: (key, text) => this.setExtensionStatus(key, text),
 			setWorkingMessage: (message) => {
 				this.workingMessage = message;
@@ -4768,17 +4766,20 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Experimental: replace the chat with one transcript window. Nothing outside tests calls it yet.
-	 * A missing target leaves the chat unchanged.
-	 * @internal
+	 * Experimental: replace the chat with the window that contains the requested message. The next render replays it.
+	 * Streaming and a missing message leave the chat and the projection unchanged.
 	 */
-	renderTranscriptWindow(target: TranscriptWindowTarget): TranscriptWindowSelection {
+	private requestTranscriptWindow(request: TranscriptWindowRequestV1): TranscriptWindowResultV1 {
+		if (!this.session.isIdle) return { status: "streaming" };
 		const items = sessionEntryRenderItems(this.sessionManager.buildTranscriptEntries());
-		const selection = selectTranscriptWindow(items.map(transcriptWindowItem), target);
-		if (selection.status === "missing") return selection;
+		const target = items.some(
+			(item) => isRenderMessageItem(item) && item.entryId === request.entryId && item.message.role === request.role,
+		);
+		const selection = target ? selectTranscriptWindow(items.map(transcriptWindowItem), request) : undefined;
+		if (selection?.status !== "selected") return { status: "missing" };
 		this.chatContainer.clear();
 		this.renderSessionItems(items, { inferMissingTurns: true, window: selection });
-		return selection;
+		return { status: "applied" };
 	}
 
 	private addCacheWarmingUsage(entry: UsageEntry): void {

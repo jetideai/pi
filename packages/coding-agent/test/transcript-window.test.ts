@@ -5,6 +5,7 @@ import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import type { Container } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -12,18 +13,19 @@ import {
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import type { MessageRenderProjectionMemberV1, MessageRenderProjectionV1 } from "../src/core/extensions/types.ts";
+import type {
+	ExtensionUIContext,
+	MessageRenderProjectionMemberV1,
+	MessageRenderProjectionV1,
+	TranscriptWindowRequestV1,
+	TranscriptWindowResultV1,
+} from "../src/core/extensions/types.ts";
 import type { BashExecutionMessage } from "../src/core/messages.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import {
-	selectTranscriptWindow,
-	type TranscriptWindowItem,
-	type TranscriptWindowSelection,
-	type TranscriptWindowTarget,
-} from "../src/modes/interactive/transcript-window.ts";
+import { selectTranscriptWindow, type TranscriptWindowItem } from "../src/modes/interactive/transcript-window.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 function turns(count: number): TranscriptWindowItem[] {
@@ -133,7 +135,21 @@ describe("selectTranscriptWindow", () => {
 
 interface WindowedMode {
 	chatContainer: Container;
-	renderTranscriptWindow(target: TranscriptWindowTarget): TranscriptWindowSelection;
+	documentContainer: Container;
+	renderer: {
+		addChild(component: Container): void;
+		renderNow(): void;
+		stop(options: { preserveScreen: boolean }): void;
+	};
+}
+
+class RecordingTerminal extends VirtualTerminal {
+	writes: string[] = [];
+
+	override write(data: string): void {
+		this.writes.push(data);
+		super.write(data);
+	}
 }
 
 function bashNotice(command: string): BashExecutionMessage {
@@ -150,7 +166,7 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	/** Nine turns with a leading notice, a tool turn, a compaction and a trailing notice. */
-	async function createWindowedMode() {
+	async function createWindowedMode(options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void } = {}) {
 		initTheme("dark");
 		const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 		cleanups.push(async () => {
@@ -160,6 +176,7 @@ describe("InteractiveMode transcript window", () => {
 		const tempDir = join(tmpdir(), `pi-transcript-window-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		const faux = registerFauxProvider();
+		options.faux?.(faux);
 		const authStorage = AuthStorage.inMemory();
 		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
 		const modelRuntime = await ModelRuntime.create({
@@ -185,6 +202,8 @@ describe("InteractiveMode transcript window", () => {
 			],
 		});
 		const projections: Readonly<MessageRenderProjectionV1>[] = [];
+		let ui: ExtensionUIContext | undefined;
+		let generation = 0;
 		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
 			const services = await createAgentSessionServices({
 				agentDir: tempDir,
@@ -192,7 +211,27 @@ describe("InteractiveMode transcript window", () => {
 				cwd,
 				resourceLoaderOptions: {
 					extensionFactories: [
-						(pi) => pi.registerMessageRenderProjectionObserverV1((projection) => projections.push(projection)),
+						(pi) => {
+							pi.registerMessageRenderProjectionObserverV1((projection) => {
+								projections.push(projection);
+								if (projection.mode === "replace") generation += 1;
+							});
+							pi.registerReplayTransactionProviderV1({
+								capture: () => {
+									const scope = `scope-${generation}`;
+									return {
+										generation: scope,
+										transaction: (cause) => ({
+											begin: `\x1b]777;begin-${scope}-${cause}\x07`,
+											end: `\x1b]777;end-${scope}\x07`,
+										}),
+									};
+								},
+							});
+							pi.on("session_start", (_event, ctx) => {
+								ui = ctx.ui;
+							});
+						},
 					],
 					noSkills: true,
 					noPromptTemplates: true,
@@ -256,21 +295,37 @@ describe("InteractiveMode transcript window", () => {
 		if (!sessionFile) throw new Error("Expected a persisted session");
 
 		await runtimeHost.newSession();
-		const interactive = new InteractiveMode(runtimeHost);
-		cleanups.push(() => {
-			const renderer = (interactive as unknown as { renderer: { stop(options: { preserveScreen: boolean }): void } })
-				.renderer;
-			renderer.stop({ preserveScreen: true });
-		});
+		const terminal = new RecordingTerminal(120, 40);
+		const mode = new InteractiveMode(runtimeHost, { terminal, tuiMode: "regular" }) as unknown as WindowedMode;
+		cleanups.push(() => mode.renderer.stop({ preserveScreen: true }));
+		// init() mounts the document the same way; it also starts terminal input, which this test does not need.
+		mode.renderer.addChild(mode.documentContainer);
 		projections.length = 0;
 		await runtimeHost.switchSession(sessionFile);
-		const mode = interactive as unknown as WindowedMode;
+		const requestWindow = (request: TranscriptWindowRequestV1): TranscriptWindowResultV1 => {
+			if (!ui?.requestTranscriptWindow) throw new Error("Expected the transcript window request of the UI context");
+			return ui.requestTranscriptWindow(request);
+		};
 		const turnOf = (member: Readonly<MessageRenderProjectionMemberV1>): number =>
 			turnEntryIds.findIndex(
 				(ids) => ids.includes(member.entryId) || ("ownerEntryId" in member && ids.includes(member.ownerEntryId)),
 			);
 		return {
 			mode,
+			runtimeHost,
+			requestWindow,
+			window: (turn: number, adjacent?: "previous" | "next") =>
+				requestWindow({ entryId: turnEntryIds[turn]![0]!, role: "user", ...(adjacent ? { adjacent } : {}) }),
+			render: () => {
+				terminal.writes = [];
+				mode.renderer.renderNow();
+				return stripAnsi(terminal.writes.join(""));
+			},
+			rawRender: () => {
+				terminal.writes = [];
+				mode.renderer.renderNow();
+				return terminal.writes.join("");
+			},
 			projections,
 			userId: (turn: number) => turnEntryIds[turn]![0]!,
 			toolCallEntryId: turnEntryIds[2]![1]!,
@@ -297,12 +352,9 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	it("publishes every member with its turn metadata while it renders only section A", async () => {
-		const { mode, userId, unwindowed, latest, loadedTurns } = await createWindowedMode();
+		const { window, unwindowed, latest, loadedTurns } = await createWindowedMode();
 
-		expect(mode.renderTranscriptWindow({ entryId: userId(1) })).toMatchObject({
-			status: "selected",
-			liveTail: false,
-		});
+		expect(window(1)).toEqual({ status: "applied" });
 
 		expect(withoutLoaded(latest())).toEqual(unwindowed().members);
 		expect(loadedTurns(latest())).toEqual([0, 1, 2, 3]);
@@ -310,7 +362,7 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	it("keeps the tool group, its ownership and the completed turn while the tool turn is unloaded and after return", async () => {
-		const { mode, userId, toolCallEntryId, unwindowed, latest } = await createWindowedMode();
+		const { window, userId, toolCallEntryId, unwindowed, latest } = await createWindowedMode();
 		const toolTurn = (projection: Readonly<MessageRenderProjectionV1>) =>
 			projection.members
 				.filter(
@@ -320,9 +372,9 @@ describe("InteractiveMode transcript window", () => {
 				.map(({ loaded: _loaded, ...member }) => member);
 		const expected = toolTurn(unwindowed());
 
-		mode.renderTranscriptWindow({ entryId: userId(5) });
+		window(5);
 		const unloaded = latest();
-		mode.renderTranscriptWindow({ entryId: userId(1) });
+		window(1);
 
 		expect(expected).toContainEqual(
 			expect.objectContaining({ role: "tool-group", ownerEntryId: toolCallEntryId, groupClosed: true }),
@@ -337,9 +389,9 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	it("builds components only for the loaded section", async () => {
-		const { mode, userId, text } = await createWindowedMode();
+		const { window, text } = await createWindowedMode();
 
-		mode.renderTranscriptWindow({ entryId: userId(1) });
+		window(1);
 
 		expect(text()).toContain("leading-notice");
 		expect(text()).toContain("Question 3");
@@ -349,9 +401,9 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	it("renders section B without the turns of A or the tail", async () => {
-		const { mode, userId, text, latest, loadedTurns } = await createWindowedMode();
+		const { window, text, latest, loadedTurns } = await createWindowedMode();
 
-		mode.renderTranscriptWindow({ entryId: userId(5) });
+		window(5);
 
 		expect(loadedTurns(latest())).toEqual([4, 5, 6, 7]);
 		expect(text()).toContain("Question 4");
@@ -361,9 +413,9 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	it("loads A and B together for an overlap", async () => {
-		const { mode, userId, latest, loadedTurns, text } = await createWindowedMode();
+		const { window, latest, loadedTurns, text } = await createWindowedMode();
 
-		mode.renderTranscriptWindow({ entryId: userId(3), adjacent: "next" });
+		window(3, "next");
 
 		expect(loadedTurns(latest())).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
 		expect(text()).toContain("Question 0");
@@ -372,9 +424,9 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	it("marks the last section as the live tail and keeps the trailing notice", async () => {
-		const { mode, userId, latest, loadedTurns, text } = await createWindowedMode();
+		const { window, latest, loadedTurns, text } = await createWindowedMode();
 
-		mode.renderTranscriptWindow({ entryId: userId(8) });
+		window(8);
 
 		expect(latest().liveTail).toBe(true);
 		expect(loadedTurns(latest())).toEqual([8]);
@@ -382,12 +434,12 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	it("returns to A with the same projection and chat content after B", async () => {
-		const { mode, userId, latest, text } = await createWindowedMode();
-		mode.renderTranscriptWindow({ entryId: userId(1) });
+		const { mode, window, latest, text } = await createWindowedMode();
+		window(1);
 		const first = { projection: latest(), text: text(), components: mode.chatContainer.children.length };
 
-		mode.renderTranscriptWindow({ entryId: userId(5) });
-		mode.renderTranscriptWindow({ entryId: userId(1) });
+		window(5);
+		window(1);
 
 		expect(latest()).not.toBe(first.projection);
 		expect(latest()).toEqual(first.projection);
@@ -396,13 +448,64 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	it("leaves the chat and projection unchanged for a missing target", async () => {
-		const { mode, userId, projections, text } = await createWindowedMode();
-		mode.renderTranscriptWindow({ entryId: userId(1) });
+		const { window, requestWindow, projections, text } = await createWindowedMode();
+		window(1);
 		const before = { count: projections.length, text: text() };
 
-		expect(mode.renderTranscriptWindow({ entryId: "unknown" })).toEqual({ status: "missing" });
+		expect(requestWindow({ entryId: "unknown", role: "user" })).toEqual({ status: "missing" });
 
 		expect(projections).toHaveLength(before.count);
 		expect(text()).toBe(before.text);
+	});
+	it("rejects a target whose role differs without changing the chat", async () => {
+		const { requestWindow, userId, projections, text } = await createWindowedMode();
+		const before = { count: projections.length, text: text() };
+
+		expect(requestWindow({ entryId: userId(1), role: "assistant" })).toEqual({ status: "missing" });
+
+		expect(projections).toHaveLength(before.count);
+		expect(text()).toBe(before.text);
+	});
+
+	it("rejects a window while the session streams without changing the chat", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { runtimeHost, window, projections, text } = await createWindowedMode({
+			faux: (faux) =>
+				faux.setResponses([
+					async () => {
+						await gate;
+						return fauxAssistantMessage("late answer");
+					},
+				]),
+		});
+		const prompt = runtimeHost.session.prompt("Stream now");
+		await vi.waitFor(() => expect(runtimeHost.session.isIdle).toBe(false));
+		const before = { count: projections.length, text: text() };
+
+		expect(window(1)).toEqual({ status: "streaming" });
+
+		expect(projections).toHaveLength(before.count);
+		expect(text()).toBe(before.text);
+		release();
+		await prompt;
+	});
+
+	it("replays the applied window completely in the next render with a new capture generation", async () => {
+		const { window, rawRender } = await createWindowedMode();
+		rawRender();
+
+		window(1);
+		const output = rawRender();
+
+		const begin = output.indexOf("\x1b]777;begin-scope-2-");
+		const end = output.indexOf("\x1b]777;end-scope-2\x07");
+		expect(begin).toBe(0);
+		expect(end).toBe(output.length - "\x1b]777;end-scope-2\x07".length);
+		const replayed = stripAnsi(output.slice(begin, end));
+		expect(replayed).toContain("Question 3");
+		expect(replayed).not.toContain("Question 4");
 	});
 });
