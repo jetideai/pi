@@ -140,11 +140,15 @@ export interface SemanticRedrawRequest {
 	rows: number;
 }
 
-/** Experimental: the message that a transcript window must contain. */
+/**
+ * Experimental: the message that a transcript window must contain. With `through`, the window is the compaction
+ * sections from the section of this message to the section of the `through` message, which must not come before it.
+ */
 export interface TranscriptWindowRequestV1 {
 	entryId: string;
 	role: "user" | "assistant";
 	adjacent?: "previous" | "next";
+	through?: { entryId: string; role: "user" | "assistant" };
 }
 
 /** Experimental: "applied" means that the window is composed and its projection is published; replay follows. */
@@ -1590,6 +1594,8 @@ export type MessageRenderProjectionMemberV1 = (
 ) & {
 	/** Experimental: false when a transcript window does not render this member. Absent means rendered. */
 	loaded?: false;
+	/** Experimental: the compaction section of the member in a transcript window projection; 0 is the first. */
+	section?: number;
 };
 
 export interface MessageRenderFinalizedEntryV1 {

@@ -417,8 +417,9 @@ describe("InteractiveMode transcript window", () => {
 		};
 	}
 
+	/** The member metadata without the window facts: the loaded flag and the section. */
 	function withoutLoaded(projection: Readonly<MessageRenderProjectionV1>) {
-		return projection.members.map(({ loaded: _loaded, ...member }) => member);
+		return projection.members.map(({ loaded: _loaded, section: _section, ...member }) => member);
 	}
 
 	it("publishes the ordinary unwindowed projection without window facts", async () => {
@@ -448,7 +449,7 @@ describe("InteractiveMode transcript window", () => {
 					(member) =>
 						member.entryId === userId(2) || ("ownerEntryId" in member && member.ownerEntryId === toolCallEntryId),
 				)
-				.map(({ loaded: _loaded, ...member }) => member);
+				.map(({ loaded: _loaded, section: _section, ...member }) => member);
 		const expected = toolTurn(unwindowed());
 
 		window(5);
@@ -640,6 +641,110 @@ describe("InteractiveMode transcript window", () => {
 			expect(next).toEqual({ counts: [0, 0, 1, 1, 1, 1], liveTail: true, metadata: unwindowed().members });
 		});
 	});
+	describe("section facts and interval requests", () => {
+		/** The section of each turn: compactions come before turns 4 and 8. */
+		const turnSection = (turn: number) => (turn < 4 ? 0 : turn < 8 ? 1 : 2);
+		const sectionsOf = (projection: Readonly<MessageRenderProjectionV1>) =>
+			projection.members.map((member) => member.section);
+
+		it("gives every windowed member, also an unloaded one, the section of its item", async () => {
+			const { window, unwindowed, latest, journal } = await createWindowedMode();
+			const turnOf = (entryId: string) => journal.findIndex((ids) => ids.includes(entryId));
+
+			window(5);
+
+			expect(sectionsOf(unwindowed()).every((section) => section === undefined)).toBe(true);
+			expect(sectionsOf(latest())).toEqual(
+				latest().members.map((member) =>
+					turnSection(turnOf("ownerEntryId" in member ? member.ownerEntryId : member.entryId)),
+				),
+			);
+		});
+
+		it("selects the inclusive section interval from one member through another", async () => {
+			const { requestWindow, userId, latest, loadedTurns } = await createWindowedMode();
+
+			const result = requestWindow({
+				entryId: userId(2),
+				role: "user",
+				through: { entryId: userId(5), role: "user" },
+			});
+
+			expect(result).toEqual({ status: "applied" });
+			expect(loadedTurns(latest())).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+			expect(latest().liveTail).toBe(false);
+		});
+
+		it("addresses a section without a user message by its assistant member", async () => {
+			const { requestWindow, journal, latest, text } = await openWindowedSession(oneTurnWithTwoCompactions);
+			const markers = ["Question one", "path-t1", "path-t2", "path-t3", "path-t4", "Final answer"];
+
+			requestWindow({
+				entryId: journal.second,
+				role: "assistant",
+				through: { entryId: journal.final, role: "assistant" },
+			});
+
+			expect(markers.map((marker) => text().split(marker).length - 1)).toEqual([0, 0, 1, 1, 1, 1]);
+			expect([...new Set(latest().members.map((member) => member.section))]).toEqual([0, 1, 2]);
+		});
+
+		it("refuses a reversed interval, an interval with an adjacent section and a missing or other-role end", async () => {
+			const { requestWindow, userId, window, projections, text } = await createWindowedMode();
+			window(5);
+			const published = projections.length;
+			const before = text();
+
+			const results = [
+				requestWindow({ entryId: userId(5), role: "user", through: { entryId: userId(1), role: "user" } }),
+				requestWindow({
+					entryId: userId(1),
+					role: "user",
+					adjacent: "next",
+					through: { entryId: userId(5), role: "user" },
+				}),
+				requestWindow({ entryId: userId(1), role: "user", through: { entryId: "unknown", role: "user" } }),
+				requestWindow({ entryId: userId(1), role: "user", through: { entryId: userId(5), role: "assistant" } }),
+				requestWindow({ entryId: userId(1), role: "assistant", through: { entryId: userId(5), role: "user" } }),
+			];
+
+			expect(results.map((result) => result.status)).toEqual([
+				"missing",
+				"missing",
+				"missing",
+				"missing",
+				"missing",
+			]);
+			expect(projections).toHaveLength(published);
+			expect(text()).toBe(before);
+		});
+
+		it("keeps only the requested interval through repeated forward and backward transitions", async () => {
+			const { requestWindow, userId, latest, loadedTurns, window } = await createWindowedMode();
+			const interval = (from: number, through: number) =>
+				requestWindow({ entryId: userId(from), role: "user", through: { entryId: userId(through), role: "user" } });
+
+			window(5);
+			const loaded: number[][] = [];
+			for (const [from, through] of [
+				[5, 8],
+				[2, 5],
+				[5, 8],
+				[2, 5],
+			] as const) {
+				interval(from, through);
+				loaded.push(loadedTurns(latest()));
+			}
+
+			expect(loaded).toEqual([
+				[4, 5, 6, 7, 8],
+				[0, 1, 2, 3, 4, 5, 6, 7],
+				[4, 5, 6, 7, 8],
+				[0, 1, 2, 3, 4, 5, 6, 7],
+			]);
+		});
+	});
+
 	describe("with an observer that accepts transcript windows", () => {
 		const declared = { transcriptWindows: true };
 		const loadedEntries = (projection: Readonly<MessageRenderProjectionV1>) => [
@@ -896,6 +1001,22 @@ describe("InteractiveMode transcript window", () => {
 
 			expect(latest()).toMatchObject({ mode: "append", liveTail: true });
 			expect(loadedUsers(latest())).toEqual([journal[8]![0], reply]);
+		});
+
+		it("keeps the published sections in a live reply and gives the reply the live tail section", async () => {
+			const { runtimeHost, latest } = await openWindowedSession(nineTurns, {
+				transcriptWindows: true,
+				faux: answering,
+			});
+			const opened = latest().members.map((member) => member.section);
+
+			await runtimeHost.session.prompt("Question 9");
+			await drainEvents();
+
+			const replied = latest().members.map((member) => member.section);
+			expect(latest().mode).toBe("append");
+			expect(replied.slice(0, opened.length)).toEqual(opened);
+			expect(new Set(replied.slice(opened.length))).toEqual(new Set([2]));
 		});
 
 		it("renders the closed section and one summary after a boundary compaction at turn end", async () => {

@@ -324,8 +324,30 @@ function sameProjectionMember(
 		("groupOrder" in left ? left.groupOrder : undefined) === ("groupOrder" in right ? right.groupOrder : undefined) &&
 		("groupClosed" in left ? left.groupClosed : undefined) ===
 			("groupClosed" in right ? right.groupClosed : undefined) &&
-		left.loaded === right.loaded
+		left.loaded === right.loaded &&
+		left.section === right.section
 	);
+}
+
+/**
+ * Live output after a window render appends to its last section: a compaction rebuilds the window. Members that the
+ * window render gave a section keep it.
+ */
+function withAppendedSections(
+	members: readonly MessageRenderProjectionMemberV1[],
+): readonly MessageRenderProjectionMemberV1[] {
+	let section: number | undefined;
+	let changed = false;
+	const sectioned = members.map((member) => {
+		if (member.section !== undefined) {
+			section = member.section;
+			return member;
+		}
+		if (section === undefined) return member;
+		changed = true;
+		return { ...member, section };
+	});
+	return changed ? sectioned : members;
 }
 
 function isProjectionPrefix(
@@ -2430,16 +2452,17 @@ export class InteractiveMode {
 	): void {
 		const observers = this.getMessageRenderProjectionObserversV1();
 		if (observers.length === 0) return;
-		const previous = this.publishedMessageRenderProjection?.members;
-		const mode =
-			requestedMode === "append" && previous && !isProjectionPrefix(previous, members) ? "replace" : requestedMode;
 		// Live output continues the published window, so an append keeps its liveTail fact.
 		const windowTail =
 			liveTail ?? (requestedMode === "append" ? this.publishedMessageRenderProjection?.liveTail : undefined);
+		const projected = windowTail === undefined ? members : withAppendedSections(members);
+		const previous = this.publishedMessageRenderProjection?.members;
+		const mode =
+			requestedMode === "append" && previous && !isProjectionPrefix(previous, projected) ? "replace" : requestedMode;
 		const projection = buildMessageRenderProjection({
 			producerSessionId: this.sessionManager.getSessionId(),
 			renderScopeId: this.messageRenderScopeId,
-			members,
+			members: projected,
 			mode,
 			...(finalized ? { finalized } : {}),
 			settledTurns: this.messageRenderSettlements ?? [],
@@ -4619,11 +4642,13 @@ export class InteractiveMode {
 			updateFooter?: boolean;
 			inferMissingTurns?: boolean;
 			window?: { start: number; end: number; liveTail: boolean };
+			/** The compaction section of each item; a window projection gives it with every member. */
+			sections?: readonly number[];
 		} = {},
 	): void {
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
-		const { window } = options;
+		const { window, sections } = options;
 		const projectionObservers = this.getMessageRenderProjectionObserversV1();
 		if (projectionObservers.length > 0) {
 			const members: MessageRenderProjectionMemberV1[] = [];
@@ -4636,8 +4661,13 @@ export class InteractiveMode {
 							? composeAssistantResponse(item.entryId, item.message, false, this.hideThinkingBlock).members
 							: [];
 				const loaded = !window || (index >= window.start && index < window.end);
+				const section = window ? sections?.[index] : undefined;
 				members.push(
-					...(loaded ? itemMembers : itemMembers.map((member) => ({ ...member, loaded: false as const }))),
+					...itemMembers.map((member) => ({
+						...member,
+						...(loaded ? {} : { loaded: false as const }),
+						...(section === undefined ? {} : { section }),
+					})),
 				);
 			}
 			this.messageRenderMembers = members;
@@ -4788,11 +4818,18 @@ export class InteractiveMode {
 	 */
 	private requestTranscriptWindow(request: TranscriptWindowRequestV1): TranscriptWindowResultV1 {
 		if (!this.session.isIdle) return { status: "streaming" };
-		const transcript = this.selectTranscript(request);
-		const target = transcript.items.some(
-			(item) => isRenderMessageItem(item) && item.entryId === request.entryId && item.message.role === request.role,
-		);
-		if (!target || !transcript.window) return { status: "missing" };
+		const { through } = request;
+		// An interval has no adjacent section; both together are not a valid request.
+		if (through && request.adjacent) return { status: "missing" };
+		// An interval request is exact: a missing or reversed interval is missing, not the tail.
+		const transcript = through
+			? this.selectTranscript({ from: request.entryId, to: through.entryId }, { tailWhenMissing: false })
+			: this.selectTranscript(request);
+		const present = (end: { entryId: string; role: "user" | "assistant" }) =>
+			transcript.items.some(
+				(item) => isRenderMessageItem(item) && item.entryId === end.entryId && item.message.role === end.role,
+			);
+		if (!present(request) || (through && !present(through)) || !transcript.window) return { status: "missing" };
 		this.chatContainer.clear();
 		this.renderTranscript(transcript, { inferMissingTurns: true });
 		return { status: "applied" };
@@ -4815,8 +4852,8 @@ export class InteractiveMode {
 		transcript: ReturnType<InteractiveMode["selectTranscript"]>,
 		options: { updateFooter?: boolean; inferMissingTurns?: boolean },
 	): void {
-		const { items, window } = transcript;
-		this.renderSessionItems(items, { ...options, ...(window ? { window } : {}) });
+		const { items, window, sections } = transcript;
+		this.renderSessionItems(items, { ...options, ...(window ? { window, sections } : {}) });
 		const loadedIds = window
 			? items.slice(window.start, window.end).flatMap((item) => {
 					const { entryId } = transcriptWindowItem(item, 0);
@@ -4839,9 +4876,14 @@ export class InteractiveMode {
 	 * Select the transcript of the selected branch before any component is built. The items are the full
 	 * transcript; a target selects the compaction sections whose components are built.
 	 */
-	private selectTranscript(target?: TranscriptWindowTarget): {
+	private selectTranscript(
+		target?: TranscriptWindowTarget,
+		options: { tailWhenMissing?: boolean } = {},
+	): {
 		items: RenderSessionItem[];
 		window?: Extract<TranscriptWindowSelection, { status: "selected" }>;
+		/** The compaction section of each item, when a window is selected. */
+		sections?: number[];
 	} {
 		const sections = this.sessionManager.buildTranscriptSections().map(sessionEntryRenderItems);
 		const items = sections.flat();
@@ -4851,9 +4893,11 @@ export class InteractiveMode {
 		);
 		let selection = selectTranscriptWindow(windowItems, target);
 		// The sections of an earlier window can be gone; the transcript then opens at its tail.
-		if (selection.status !== "selected" && "from" in target)
+		if (selection.status !== "selected" && "from" in target && (options.tailWhenMissing ?? true))
 			selection = selectTranscriptWindow(windowItems, { tail: true });
-		return selection.status === "selected" ? { items, window: selection } : { items };
+		return selection.status === "selected"
+			? { items, window: selection, sections: windowItems.map((item) => item.section) }
+			: { items };
 	}
 
 	/** Add the user messages of all transcript items to the editor history, also those without components. */
