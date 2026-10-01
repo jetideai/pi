@@ -594,6 +594,8 @@ export class InteractiveMode {
 	private semanticStreamingContainer: Container | undefined;
 	private semanticStreamingBaseMemberCount = 0;
 	private messageRenderMembers: MessageRenderProjectionMemberV1[] = [];
+	/** The first and last canonical member of the loaded transcript window, and the source that it belongs to. */
+	private loadedTranscript: { sessionId: string; leafId: string | null; from: string; to: string } | undefined;
 	private messageRenderSettlements: readonly Readonly<SemanticTurnSettlementV1>[] = [];
 	private publishedMessageRenderProjection: Readonly<MessageRenderProjectionV1> | undefined;
 	private messageRenderScopeId = crypto.randomUUID();
@@ -4771,8 +4773,36 @@ export class InteractiveMode {
 		);
 		if (!target || !transcript.window) return { status: "missing" };
 		this.chatContainer.clear();
-		this.renderSessionItems(transcript.items, { inferMissingTurns: true, window: transcript.window });
+		this.renderTranscript(transcript, { inferMissingTurns: true });
 		return { status: "applied" };
+	}
+
+	private acceptsTranscriptWindows(): boolean {
+		return this.session.extensionRunner?.acceptsTranscriptWindowsV1?.() === true;
+	}
+
+	/** Render the selected transcript and remember the canonical identity of its loaded sections. */
+	private renderTranscript(
+		transcript: ReturnType<InteractiveMode["selectTranscript"]>,
+		options: { updateFooter?: boolean; inferMissingTurns?: boolean },
+	): void {
+		const { items, window } = transcript;
+		this.renderSessionItems(items, { ...options, ...(window ? { window } : {}) });
+		const loadedIds = window
+			? items.slice(window.start, window.end).flatMap((item) => {
+					const { entryId } = transcriptWindowItem(item, 0);
+					return entryId ? [entryId] : [];
+				})
+			: [];
+		this.loadedTranscript =
+			loadedIds.length > 0
+				? {
+						sessionId: this.sessionManager.getSessionId(),
+						leafId: this.sessionManager.getLeafId(),
+						from: loadedIds[0]!,
+						to: loadedIds.at(-1)!,
+					}
+				: undefined;
 	}
 
 	/**
@@ -4789,7 +4819,10 @@ export class InteractiveMode {
 		const windowItems = sections.flatMap((sectionItems, section) =>
 			sectionItems.map((item) => transcriptWindowItem(item, section)),
 		);
-		const selection = selectTranscriptWindow(windowItems, target);
+		let selection = selectTranscriptWindow(windowItems, target);
+		// The sections of an earlier window can be gone; the transcript then opens at its tail.
+		if (selection.status !== "selected" && "from" in target)
+			selection = selectTranscriptWindow(windowItems, { tail: true });
 		return selection.status === "selected" ? { items, window: selection } : { items };
 	}
 
@@ -4899,15 +4932,9 @@ export class InteractiveMode {
 	}
 
 	renderInitialMessages(): void {
-		const transcript = this.selectTranscript(
-			this.session.extensionRunner?.acceptsTranscriptWindowsV1?.() === true ? { tail: true } : undefined,
-		);
+		const transcript = this.selectTranscript(this.acceptsTranscriptWindows() ? { tail: true } : undefined);
 		this.addUserMessagesToHistory(transcript.items);
-		this.renderSessionItems(transcript.items, {
-			updateFooter: true,
-			inferMissingTurns: true,
-			...(transcript.window ? { window: transcript.window } : {}),
-		});
+		this.renderTranscript(transcript, { updateFooter: true, inferMissingTurns: true });
 		this.renderProjectTrustWarningIfNeeded();
 
 		// Show compaction info if session was compacted
@@ -4953,9 +4980,19 @@ export class InteractiveMode {
 		});
 	}
 
+	/** Rebuild the chat from the same source: the loaded sections stay loaded while the selected path is the same. */
 	private rebuildChatFromMessages(): void {
+		const loaded = this.loadedTranscript;
+		const sameSource =
+			loaded?.sessionId === this.sessionManager.getSessionId() && loaded.leafId === this.sessionManager.getLeafId();
+		const target: TranscriptWindowTarget | undefined = !this.acceptsTranscriptWindows()
+			? undefined
+			: loaded && sameSource
+				? { from: loaded.from, to: loaded.to }
+				: { tail: true };
 		this.chatContainer.clear();
-		this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
+		// A window keeps the turn metadata of the open, so the Timeline keeps every turn.
+		this.renderTranscript(this.selectTranscript(target), { inferMissingTurns: target !== undefined });
 	}
 
 	// =========================================================================

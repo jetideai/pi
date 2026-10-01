@@ -9,9 +9,13 @@ export interface TranscriptWindowItem {
 	readonly entryId?: string;
 }
 
-/** A member of the transcript, or the logical tail: the latest section that has items. */
+/**
+ * A member of the transcript, the sections from the member `from` to the member `to` of an earlier window, or the
+ * logical tail: the latest section that has items.
+ */
 export type TranscriptWindowTarget =
 	| { readonly entryId: string; readonly adjacent?: "previous" | "next" }
+	| { readonly from: string; readonly to: string }
 	| { readonly tail: true };
 
 /** The loaded item interval is [start, end). */
@@ -23,9 +27,6 @@ export function selectTranscriptWindow(
 	items: readonly TranscriptWindowItem[],
 	target: TranscriptWindowTarget,
 ): TranscriptWindowSelection {
-	const targetIndex = "tail" in target ? items.length - 1 : items.findIndex((item) => item.entryId === target.entryId);
-	if (targetIndex < 0) return { status: "missing" };
-	const adjacent = "tail" in target ? undefined : target.adjacent;
 	const sectionStart = (index: number): number => {
 		let start = index;
 		while (start > 0 && items[start - 1]!.section === items[index]!.section) start -= 1;
@@ -36,6 +37,16 @@ export function selectTranscriptWindow(
 		while (end < items.length && items[end]!.section === items[index]!.section) end += 1;
 		return end;
 	};
+	if ("from" in target) {
+		const first = items.findIndex((item) => item.entryId === target.from);
+		const last = items.findIndex((item) => item.entryId === target.to);
+		if (first < 0 || last < first) return { status: "missing" };
+		const end = sectionEnd(last);
+		return { status: "selected", start: sectionStart(first), end, liveTail: end === items.length };
+	}
+	const targetIndex = "tail" in target ? items.length - 1 : items.findIndex((item) => item.entryId === target.entryId);
+	if (targetIndex < 0) return { status: "missing" };
+	const adjacent = "tail" in target ? undefined : target.adjacent;
 	let start = sectionStart(targetIndex);
 	let end = sectionEnd(targetIndex);
 	if (adjacent === "previous" && start > 0) start = sectionStart(start - 1);

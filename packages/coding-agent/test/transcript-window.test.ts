@@ -376,7 +376,9 @@ describe("InteractiveMode transcript window", () => {
 	}
 
 	/** Nine turns with a leading notice, a tool turn, compactions before turns 4 and 8 and a trailing notice. */
-	async function createWindowedMode(options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void } = {}) {
+	async function createWindowedMode(
+		options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void; transcriptWindows?: boolean } = {},
+	) {
 		const session = await openWindowedSession(nineTurns, options);
 		const turnEntryIds = session.journal;
 		const turnOf = (member: Readonly<MessageRenderProjectionMemberV1>): number =>
@@ -700,6 +702,80 @@ describe("InteractiveMode transcript window", () => {
 			).toEqual([journal[4]![0], journal[5]![0]]);
 			expect(text()).toContain("Question 5");
 			expect(text()).not.toContain("Question 3");
+		});
+	});
+	describe("rebuilds of the same source with an observer that accepts transcript windows", () => {
+		const declared = { transcriptWindows: true };
+		const loadedUsers = (projection: Readonly<MessageRenderProjectionV1>) =>
+			projection.members
+				.filter((member) => member.role === "user" && member.loaded !== false)
+				.map((member) => member.entryId);
+		const reload = (mode: WindowedMode) =>
+			(mode as unknown as { handleReloadCommand(): Promise<void> }).handleReloadCommand();
+
+		it("keeps an older section with every member through both rebuilds of /reload", async () => {
+			const { mode, window, userId, projections, latest, text } = await createWindowedMode(declared);
+			window(1);
+			const before = latest();
+			const published = projections.length;
+
+			await reload(mode);
+
+			const rebuilt = projections.slice(published);
+			const section = [0, 1, 2, 3].map(userId);
+			expect(rebuilt.length).toBeGreaterThan(0);
+			expect(rebuilt.map((projection) => [loadedUsers(projection), projection.liveTail])).toEqual(
+				rebuilt.map(() => [section, false]),
+			);
+			expect(withoutLoaded(latest())).toEqual(withoutLoaded(before));
+			expect(text()).toContain("Question 1");
+			expect(text()).not.toContain("Question 8");
+		});
+
+		it("keeps an adjacent pair of sections through /reload", async () => {
+			const { mode, window, userId, latest } = await createWindowedMode(declared);
+			window(3, "next");
+
+			await reload(mode);
+
+			expect(loadedUsers(latest())).toEqual([0, 1, 2, 3, 4, 5, 6, 7].map(userId));
+			expect(latest().liveTail).toBe(false);
+		});
+
+		it("opens the latest section on /reload after the selected path changed", async () => {
+			const { mode, runtimeHost, window, userId, latest } = await createWindowedMode(declared);
+			window(1);
+			const appended = runtimeHost.session.sessionManager.appendMessage({
+				role: "user",
+				content: "Question 9",
+				timestamp: 1,
+			});
+
+			await reload(mode);
+
+			expect(loadedUsers(latest())).toEqual([userId(8), appended]);
+			expect(latest().liveTail).toBe(true);
+		});
+
+		it("keeps the loaded section in a settings rebuild", async () => {
+			const { mode, window, userId, latest } = await createWindowedMode(declared);
+			window(5);
+			const before = latest();
+
+			(mode as unknown as { rebuildChatFromMessages(): void }).rebuildChatFromMessages();
+
+			expect(loadedUsers(latest())).toEqual([4, 5, 6, 7].map(userId));
+			expect(withoutLoaded(latest())).toEqual(withoutLoaded(before));
+		});
+
+		it("keeps the full render on /reload for an observer without the declaration", async () => {
+			const { mode, window, latest } = await createWindowedMode();
+			window(1);
+
+			await reload(mode);
+
+			expect(latest().liveTail).toBeUndefined();
+			expect(latest().members.every((member) => member.loaded !== false)).toBe(true);
 		});
 	});
 });
