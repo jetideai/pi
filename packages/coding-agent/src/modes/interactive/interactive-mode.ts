@@ -595,7 +595,9 @@ export class InteractiveMode {
 	private semanticStreamingBaseMemberCount = 0;
 	private messageRenderMembers: MessageRenderProjectionMemberV1[] = [];
 	/** The first and last canonical member of the loaded transcript window, and the source that it belongs to. */
-	private loadedTranscript: { sessionId: string; leafId: string | null; from: string; to: string } | undefined;
+	private loadedTranscript:
+		| { sessionId: string; leafId: string | null; from: string; to: string; liveTail: boolean }
+		| undefined;
 	private messageRenderSettlements: readonly Readonly<SemanticTurnSettlementV1>[] = [];
 	private publishedMessageRenderProjection: Readonly<MessageRenderProjectionV1> | undefined;
 	private messageRenderScopeId = crypto.randomUUID();
@@ -2431,6 +2433,9 @@ export class InteractiveMode {
 		const previous = this.publishedMessageRenderProjection?.members;
 		const mode =
 			requestedMode === "append" && previous && !isProjectionPrefix(previous, members) ? "replace" : requestedMode;
+		// Live output continues the published window, so an append keeps its liveTail fact.
+		const windowTail =
+			liveTail ?? (requestedMode === "append" ? this.publishedMessageRenderProjection?.liveTail : undefined);
 		const projection = buildMessageRenderProjection({
 			producerSessionId: this.sessionManager.getSessionId(),
 			renderScopeId: this.messageRenderScopeId,
@@ -2439,7 +2444,7 @@ export class InteractiveMode {
 			...(finalized ? { finalized } : {}),
 			settledTurns: this.messageRenderSettlements ?? [],
 			inferMissingTurns,
-			...(liveTail !== undefined ? { liveTail } : {}),
+			...(windowTail !== undefined ? { liveTail: windowTail } : {}),
 			readMessage: (entryId) => {
 				if (finalized?.entryId === entryId) return finalized.message;
 				const entry = this.sessionManager.getEntry(entryId);
@@ -3927,19 +3932,30 @@ export class InteractiveMode {
 					const branch = this.sessionManager.getBranch();
 					const compactionIndex = branch.findIndex((entry) => entry.id === event.entry.id);
 					const entriesAfterCompaction = new Set(branch.slice(compactionIndex + 1).map((entry) => entry.id));
-					const retainedEntries = entries.slice(1);
-					this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
-					this.addMessageToChat(
-						createCompactionSummaryMessage(event.entry.summary, event.entry.tokensBefore, event.entry.timestamp),
+					const summary = createCompactionSummaryMessage(
+						event.entry.summary,
+						event.entry.tokensBefore,
+						event.entry.timestamp,
 					);
-					if (event.entry.usage) {
-						this.addCompactionCostNotice({
-							type: "compaction_cost",
-							kind: "compaction",
-							usage: event.entry.usage,
-						});
+					const cost: CompactionCostNotice | undefined = event.entry.usage
+						? { type: "compaction_cost", kind: "compaction", usage: event.entry.usage }
+						: undefined;
+					if (this.acceptsTranscriptWindows()) {
+						// The latest section that has items: the closed section, or the entries after the cut.
+						const transcript = this.selectTranscript({ tail: true });
+						if (entriesAfterCompaction.size === 0) {
+							this.renderTranscript(transcript, { inferMissingTurns: true });
+							this.addCompactionSummary(summary, cost);
+						} else {
+							this.addCompactionSummary(summary, cost);
+							this.renderTranscript(transcript, { inferMissingTurns: true });
+						}
+					} else {
+						const retainedEntries = entries.slice(1);
+						this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
+						this.addCompactionSummary(summary, cost);
+						this.renderSessionEntries(retainedEntries.filter((entry) => entriesAfterCompaction.has(entry.id)));
 					}
-					this.renderSessionEntries(retainedEntries.filter((entry) => entriesAfterCompaction.has(entry.id)));
 					for (const entryId of entriesAfterCompaction) this.entriesRenderedByBoundaryCompaction.add(entryId);
 					this.footer.invalidate();
 					this.ui.requestRender();
@@ -4301,7 +4317,12 @@ export class InteractiveMode {
 					this.startFreshMessageRenderScope();
 					this.ui.markReplayCause("compact");
 					this.chatContainer.clear();
-					this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
+					if (this.acceptsTranscriptWindows()) {
+						// The new tail is empty, so the latest section that has items is the closed one.
+						this.renderTranscript(this.selectTranscript({ tail: true }), { inferMissingTurns: true });
+					} else {
+						this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
+					}
 					this.addMessageToChat(
 						createCompactionSummaryMessage(
 							event.result.summary,
@@ -4777,6 +4798,14 @@ export class InteractiveMode {
 		return { status: "applied" };
 	}
 
+	private addCompactionSummary(
+		summary: ReturnType<typeof createCompactionSummaryMessage>,
+		cost: CompactionCostNotice | undefined,
+	): void {
+		this.addMessageToChat(summary);
+		if (cost) this.addCompactionCostNotice(cost);
+	}
+
 	private acceptsTranscriptWindows(): boolean {
 		return this.session.extensionRunner?.acceptsTranscriptWindowsV1?.() === true;
 	}
@@ -4801,6 +4830,7 @@ export class InteractiveMode {
 						leafId: this.sessionManager.getLeafId(),
 						from: loadedIds[0]!,
 						to: loadedIds.at(-1)!,
+						liveTail: window!.liveTail,
 					}
 				: undefined;
 	}
@@ -4980,19 +5010,27 @@ export class InteractiveMode {
 		});
 	}
 
-	/** Rebuild the chat from the same source: the loaded sections stay loaded while the selected path is the same. */
+	/**
+	 * Rebuild the chat from the same source: the loaded sections stay loaded while the selected path is the same. A
+	 * window at the live tail also keeps the entries that were appended after it on the same path.
+	 */
 	private rebuildChatFromMessages(): void {
-		const loaded = this.loadedTranscript;
-		const sameSource =
-			loaded?.sessionId === this.sessionManager.getSessionId() && loaded.leafId === this.sessionManager.getLeafId();
-		const target: TranscriptWindowTarget | undefined = !this.acceptsTranscriptWindows()
-			? undefined
-			: loaded && sameSource
-				? { from: loaded.from, to: loaded.to }
-				: { tail: true };
 		this.chatContainer.clear();
 		// A window keeps the turn metadata of the open, so the Timeline keeps every turn.
-		this.renderTranscript(this.selectTranscript(target), { inferMissingTurns: target !== undefined });
+		this.renderTranscript(this.selectTranscript(this.sameSourceTarget()), {
+			inferMissingTurns: this.acceptsTranscriptWindows(),
+		});
+	}
+
+	/** The loaded window of the current source, or the tail; nothing without a declaration of transcript windows. */
+	private sameSourceTarget(): TranscriptWindowTarget | undefined {
+		if (!this.acceptsTranscriptWindows()) return undefined;
+		const loaded = this.loadedTranscript;
+		if (loaded?.sessionId !== this.sessionManager.getSessionId()) return { tail: true };
+		if (loaded.leafId === this.sessionManager.getLeafId()) return { from: loaded.from, to: loaded.to };
+		// Appended entries extend the path; another branch does not contain the earlier leaf.
+		const appended = loaded.liveTail && this.sessionManager.getBranch().some((entry) => entry.id === loaded.leafId);
+		return appended ? { from: loaded.from } : { tail: true };
 	}
 
 	// =========================================================================

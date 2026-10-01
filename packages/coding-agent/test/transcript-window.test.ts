@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
@@ -231,7 +231,12 @@ describe("InteractiveMode transcript window", () => {
 
 	async function openWindowedSession<T>(
 		journal: (sessionManager: SessionManager) => T,
-		options: { faux?: (faux: ReturnType<typeof registerFauxProvider>) => void; transcriptWindows?: boolean } = {},
+		options: {
+			faux?: (faux: ReturnType<typeof registerFauxProvider>) => void;
+			transcriptWindows?: boolean;
+			settings?: Record<string, unknown>;
+			turnEndCompaction?: boolean;
+		} = {},
 	) {
 		initTheme("dark");
 		const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -241,6 +246,7 @@ describe("InteractiveMode transcript window", () => {
 		});
 		const tempDir = join(tmpdir(), `pi-transcript-window-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
+		if (options.settings) writeFileSync(join(tempDir, "settings.json"), JSON.stringify(options.settings));
 		const faux = registerFauxProvider();
 		options.faux?.(faux);
 		const authStorage = AuthStorage.inMemory();
@@ -285,6 +291,14 @@ describe("InteractiveMode transcript window", () => {
 								},
 								options.transcriptWindows ? { transcriptWindows: true } : undefined,
 							);
+							let compactedAtTurnEnd = false;
+							if (options.turnEndCompaction) {
+								pi.on("turn_end", () => {
+									if (compactedAtTurnEnd) return;
+									compactedAtTurnEnd = true;
+									return { entries: [{ type: "compaction", summary: "SUMMARY-T", firstKeptEntryId: null }] };
+								});
+							}
 							// The interactive command context navigates the session tree the same way as /tree.
 							pi.registerCommand(BRANCH_COMMAND, {
 								description: "Navigate the session tree",
@@ -342,6 +356,8 @@ describe("InteractiveMode transcript window", () => {
 		cleanups.push(() => mode.renderer.stop({ preserveScreen: true }));
 		// init() mounts the document the same way; it also starts terminal input, which this test does not need.
 		mode.renderer.addChild(mode.documentContainer);
+		// Session events run init() on an uninitialized mode; the mounted document is the part that these tests need.
+		(mode as unknown as { isInitialized: boolean }).isInitialized = true;
 		projections.length = 0;
 		await runtimeHost.switchSession(sessionFile);
 		const requestWindow = (request: TranscriptWindowRequestV1): TranscriptWindowResultV1 => {
@@ -773,6 +789,153 @@ describe("InteractiveMode transcript window", () => {
 			window(1);
 
 			await reload(mode);
+
+			expect(latest().liveTail).toBeUndefined();
+			expect(latest().members.every((member) => member.loaded !== false)).toBe(true);
+		});
+	});
+	describe("live compaction with an observer that accepts transcript windows", () => {
+		const compactable = { transcriptWindows: true, settings: { compaction: { keepRecentTokens: 1 } } };
+		const loadedUsers = (projection: Readonly<MessageRenderProjectionV1>) =>
+			projection.members
+				.filter((member) => member.role === "user" && member.loaded !== false)
+				.map((member) => member.entryId);
+		const summaries = (mode: WindowedMode) =>
+			mode.chatContainer.children.filter(
+				(component) => component.constructor.name === "CompactionSummaryMessageComponent",
+			).length;
+		/** Interactive mode handles session events through a promise chain; drain it, bounded, without timers. */
+		const drainEvents = async () => {
+			for (let turn = 0; turn < 50; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+		};
+		const compact = async (mode: WindowedMode) => {
+			await (mode as unknown as { handleCompactCommand(): Promise<void> }).handleCompactCommand();
+			await drainEvents();
+		};
+		const reload = (mode: WindowedMode) =>
+			(mode as unknown as { handleReloadCommand(): Promise<void> }).handleReloadCommand();
+		/** "Question N" gets "Answer N"; any other request, such as a compaction summary, gets a summary. */
+		const answering = (faux: ReturnType<typeof registerFauxProvider>) =>
+			faux.setResponses(
+				Array.from({ length: 20 }, () => (context: { messages: unknown[] }) => {
+					const question = /Question (\d+)/.exec(JSON.stringify(context.messages.at(-1)))?.[1];
+					return fauxAssistantMessage(question ? `Answer ${question}` : "SUMMARY");
+				}),
+			);
+
+		it("renders the closed section and one summary after a manual compaction", async () => {
+			const { mode, journal, latest, text } = await openWindowedSession(nineTurns, {
+				...compactable,
+				faux: answering,
+			});
+
+			await compact(mode);
+
+			expect(summaries(mode)).toBe(1);
+			expect(loadedUsers(latest())).toEqual([journal[8]![0]]);
+			expect(latest().liveTail).toBe(true);
+			expect(latest().members.filter((member) => member.role === "user")).toHaveLength(9);
+			expect(text()).not.toContain("Question 7");
+		});
+
+		it("keeps the closed section and the reply after it on /reload", async () => {
+			const { mode, runtimeHost, journal, latest } = await openWindowedSession(nineTurns, {
+				...compactable,
+				faux: answering,
+			});
+			await compact(mode);
+			await runtimeHost.session.prompt("Question 9");
+			await drainEvents();
+			const reply = runtimeHost.session.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "message" && entry.message.role === "user")
+				.at(-1)!.id;
+
+			await reload(mode);
+
+			expect(loadedUsers(latest())).toEqual([journal[8]![0], reply]);
+			expect(latest().liveTail).toBe(true);
+		});
+
+		it("loads only the latest closed section after a second compaction", async () => {
+			const { mode, runtimeHost, latest } = await openWindowedSession(nineTurns, {
+				...compactable,
+				faux: answering,
+			});
+			await compact(mode);
+			await runtimeHost.session.prompt("Question 9");
+			await runtimeHost.session.prompt("Question 10");
+			await drainEvents();
+			const users = runtimeHost.session.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "message" && entry.message.role === "user")
+				.map((entry) => entry.id);
+
+			await compact(mode);
+
+			expect(
+				runtimeHost.session.sessionManager.getEntries().filter((entry) => entry.type === "compaction"),
+			).toHaveLength(4);
+			expect(summaries(mode)).toBe(1);
+			expect(loadedUsers(latest())).toEqual(users.slice(-2));
+			expect(latest().liveTail).toBe(true);
+		});
+
+		it("keeps the window facts in the projection of a live reply after the open", async () => {
+			const { runtimeHost, journal, latest } = await openWindowedSession(nineTurns, {
+				transcriptWindows: true,
+				faux: answering,
+			});
+
+			await runtimeHost.session.prompt("Question 9");
+			await drainEvents();
+			const reply = runtimeHost.session.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "message" && entry.message.role === "user")
+				.at(-1)!.id;
+
+			expect(latest()).toMatchObject({ mode: "append", liveTail: true });
+			expect(loadedUsers(latest())).toEqual([journal[8]![0], reply]);
+		});
+
+		it("renders the closed section and one summary after a boundary compaction at turn end", async () => {
+			const { mode, runtimeHost, journal, latest, text } = await openWindowedSession(nineTurns, {
+				transcriptWindows: true,
+				turnEndCompaction: true,
+				faux: answering,
+			});
+
+			await runtimeHost.session.prompt("Question 9");
+			await drainEvents();
+			const reply = runtimeHost.session.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "message" && entry.message.role === "user")
+				.at(-1)!.id;
+
+			expect(summaries(mode)).toBe(1);
+			expect(loadedUsers(latest())).toEqual([journal[8]![0], reply]);
+			expect(latest().liveTail).toBe(true);
+			expect(text()).not.toContain("Question 7");
+		});
+
+		it("opens the latest section of the new path on /reload after a branch change", async () => {
+			const { mode, branch, journal, requestWindow, latest } = await openWindowedSession(nineTurns, compactable);
+			requestWindow({ entryId: journal[1]![0]!, role: "user" });
+
+			await branch(journal[6]![0]!);
+			await reload(mode);
+
+			expect(loadedUsers(latest())).toEqual([journal[4]![0], journal[5]![0]]);
+			expect(latest().liveTail).toBe(true);
+		});
+
+		it("keeps the full render after a compaction for an observer without the declaration", async () => {
+			const { mode, latest } = await openWindowedSession(nineTurns, {
+				settings: compactable.settings,
+				faux: answering,
+			});
+
+			await compact(mode);
 
 			expect(latest().liveTail).toBeUndefined();
 			expect(latest().members.every((member) => member.loaded !== false)).toBe(true);

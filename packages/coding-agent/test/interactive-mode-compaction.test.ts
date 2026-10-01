@@ -147,6 +147,7 @@ describe("InteractiveMode compaction events", () => {
 			releaseActiveAgentRunRendering: vi.fn(),
 			releaseSettledMessageRendering: vi.fn(),
 			startFreshMessageRenderScope: vi.fn(),
+			acceptsTranscriptWindows: () => false,
 			renderSessionEntries: vi.fn(),
 			addMessageToChat: vi.fn(),
 			addCompactionCostNotice: vi.fn(),

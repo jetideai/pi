@@ -10,12 +10,12 @@ export interface TranscriptWindowItem {
 }
 
 /**
- * A member of the transcript, the sections from the member `from` to the member `to` of an earlier window, or the
- * logical tail: the latest section that has items.
+ * A member of the transcript, the sections from the member `from` to the member `to` of an earlier window (without
+ * `to`, up to the end of the transcript), or the logical tail: the latest section that has items.
  */
 export type TranscriptWindowTarget =
 	| { readonly entryId: string; readonly adjacent?: "previous" | "next" }
-	| { readonly from: string; readonly to: string }
+	| { readonly from: string; readonly to?: string }
 	| { readonly tail: true };
 
 /** The loaded item interval is [start, end). */
@@ -39,7 +39,7 @@ export function selectTranscriptWindow(
 	};
 	if ("from" in target) {
 		const first = items.findIndex((item) => item.entryId === target.from);
-		const last = items.findIndex((item) => item.entryId === target.to);
+		const last = target.to === undefined ? items.length - 1 : items.findIndex((item) => item.entryId === target.to);
 		if (first < 0 || last < first) return { status: "missing" };
 		const end = sectionEnd(last);
 		return { status: "selected", start: sectionStart(first), end, liveTail: end === items.length };
