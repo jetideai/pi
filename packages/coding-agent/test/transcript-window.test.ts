@@ -397,10 +397,22 @@ describe("InteractiveMode transcript window", () => {
 	) {
 		const session = await openWindowedSession(nineTurns, options);
 		const turnEntryIds = session.journal;
-		const turnOf = (member: Readonly<MessageRenderProjectionMemberV1>): number =>
-			turnEntryIds.findIndex(
-				(ids) => ids.includes(member.entryId) || ("ownerEntryId" in member && ids.includes(member.ownerEntryId)),
+		// A Tool Group has no owner; it is in the turn of its first call.
+		const turnOf = (
+			member: Readonly<MessageRenderProjectionMemberV1>,
+			members: readonly Readonly<MessageRenderProjectionMemberV1>[],
+		): number => {
+			const owned =
+				member.role === "tool-group"
+					? members.find(
+							(call) => call.role === "tool" && call.groupId === member.groupId && call.groupOrder === 0,
+						)
+					: member;
+			return turnEntryIds.findIndex(
+				(ids) =>
+					ids.includes(member.entryId) || (owned && "ownerEntryId" in owned && ids.includes(owned.ownerEntryId)),
 			);
+		};
 		return {
 			...session,
 			window: (turn: number, adjacent?: "previous" | "next") =>
@@ -412,7 +424,11 @@ describe("InteractiveMode transcript window", () => {
 			userId: (turn: number) => turnEntryIds[turn]![0]!,
 			toolCallEntryId: turnEntryIds[2]![1]!,
 			loadedTurns: (projection: Readonly<MessageRenderProjectionV1>) => [
-				...new Set(projection.members.filter((member) => member.loaded !== false).map(turnOf)),
+				...new Set(
+					projection.members
+						.filter((member) => member.loaded !== false)
+						.map((member) => turnOf(member, projection.members)),
+				),
 			],
 		};
 	}
@@ -441,24 +457,29 @@ describe("InteractiveMode transcript window", () => {
 		expect(latest()).toMatchObject({ mode: "replace", liveTail: false });
 	});
 
-	it("keeps the tool group, its ownership and the completed turn while the tool turn is unloaded and after return", async () => {
+	it("keeps the tool group, the owners of its calls and the completed turn while the tool turn is unloaded and after return", async () => {
 		const { window, userId, toolCallEntryId, unwindowed, latest } = await createWindowedMode();
-		const toolTurn = (projection: Readonly<MessageRenderProjectionV1>) =>
-			projection.members
+		const toolTurn = (projection: Readonly<MessageRenderProjectionV1>) => {
+			const calls = projection.members.filter(
+				(member) => "ownerEntryId" in member && member.ownerEntryId === toolCallEntryId,
+			);
+			const groupIds = new Set(calls.map((call) => ("groupId" in call ? call.groupId : undefined)));
+			return projection.members
 				.filter(
 					(member) =>
-						member.entryId === userId(2) || ("ownerEntryId" in member && member.ownerEntryId === toolCallEntryId),
+						member.entryId === userId(2) ||
+						calls.includes(member) ||
+						(member.role === "tool-group" && groupIds.has(member.groupId)),
 				)
 				.map(({ loaded: _loaded, section: _section, ...member }) => member);
+		};
 		const expected = toolTurn(unwindowed());
 
 		window(5);
 		const unloaded = latest();
 		window(1);
 
-		expect(expected).toContainEqual(
-			expect.objectContaining({ role: "tool-group", ownerEntryId: toolCallEntryId, groupClosed: true }),
-		);
+		expect(expected).toContainEqual(expect.objectContaining({ role: "tool-group", groupClosed: true }));
 		expect(expected.filter((member) => member.role === "tool")).toEqual([
 			expect.objectContaining({ entryId: "tool-a", ownerEntryId: toolCallEntryId, groupId: expect.any(String) }),
 			expect.objectContaining({ entryId: "tool-b", ownerEntryId: toolCallEntryId, groupId: expect.any(String) }),
@@ -650,15 +671,21 @@ describe("InteractiveMode transcript window", () => {
 		it("gives every windowed member, also an unloaded one, the section of its item", async () => {
 			const { window, unwindowed, latest, journal } = await createWindowedMode();
 			const turnOf = (entryId: string) => journal.findIndex((ids) => ids.includes(entryId));
+			// A Tool Group has no owner; it is in the section of its first call.
+			const ownerOf = (member: Readonly<MessageRenderProjectionMemberV1>): string => {
+				const owned =
+					member.role === "tool-group"
+						? latest().members.find(
+								(call) => call.role === "tool" && call.groupId === member.groupId && call.groupOrder === 0,
+							)
+						: member;
+				return owned && "ownerEntryId" in owned ? owned.ownerEntryId : member.entryId;
+			};
 
 			window(5);
 
 			expect(sectionsOf(unwindowed()).every((section) => section === undefined)).toBe(true);
-			expect(sectionsOf(latest())).toEqual(
-				latest().members.map((member) =>
-					turnSection(turnOf("ownerEntryId" in member ? member.ownerEntryId : member.entryId)),
-				),
-			);
+			expect(sectionsOf(latest())).toEqual(latest().members.map((member) => turnSection(turnOf(ownerOf(member)))));
 		});
 
 		it("selects the inclusive section interval from one member through another", async () => {

@@ -154,7 +154,12 @@ import { reportBug } from "./bug-report.ts";
 import { createChatViewport } from "./chat-viewport.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
-import { type AssistantToolCall, composeAssistantResponse } from "./components/assistant-response.ts";
+import {
+	type AssistantToolCall,
+	composeAssistantResponse,
+	composeTranscriptResponses,
+	type ToolGroupRunItem,
+} from "./components/assistant-response.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
@@ -2389,13 +2394,19 @@ export class InteractiveMode {
 		return component;
 	}
 
+	/**
+	 * Render one response into [container]. Without a transcript [composition] the response is its own segment. A Tool
+	 * Group of a transcript run is mounted once, in the container of its first call; [groups] gives it to the later
+	 * responses of the run.
+	 */
 	private renderSemanticAssistantResponse(
 		container: Container,
 		entryId: string,
 		message: AssistantMessage,
 		streaming: boolean,
+		composition = composeAssistantResponse(entryId, message, streaming, this.hideThinkingBlock),
+		groups = new Map<string, ToolGroupComponent>(),
 	): MessageRenderProjectionMemberV1[] {
-		const composition = composeAssistantResponse(entryId, message, streaming, this.hideThinkingBlock);
 		container.clear();
 		let visualIndex = 0;
 		for (const atom of composition.atoms) {
@@ -2421,24 +2432,27 @@ export class InteractiveMode {
 			}
 			const components = atom.calls.map((call) => this.createSemanticToolComponent(call, entryId));
 			if (!atom.groupId) {
-				container.addChild(components[0]!);
+				for (const component of components) container.addChild(component);
 				continue;
 			}
-			const group = new ToolGroupComponent({
-				groupId: atom.groupId,
-				ownerEntryId: entryId,
-				closed: !streaming,
-				outputPad: this.outputPad,
-				producerSessionId: this.sessionManager.getSessionId(),
-				renderScopeId: this.messageRenderScopeId,
-				semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
-				sourcePointRevisions: this.sourcePointRevisions,
-			});
+			let group = groups.get(atom.groupId);
+			if (!group) {
+				group = new ToolGroupComponent({
+					groupId: atom.groupId,
+					closed: !streaming,
+					outputPad: this.outputPad,
+					producerSessionId: this.sessionManager.getSessionId(),
+					renderScopeId: this.messageRenderScopeId,
+					semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
+					sourcePointRevisions: this.sourcePointRevisions,
+				});
+				groups.set(atom.groupId, group);
+				container.addChild(group);
+			}
 			for (const [index, component] of components.entries()) {
 				const call = atom.calls[index]!;
 				group.addTool(component, { toolName: call.name, toolCallId: call.id });
 			}
-			container.addChild(group);
 		}
 		return composition.members;
 	}
@@ -4344,7 +4358,9 @@ export class InteractiveMode {
 						// The new tail is empty, so the latest section that has items is the closed one.
 						this.renderTranscript(this.selectTranscript({ tail: true }), { inferMissingTurns: true });
 					} else {
-						this.renderSessionEntries(this.sessionManager.buildTranscriptEntries());
+						// The sections keep the compaction cuts that the flat transcript entries do not show.
+						const { items, sections } = this.selectTranscript();
+						this.renderSessionItems(items, { sections });
 					}
 					this.addMessageToChat(
 						createCompactionSummaryMessage(
@@ -4480,14 +4496,18 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private addCustomEntryToChat(entry: Extract<SessionEntry, { type: "custom" }>): void {
+	/** The component of a displayed custom entry, or undefined when the entry renders nothing. */
+	private customEntryComponent(entry: Extract<SessionEntry, { type: "custom" }>): CustomEntryComponent | undefined {
 		const renderer = this.session.extensionRunner.getEntryRenderer(entry.customType);
-		if (!renderer) {
-			return;
-		}
+		if (!renderer) return undefined;
 		const component = new CustomEntryComponent(entry, renderer);
 		component.setExpanded(this.toolOutputExpanded);
-		if (!component.hasContent()) {
+		return component.hasContent() ? component : undefined;
+	}
+
+	private addCustomEntryToChat(entry: Extract<SessionEntry, { type: "custom" }>): void {
+		const component = this.customEntryComponent(entry);
+		if (!component) {
 			return;
 		}
 
@@ -4642,13 +4662,24 @@ export class InteractiveMode {
 			updateFooter?: boolean;
 			inferMissingTurns?: boolean;
 			window?: { start: number; end: number; liveTail: boolean };
-			/** The compaction section of each item; a window projection gives it with every member. */
+			/** The compaction section of each item: it cuts Tool Group runs, and a window gives it to every member. */
 			sections?: readonly number[];
 		} = {},
 	): void {
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		const { window, sections } = options;
+		// Cache misses are not persisted, unlike successful cache-warming usage.
+		// Re-derive them and inject them after the assistant messages that paid for them.
+		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
+			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
+			: new Map<AssistantMessage, CacheMiss>();
+		// One composition of the whole transcript gives the members and the rendered Tool Groups.
+		const compositions = composeTranscriptResponses(
+			this.toolGroupRunItems(items, cacheMisses, window, sections),
+			false,
+			this.hideThinkingBlock,
+		);
 		const projectionObservers = this.getMessageRenderProjectionObserversV1();
 		if (projectionObservers.length > 0) {
 			const members: MessageRenderProjectionMemberV1[] = [];
@@ -4658,7 +4689,7 @@ export class InteractiveMode {
 					item.message.role === "user"
 						? [{ entryId: item.entryId, blockId: item.entryId, role: "user" }]
 						: item.message.role === "assistant"
-							? composeAssistantResponse(item.entryId, item.message, false, this.hideThinkingBlock).members
+							? compositions[index]!.members
 							: [];
 				const loaded = !window || (index >= window.start && index < window.end);
 				const section = window ? sections?.[index] : undefined;
@@ -4681,18 +4712,16 @@ export class InteractiveMode {
 			);
 		}
 		const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
-		// Cache misses are not persisted, unlike successful cache-warming usage.
-		// Re-derive them and inject them after the assistant messages that paid for them.
-		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
-			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
-			: new Map<AssistantMessage, CacheMiss>();
+		const groups = new Map<string, ToolGroupComponent>();
 
 		if (options.updateFooter) {
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
 		}
 
-		for (const item of window ? items.slice(window.start, window.end) : items) {
+		const start = window?.start ?? 0;
+		for (const [offset, item] of (window ? items.slice(window.start, window.end) : items).entries()) {
+			const index = start + offset;
 			if (isCustomSessionEntry(item)) {
 				this.addCustomEntryToChat(item);
 				continue;
@@ -4712,7 +4741,7 @@ export class InteractiveMode {
 				if (entryId && semanticSelectors.length > 0) {
 					const container = new SemanticAssistantResponse();
 					this.chatContainer.addChild(container);
-					this.renderSemanticAssistantResponse(container, entryId, message, false);
+					this.renderSemanticAssistantResponse(container, entryId, message, false, compositions[index]!, groups);
 					for (const content of message.content) {
 						if (content.type !== "toolCall") continue;
 						const component = this.pendingTools.get(content.id);
@@ -4801,6 +4830,49 @@ export class InteractiveMode {
 	}
 
 	/**
+	 * The Tool Group run items of [items]. A visible block that is not an assistant response is a boundary; a tool
+	 * result and an entry that renders nothing are transparent. A new section, the edges of the loaded window and a
+	 * cache miss notice after a response cut a run, so a group never takes content from beyond them.
+	 */
+	private toolGroupRunItems(
+		items: readonly RenderSessionItem[],
+		cacheMisses: ReadonlyMap<AssistantMessage, CacheMiss>,
+		window: { start: number; end: number } | undefined,
+		sections: readonly number[] | undefined,
+	): ToolGroupRunItem[] {
+		return items.map((item, index): ToolGroupRunItem => {
+			const previous = items[index - 1];
+			const previousMessage = previous && isRenderMessageItem(previous) ? previous.message : undefined;
+			const cutBefore =
+				index === window?.start ||
+				index === window?.end ||
+				(index > 0 && sections !== undefined && sections[index] !== sections[index - 1]) ||
+				(previousMessage?.role === "assistant" && cacheMisses.has(previousMessage));
+			const run = { ...(cutBefore ? { cutBefore: true } : {}) };
+			if (isCustomSessionEntry(item)) {
+				return { type: this.customEntryComponent(item) ? "boundary" : "transparent", ...run };
+			}
+			if (isUsageSessionEntry(item) || isCompactionCostNotice(item)) {
+				return { type: this.settingsManager.getShowCacheMissNotices() ? "boundary" : "transparent", ...run };
+			}
+			const message = isRenderMessageItem(item) ? item.message : item;
+			switch (message.role) {
+				case "assistant":
+					return isRenderMessageItem(item)
+						? { type: "response", entryId: item.entryId, message, ...run }
+						: { type: "boundary", ...run };
+				case "toolResult":
+				case "system":
+					return { type: "transparent", ...run };
+				case "custom":
+					return { type: message.display ? "boundary" : "transparent", ...run };
+				default:
+					return { type: "boundary", ...run };
+			}
+		});
+	}
+
+	/**
 	 * Render session entries to chat. Used for initial load and transcript rebuilds.
 	 * @param entries Session entries to render
 	 * @param options.updateFooter Update footer state
@@ -4853,7 +4925,7 @@ export class InteractiveMode {
 		options: { updateFooter?: boolean; inferMissingTurns?: boolean },
 	): void {
 		const { items, window, sections } = transcript;
-		this.renderSessionItems(items, { ...options, ...(window ? { window, sections } : {}) });
+		this.renderSessionItems(items, { ...options, sections, ...(window ? { window } : {}) });
 		const loadedIds = window
 			? items.slice(window.start, window.end).flatMap((item) => {
 					const { entryId } = transcriptWindowItem(item, 0);
@@ -4882,22 +4954,23 @@ export class InteractiveMode {
 	): {
 		items: RenderSessionItem[];
 		window?: Extract<TranscriptWindowSelection, { status: "selected" }>;
-		/** The compaction section of each item, when a window is selected. */
-		sections?: number[];
+		/** The compaction section of each item. */
+		sections: number[];
 	} {
 		const sections = this.sessionManager.buildTranscriptSections().map(sessionEntryRenderItems);
 		const items = sections.flat();
-		if (!target) return { items };
 		const windowItems = sections.flatMap((sectionItems, section) =>
 			sectionItems.map((item) => transcriptWindowItem(item, section)),
 		);
+		const itemSections = windowItems.map((item) => item.section);
+		if (!target) return { items, sections: itemSections };
 		let selection = selectTranscriptWindow(windowItems, target);
 		// The sections of an earlier window can be gone; the transcript then opens at its tail.
 		if (selection.status !== "selected" && "from" in target && (options.tailWhenMissing ?? true))
 			selection = selectTranscriptWindow(windowItems, { tail: true });
 		return selection.status === "selected"
-			? { items, window: selection, sections: windowItems.map((item) => item.section) }
-			: { items };
+			? { items, window: selection, sections: itemSections }
+			: { items, sections: itemSections };
 	}
 
 	/** Add the user messages of all transcript items to the editor history, also those without components. */

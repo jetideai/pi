@@ -1580,11 +1580,11 @@ export type MessageRenderProjectionMemberV1 = (
 			completedTurn?: Readonly<MessageRenderCompletedTurnV1>;
 	  }
 	| { entryId: string; blockId: string; role: "assistant" }
+	/** An ordered collection of Tool Calls; each call member names the response that owns it. */
 	| {
 			entryId: string;
 			blockId: string;
 			role: "tool-group";
-			ownerEntryId: string;
 			groupId: string;
 			groupClosed: boolean;
 	  }

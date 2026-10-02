@@ -143,7 +143,7 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 describe("InteractiveMode response projection", () => {
 	beforeAll(() => initTheme("dark"));
 
-	it("publishes the completed live turn once before rendering response-local Tool Group boundaries", async () => {
+	it("publishes the completed live turn once before rendering the Tool Group boundaries of its response", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const userId = sessionManager.appendMessage(user);
 		const assistantId = sessionManager.appendMessage(finalAssistant);
@@ -180,11 +180,10 @@ describe("InteractiveMode response projection", () => {
 			{ entryId: userId, blockId: userId, role: "user", completedTurn: completed[0] },
 			{ entryId: assistantId, blockId: assistantId, role: "assistant" },
 			{
-				entryId: `tool-group:${assistantId}:tool-a`,
-				blockId: `tool-group:${assistantId}:tool-a`,
+				entryId: `tool-group:tool-a`,
+				blockId: `tool-group:tool-a`,
 				role: "tool-group",
-				ownerEntryId: assistantId,
-				groupId: `tool-group:${assistantId}:tool-a`,
+				groupId: `tool-group:tool-a`,
 				groupClosed: true,
 			},
 			{
@@ -192,7 +191,7 @@ describe("InteractiveMode response projection", () => {
 				blockId: "tool-a",
 				role: "tool",
 				ownerEntryId: assistantId,
-				groupId: `tool-group:${assistantId}:tool-a`,
+				groupId: `tool-group:tool-a`,
 				groupOrder: 0,
 			},
 			{
@@ -200,14 +199,14 @@ describe("InteractiveMode response projection", () => {
 				blockId: "tool-b",
 				role: "tool",
 				ownerEntryId: assistantId,
-				groupId: `tool-group:${assistantId}:tool-a`,
+				groupId: `tool-group:tool-a`,
 				groupOrder: 1,
 			},
 		]);
 		expect(candidates.map(({ role, entryId }) => [role, entryId])).toEqual([
 			["tool", "tool-a"],
 			["tool", "tool-b"],
-			["tool-group", `tool-group:${assistantId}:tool-a`],
+			["tool-group", `tool-group:tool-a`],
 		]);
 		expect(messageDecorator).toHaveBeenCalledWith(
 			expect.objectContaining({ entryId: assistantId, role: "assistant", state: "final" }),
@@ -840,7 +839,7 @@ export default function (pi) {
 		expect(memberIdentity(restoredProjections[0])).toEqual([
 			[userId, userId, "user"],
 			[assistantId, assistantId, "assistant"],
-			[`tool-group:${assistantId}:tool-a`, `tool-group:${assistantId}:tool-a`, "tool-group"],
+			[`tool-group:tool-a`, `tool-group:tool-a`, "tool-group"],
 			["tool-a", "tool-a", "tool"],
 			["tool-b", "tool-b", "tool"],
 		]);
@@ -925,6 +924,93 @@ describe("restored Tool Group composition and separators", () => {
 		expect(stripAnsi(rendered)).toContain("call-read output");
 	});
 
+	it("groups consecutive restored tool-only responses whose thinking is hidden into one group without an owner", () => {
+		const { rows, members } = restoredTranscript(
+			[
+				[thinking("Inspecting A"), toolCall("call-a")],
+				[thinking("Inspecting B"), toolCall("call-b")],
+			],
+			true,
+		);
+		const tools = members.filter((member) => member.role === "tool");
+
+		expect(members.find((member) => member.role === "tool-group")).toEqual({
+			entryId: "tool-group:call-a",
+			blockId: "tool-group:call-a",
+			role: "tool-group",
+			groupId: "tool-group:call-a",
+			groupClosed: true,
+		});
+		expect(tools.map((member) => [member.entryId, member.groupId, member.groupOrder])).toEqual([
+			["call-a", "tool-group:call-a", 0],
+			["call-b", "tool-group:call-a", 1],
+		]);
+		expect(new Set(tools.map((member) => member.ownerEntryId)).size).toBe(2);
+		expect(rows.join("\n").split(foldControls.begin)).toHaveLength(4);
+	});
+
+	it.each([
+		["a displayed custom entry stops", true, [undefined, undefined]],
+		["a custom entry that renders nothing does not stop", false, ["tool-group:call-a", "tool-group:call-a"]],
+	] as const)("%s a restored run of tool-only responses", (_name, displayed, groups) => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage(user);
+		sessionManager.appendMessage(assistant([toolCall("call-a")], "toolUse"));
+		sessionManager.appendMessage(savedToolResult("call-a", "process", "call-a output"));
+		sessionManager.appendCustomEntry("progress", { text: "[progress]" });
+		sessionManager.appendMessage(assistant([toolCall("call-b")], "toolUse"));
+		sessionManager.appendMessage(savedToolResult("call-b", "process", "call-b output"));
+		const { mode, projections } = modeHarness(sessionManager);
+		Object.assign(mode, {
+			session: {
+				...mode.session,
+				getToolDefinition: () => undefined,
+				extensionRunner: { getEntryRenderer: () => (displayed ? () => new Text("[progress]", 0, 0) : undefined) },
+			},
+			getRegisteredToolDefinition: Reflect.get(InteractiveMode.prototype, "getRegisteredToolDefinition"),
+		});
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+
+		expect(
+			projections
+				.at(-1)!
+				.members.filter((member) => member.role === "tool")
+				.map((member) => ("groupId" in member ? member.groupId : undefined)),
+		).toEqual(groups);
+	});
+
+	it.each([
+		["a section cut", { sections: [0, 0, 0, 1, 1] }],
+		["the start of the loaded window", { window: { start: 3, end: 5, liveTail: true }, sections: [0, 0, 0, 0, 0] }],
+	] as const)("stops a restored run of tool-only responses at %s", (_name, options) => {
+		const sessionManager = SessionManager.inMemory();
+		const items = [
+			user,
+			assistant([toolCall("call-a")], "toolUse"),
+			savedToolResult("call-a", "process", "call-a output"),
+			assistant([toolCall("call-b")], "toolUse"),
+			savedToolResult("call-b", "process", "call-b output"),
+		].map((message) => ({ message, entryId: sessionManager.appendMessage(message) }));
+		const { mode, projections } = modeHarness(sessionManager);
+		const renderSessionItems = Reflect.get(InteractiveMode.prototype, "renderSessionItems") as (
+			this: typeof mode,
+			items: readonly { message: unknown; entryId: string }[],
+			options: object,
+		) => void;
+		renderSessionItems.call(mode, items, options);
+
+		expect(
+			projections
+				.at(-1)!
+				.members.filter((member) => member.role === "tool")
+				.map((member) => ("groupId" in member ? member.groupId : undefined)),
+		).toEqual([undefined, undefined]);
+	});
+
 	it("keeps visible thinking between tool-only responses as a group boundary", () => {
 		const { members } = restoredTranscript(
 			[
@@ -983,5 +1069,109 @@ describe("restored Tool Group composition and separators", () => {
 		const { rows } = restoredTranscript([[toolCall("call-a"), toolCall("call-b")]], true);
 
 		expect(collapsedRows(rows).slice(3, -2)).toEqual(["", "$ Used tools"]);
+	});
+});
+
+describe("live Tool Group composition across assistant responses", () => {
+	beforeAll(() => initTheme("dark"));
+
+	const markers = foldControls;
+	/** The live harness with valid zero-column fold controls for every Tool Call and Tool Group. */
+	const foldingHarness = (sessionManager: SessionManager) => {
+		const harness = modeHarness(sessionManager);
+		Object.assign(harness.mode, { getMessageRenderBoundarySelectorsV3: () => [() => () => foldControls] });
+		return harness;
+	};
+	const count = (rows: string[], marker: string) =>
+		rows.reduce((total, row) => total + row.split(marker).length - 1, 0);
+
+	/** A live run: each response streams, ends, and its calls execute with one partial update before they end. */
+	async function liveRun(responses: AssistantMessage["content"][], hideThinkingBlock: boolean) {
+		const sessionManager = SessionManager.inMemory();
+		const userId = sessionManager.appendMessage(user);
+		const { mode, projections, chatContainer } = foldingHarness(sessionManager);
+		Object.assign(mode, { hideThinkingBlock });
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		await handleEvent.call(mode, { type: "message_start", message: user, entryId: userId });
+		for (const content of responses) {
+			const message = assistant(content, "toolUse");
+			const entryId = sessionManager.appendMessage(message);
+			await handleEvent.call(mode, { type: "message_start", message: assistant([], "pending"), entryId });
+			await handleEvent.call(mode, { type: "message_end", message, entryId });
+			for (const call of content) {
+				if (call.type !== "toolCall") continue;
+				await handleEvent.call(mode, {
+					type: "tool_execution_start",
+					toolCallId: call.id,
+					toolName: call.name,
+					args: call.arguments,
+				});
+				await handleEvent.call(mode, {
+					type: "tool_execution_update",
+					toolCallId: call.id,
+					toolName: call.name,
+					args: call.arguments,
+					partialResult: { content: [{ type: "text", text: `${call.id} partial` }] },
+				});
+				await handleEvent.call(mode, {
+					type: "tool_execution_end",
+					toolCallId: call.id,
+					toolName: call.name,
+					result: { content: [{ type: "text", text: `${call.id} done` }] },
+					isError: false,
+				});
+			}
+		}
+		return { mode, handleEvent, projections, chatContainer };
+	}
+
+	it("keeps live visible prose between tool calls as a group boundary", async () => {
+		const { projections } = await liveRun(
+			[[toolCall("call-a")], [{ type: "text", text: "Visible prose." }, toolCall("call-b")]],
+			true,
+		);
+		const tools = projections.at(-1)!.members.filter((member) => member.role === "tool");
+
+		expect(tools.map((member) => ("groupId" in member ? member.groupId : undefined))).toEqual([undefined, undefined]);
+	});
+
+	it("renders the partial output of an active call without a range and adds the range when the call ends", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const { mode, chatContainer } = foldingHarness(sessionManager);
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		const message = assistant([toolCall("call-a")], "toolUse");
+		const entryId = sessionManager.appendMessage(message);
+		await handleEvent.call(mode, { type: "message_start", message: assistant([], "pending"), entryId });
+		await handleEvent.call(mode, { type: "message_end", message, entryId });
+		await handleEvent.call(mode, {
+			type: "tool_execution_start",
+			toolCallId: "call-a",
+			toolName: "process",
+			args: {},
+		});
+		await handleEvent.call(mode, {
+			type: "tool_execution_update",
+			toolCallId: "call-a",
+			toolName: "process",
+			args: {},
+			partialResult: { content: [{ type: "text", text: "partial line" }] },
+		});
+		const active = chatContainer.render(100);
+		await handleEvent.call(mode, {
+			type: "tool_execution_end",
+			toolCallId: "call-a",
+			toolName: "process",
+			result: { content: [{ type: "text", text: "final line" }] },
+			isError: false,
+		});
+		const settled = chatContainer.render(100);
+
+		expect([count(active, markers.begin), count(settled, markers.begin)]).toEqual([0, 1]);
 	});
 });

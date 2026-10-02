@@ -142,13 +142,14 @@ describe("InteractiveMode compaction events", () => {
 			chatContainer: { clear: vi.fn() },
 			sessionManager: {
 				buildContextEntries: vi.fn().mockReturnValue([latestCompaction]),
-				buildTranscriptEntries: vi.fn().mockReturnValue([previousMessage]),
 			},
+			// The full transcript with the compaction section of each item, which cuts Tool Group runs.
+			selectTranscript: vi.fn().mockReturnValue({ items: [previousMessage], sections: [0] }),
 			releaseActiveAgentRunRendering: vi.fn(),
 			releaseSettledMessageRendering: vi.fn(),
 			startFreshMessageRenderScope: vi.fn(),
 			acceptsTranscriptWindows: () => false,
-			renderSessionEntries: vi.fn(),
+			renderSessionItems: vi.fn(),
 			addMessageToChat: vi.fn(),
 			addCompactionCostNotice: vi.fn(),
 			showError: vi.fn(),
@@ -187,7 +188,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(fakeThis.releaseSettledMessageRendering).toHaveBeenCalledTimes(1);
 		expect(fakeThis.startFreshMessageRenderScope).toHaveBeenCalledTimes(1);
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
-		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousMessage]);
+		expect(fakeThis.renderSessionItems).toHaveBeenCalledWith([previousMessage], { sections: [0] });
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -207,7 +208,7 @@ describe("InteractiveMode compaction events", () => {
 			fakeThis.releaseSettledMessageRendering.mock.invocationCallOrder[0],
 			fakeThis.startFreshMessageRenderScope.mock.invocationCallOrder[0],
 			fakeThis.chatContainer.clear.mock.invocationCallOrder[0],
-			fakeThis.renderSessionEntries.mock.invocationCallOrder[0],
+			fakeThis.renderSessionItems.mock.invocationCallOrder[0],
 			fakeThis.addMessageToChat.mock.invocationCallOrder[0],
 			fakeThis.addCompactionCostNotice.mock.invocationCallOrder[0],
 			fakeThis.flushCompactionQueue.mock.invocationCallOrder[0],

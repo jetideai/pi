@@ -12,12 +12,115 @@ export interface AssistantResponseComposition {
 	members: MessageRenderProjectionMemberV1[];
 }
 
+/** One item of a transcript in render order, as the Tool Group run rule sees it. */
+export type ToolGroupRunItem = (
+	| { type: "response"; entryId: string; message: AssistantMessage }
+	/** A visible block that is not an assistant response. */
+	| { type: "boundary" }
+	/** A tool result, or an entry that renders nothing. */
+	| { type: "transparent" }
+) & {
+	/** The item starts a new compaction section or the loaded window, so no run continues into it. */
+	cutBefore?: boolean;
+};
+
+/**
+ * Compose the assistant responses of one transcript segment. A Tool Group is the maximal run of two or more Tool Calls
+ * with no visible assistant atom, boundary item or cut between them. Hidden settled thinking, empty text and
+ * transparent items do not stop a run. The group ID comes from the first call, so it stays the same while the run
+ * grows. Each call keeps the response that owns it; the group has no owner. Returns one composition for each response
+ * item and undefined for the other items.
+ */
+export function composeTranscriptResponses(
+	items: readonly ToolGroupRunItem[],
+	streaming = false,
+	hideThinkingBlock = false,
+): (AssistantResponseComposition | undefined)[] {
+	const atomsByItem = items.map((item) =>
+		item.type === "response" ? responseAtoms(item.message, streaming, hideThinkingBlock) : undefined,
+	);
+	const runs: Extract<AssistantResponseAtom, { type: "tools" }>[][] = [];
+	let run: Extract<AssistantResponseAtom, { type: "tools" }>[] | undefined;
+	for (const [index, item] of items.entries()) {
+		if (item.cutBefore) run = undefined;
+		if (item.type === "transparent") continue;
+		if (item.type === "boundary") {
+			run = undefined;
+			continue;
+		}
+		for (const atom of atomsByItem[index]!) {
+			if (atom.type === "visual") {
+				run = undefined;
+				continue;
+			}
+			if (!run) {
+				run = [];
+				runs.push(run);
+			}
+			run.push(atom);
+		}
+	}
+	for (const toolAtoms of runs) {
+		const calls = toolAtoms.flatMap((atom) => atom.calls);
+		if (calls.length < 2) continue;
+		for (const atom of toolAtoms) atom.groupId = `tool-group:${calls[0]!.id}`;
+	}
+
+	const nextOrder = new Map<string, number>();
+	return items.map((item, index) => {
+		if (item.type !== "response") return undefined;
+		const atoms = atomsByItem[index]!;
+		const members: MessageRenderProjectionMemberV1[] = [
+			{ entryId: item.entryId, blockId: item.entryId, role: "assistant" },
+		];
+		for (const atom of atoms) {
+			if (atom.type !== "tools") continue;
+			for (const call of atom.calls) {
+				const groupId = atom.groupId;
+				if (!groupId) {
+					members.push({ entryId: call.id, blockId: call.id, role: "tool", ownerEntryId: item.entryId });
+					continue;
+				}
+				const groupOrder = nextOrder.get(groupId) ?? 0;
+				if (groupOrder === 0) {
+					members.push({
+						entryId: groupId,
+						blockId: groupId,
+						role: "tool-group",
+						groupId,
+						groupClosed: !streaming,
+					});
+				}
+				members.push({
+					entryId: call.id,
+					blockId: call.id,
+					role: "tool",
+					ownerEntryId: item.entryId,
+					groupId,
+					groupOrder,
+				});
+				nextOrder.set(groupId, groupOrder + 1);
+			}
+		}
+		return { atoms, members };
+	});
+}
+
+/** Compose one response as its own transcript segment: its Tool Groups stay inside the response. */
 export function composeAssistantResponse(
 	entryId: string,
 	message: AssistantMessage,
 	streaming = false,
 	hideThinkingBlock = false,
 ): AssistantResponseComposition {
+	return composeTranscriptResponses([{ type: "response", entryId, message }], streaming, hideThinkingBlock)[0]!;
+}
+
+function responseAtoms(
+	message: AssistantMessage,
+	streaming: boolean,
+	hideThinkingBlock: boolean,
+): AssistantResponseAtom[] {
 	const atoms: AssistantResponseAtom[] = [];
 	for (const content of message.content) {
 		if (content.type === "text" && !content.text.trim()) continue;
@@ -32,35 +135,5 @@ export function composeAssistantResponse(
 		if (previous?.type === "visual") previous.content.push(content);
 		else atoms.push({ type: "visual", content: [content] });
 	}
-
-	const members: MessageRenderProjectionMemberV1[] = [{ entryId, blockId: entryId, role: "assistant" }];
-	for (const atom of atoms) {
-		if (atom.type !== "tools") continue;
-		if (atom.calls.length === 1) {
-			const call = atom.calls[0]!;
-			members.push({ entryId: call.id, blockId: call.id, role: "tool", ownerEntryId: entryId });
-			continue;
-		}
-		const groupId = `tool-group:${entryId}:${atom.calls[0]!.id}`;
-		atom.groupId = groupId;
-		members.push({
-			entryId: groupId,
-			blockId: groupId,
-			role: "tool-group",
-			ownerEntryId: entryId,
-			groupId,
-			groupClosed: !streaming,
-		});
-		for (const [groupOrder, call] of atom.calls.entries()) {
-			members.push({
-				entryId: call.id,
-				blockId: call.id,
-				role: "tool",
-				ownerEntryId: entryId,
-				groupId,
-				groupOrder,
-			});
-		}
-	}
-	return { atoms, members };
+	return atoms;
 }
