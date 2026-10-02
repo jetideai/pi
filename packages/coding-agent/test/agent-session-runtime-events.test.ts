@@ -296,7 +296,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				members: [
 					[rootUserId, "user"],
 					[assistantId, "assistant"],
-					[`tool-group:${assistantId}:tool-a`, "tool-group"],
+					["tool-group:tool-a", "tool-group"],
 					["tool-a", "tool"],
 					["tool-b", "tool"],
 					[keptUserId, "user"],

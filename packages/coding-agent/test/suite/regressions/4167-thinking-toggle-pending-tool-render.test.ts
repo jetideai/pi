@@ -58,6 +58,8 @@ type RenderSessionContextThis = {
 	maybeShowThinkingDropNotice(message: AssistantMessage): void;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 	renderSessionItems: RenderSessionItems;
+	toolGroupRunItems: unknown;
+	customEntryComponent: unknown;
 };
 
 type RenderSessionEntries = (
@@ -95,6 +97,9 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		maybeShowThinkingDropNotice: vi.fn(),
 		renderSessionItems: (InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItems })
 			.renderSessionItems,
+		// The transcript composition classifies every item before it renders them.
+		toolGroupRunItems: Reflect.get(InteractiveMode.prototype, "toolGroupRunItems"),
+		customEntryComponent: Reflect.get(InteractiveMode.prototype, "customEntryComponent"),
 		addMessageToChat(message: AgentMessage) {
 			chatContainer.addChild(new Text(message.role, 0, 0));
 		},
