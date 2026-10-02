@@ -199,6 +199,13 @@ function boundaryRows(rows: string[]) {
 	};
 }
 
+/** The visible text of each rendered row that has a source point control. */
+function pointRows(rows: string[]) {
+	return rows.flatMap((row) =>
+		row.includes(EDIT_POINT) ? [stripAnsi(row.replaceAll(EDIT_POINT, "")).trimEnd()] : [],
+	);
+}
+
 function plainRows(renderers: ToolRenderers | undefined, width: number) {
 	const component = new ToolExecutionComponent(
 		"process",
@@ -735,33 +742,62 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(settled.visible[settled.body[0]!]).toBe("stock preview");
 	});
 
-	it("marks source points in the generic text of a tool without a definition", () => {
+	it("marks rendered source points in the body of the generic text of a tool without a definition", () => {
 		const points: MessageRenderSourcePointV1[] = [];
 		const component = savedCall(undefined, points);
 		component.updateResult({ content: [{ type: "text", text: numbered("line", 30) }], isError: false });
 		points.length = 0;
 
-		component.render(80);
+		const rows = pointRows(component.render(80));
 
-		expect(points.length).toBeGreaterThan(1);
-		expect(points.every((point) => point.entryId === "call-process" && point.role === "tool")).toBe(true);
-		expect(points.every((point) => point.ownerEntryId === "assistant-a" && point.sourcePart === undefined)).toBe(
+		// The generic text is the title, a blank line, three argument lines and the output: every 8th line has a point.
+		expect(rows).toEqual([" process", " line-3", " line-11", " line-19", " line-27"]);
+		expect(points.map((point) => [point.pointKind, point.contentIndex, point.sourcePart])).toEqual(
+			Array.from({ length: 5 }, () => ["line", 0, undefined]),
+		);
+		expect(points[0]!.sourceOffset).toBe(0);
+		expect(new Set(points.map((point) => point.sourceOffset)).size).toBe(5);
+		expect(new Set(points.map((point) => point.contentDigest)).size).toBe(1);
+		expect(points.every((point) => point.entryId === "call-process" && point.ownerEntryId === "assistant-a")).toBe(
 			true,
 		);
-		expect(points[0]).toMatchObject({ pointKind: "line", sourceOffset: 0 });
 	});
 
-	it("marks source points in the expanded fallback result of a call without a result renderer", () => {
+	it("marks rendered source points in the expanded fallback result of a call without a result renderer", () => {
 		const points: MessageRenderSourcePointV1[] = [];
 		const component = savedCall({}, points);
 		component.setExpanded(true);
 		component.updateResult({ content: [{ type: "text", text: numbered("line", 30) }], isError: false });
 		points.length = 0;
 
-		component.render(80);
-
-		expect(points.length).toBeGreaterThan(1);
+		expect(pointRows(component.render(80))).toEqual([" line-0", " line-8", " line-16", " line-24"]);
 		expect(points.every((point) => point.entryId === "call-process" && point.sourcePart === undefined)).toBe(true);
+	});
+
+	it("marks rendered source points in the expanded fallback result of a result renderer that throws", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = savedCall(
+			{
+				renderResult: () => {
+					throw new Error("result renderer failure");
+				},
+			},
+			points,
+		);
+		component.setExpanded(true);
+		component.updateResult({ content: [{ type: "text", text: numbered("line", 30) }], isError: false });
+		points.length = 0;
+
+		expect(pointRows(component.render(80))).toEqual([" line-0", " line-8", " line-16", " line-24"]);
+	});
+
+	it("keeps a collapsed fallback result preview without source points", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = savedCall({}, points);
+		component.updateResult({ content: [{ type: "text", text: numbered("line", 30) }], isError: false });
+		points.length = 0;
+
+		expect(pointRows(component.render(80))).toEqual([]);
 	});
 
 	it("leaves a singleton on its existing Tool Call path", () => {
