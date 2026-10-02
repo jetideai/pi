@@ -429,32 +429,55 @@ export class ToolExecutionComponent extends Container {
 
 	/**
 	 * The rows of the whole call when the renderer does not locate them: the call part is the header, and the result
-	 * rows, or else the images, are the body. A call without either has no body. The rows come from the layout that
-	 * this component owns, never from the rendered text or from padding.
+	 * rows, or else the first image, are the body. A call without either has no body. A call part without rows gives no
+	 * distinct header, so the whole visible content is one plain range. The rows come from the layout that this
+	 * component owns, never from the rendered text, padding or spacers.
 	 */
 	private wholeCallSemanticRows(width: number): { header: number; body?: number } | undefined {
-		const images = this.imageComponents.length > 0;
-		if (!this.hasRendererDefinition()) {
-			// The leading Spacer and the top padding of the generic Text precede the title.
-			const textRows = this.contentText.render(width).length;
-			const titleRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
-			const body = textRows - 2 > titleRows ? 2 + titleRows : images ? 1 + textRows : undefined;
-			return { header: 2, ...(body !== undefined ? { body } : {}) };
+		const layout = this.ownedLayout(width);
+		if (!layout) return undefined;
+		const { contentStart, contentRows, callRows, firstImageRow } = layout;
+		if (callRows === 0) {
+			const header = contentRows > 0 ? contentStart : firstImageRow;
+			return header === undefined ? undefined : { header };
 		}
-		const component = this.callPartComponent;
-		if (!component) return undefined;
+		const body = contentRows > callRows ? contentStart + callRows : firstImageRow;
+		return { header: contentStart, ...(body !== undefined ? { body } : {}) };
+	}
+
+	/**
+	 * The owned layout of the rendered lines: the first row of the call and result content, its rows, the rows of the
+	 * call part, and the first row of the first image after its spacer.
+	 */
+	private ownedLayout(
+		width: number,
+	): { contentStart: number; contentRows: number; callRows: number; firstImageRow?: number } | undefined {
 		try {
-			const self = this.getRenderShell() === "self";
-			const callRows = component.render(self ? width : Math.max(0, width - 2)).length;
-			if (callRows === 0) return undefined;
-			// The self shell has one leading row; the default shell adds its Spacer and the Box padding rows.
-			const shellRows = self
-				? this.selfRenderContainer.render(width).length
-				: this.contentBox.render(width).length - 2;
-			const offset = self ? 1 : 2;
-			const shellEnd = self ? 1 + shellRows : 1 + shellRows + 2;
-			const body = shellRows > callRows ? offset + callRows : images ? shellEnd : undefined;
-			return { header: offset, ...(body !== undefined ? { body } : {}) };
+			let contentRows: number;
+			let callRows: number;
+			// The rows before the first image: the Spacer and the padded shell, or the leading row of a self shell.
+			let shellLines: number;
+			if (!this.hasRendererDefinition()) {
+				const textLines = this.contentText.render(width).length;
+				contentRows = Math.max(0, textLines - 2);
+				callRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
+				shellLines = 1 + textLines;
+			} else if (this.getRenderShell() === "self") {
+				contentRows = this.selfRenderContainer.render(width).length;
+				callRows = this.callPartComponent?.render(width).length ?? 0;
+				shellLines = contentRows > 0 ? 1 + contentRows : 0;
+			} else {
+				const boxLines = this.contentBox.render(width).length;
+				contentRows = Math.max(0, boxLines - 2);
+				callRows = this.callPartComponent?.render(Math.max(0, width - 2)).length ?? 0;
+				shellLines = 1 + boxLines;
+			}
+			const contentStart = this.hasRendererDefinition() && this.getRenderShell() === "self" ? 1 : 2;
+			const firstImageRow =
+				this.imageComponents.length > 0
+					? shellLines + (this.imageSpacers[0]?.render(width).length ?? 0)
+					: undefined;
+			return { contentStart, contentRows, callRows, ...(firstImageRow !== undefined ? { firstImageRow } : {}) };
 		} catch {
 			return undefined;
 		}

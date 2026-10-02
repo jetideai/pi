@@ -69,6 +69,8 @@ function tool(
 }
 
 const EDIT_POINT = "\x1b]777;point\x07";
+/** A valid one-pixel PNG. */
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 const EDIT_SUCCESS = "Successfully replaced 1 block(s) in src/long.ts.";
 
 function editDiff(lines: number, name: string) {
@@ -789,24 +791,45 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
 	});
 
-	it("starts the body of a call whose result is only an image at the image, after the padding", () => {
+	it("starts the body of a call whose result is only an image at the first image row", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
-			const contexts: MessageRenderBoundaryContextV1[] = [];
-			const component = savedCall({}, [], recording(contexts));
-			component.updateResult({
-				content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
-				isError: false,
-			});
-			const rows = boundaryRows(component.render(80));
+			const shells: [ToolRenderers, number, number][] = [
+				// The default shell: Spacer, padding, title, padding, image spacer, image.
+				[{}, 2, 5],
+				// The self shell: leading row, call, image spacer, image.
+				[{ renderShell: "self", renderCall: () => new Text("custom call", 0, 0) }, 1, 3],
+			];
+			for (const [renderers, begin, body] of shells) {
+				const contexts: MessageRenderBoundaryContextV1[] = [];
+				const component = savedCall(renderers, [], recording(contexts));
+				component.updateResult({ content: [{ type: "image", data: PNG, mimeType: "image/png" }], isError: false });
+				const rendered = component.render(80);
+				const rows = boundaryRows(rendered);
 
-			expect(rows.visible.slice(0, 5)).toEqual(["", "", " process", "", ""]);
-			expect(rows.counts).toEqual([1, 1, 1]);
-			expect([rows.begin, rows.body]).toEqual([[2], [4]]);
-			expect(contexts.at(-1)?.bodyRow).toBe(4);
+				expect([rows.begin, rows.body]).toEqual([[begin], [body]]);
+				expect(rendered[body - 1]).toBe("");
+				expect(rendered[body]).toContain("\x1b_G");
+				expect(contexts.at(-1)?.bodyRow).toBe(body);
+			}
 		} finally {
 			resetCapabilitiesCache();
 		}
+	});
+
+	it("gives a call whose call renderer draws no rows one plain range over its result", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const component = savedCall(
+			{ renderCall: () => new Text("", 0, 0), renderResult: () => new Text("custom result", 0, 0) },
+			[],
+			recording(contexts),
+		);
+		const rows = boundaryRows(component.render(80));
+
+		expect(rows.visible).toEqual(["", "", " custom result", ""]);
+		expect(rows.counts).toEqual([1, 0, 1]);
+		expect([rows.begin, rows.end]).toEqual([[2], [3]]);
+		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
 	});
 
 	it("gives the context of a call with a result the row of its foldable body", () => {
