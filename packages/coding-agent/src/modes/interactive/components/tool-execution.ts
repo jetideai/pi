@@ -79,6 +79,10 @@ export class ToolExecutionComponent extends Container {
 	private selfRenderContainer: Container;
 	private selfRenderHeight = 0;
 	private callRendererComponent?: Component;
+	/** The component that draws the call in a renderer shell: the call renderer or the fallback title. */
+	private callPartComponent?: Component;
+	/** The result Text of the owner when the result has no renderer, or its renderer failed. */
+	private fallbackResultText?: Text;
 	private resultRendererComponent?: Component;
 	private rendererState: any = {};
 	private imageComponents: Image[] = [];
@@ -228,10 +232,10 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createCallFallback(): Component {
-		return new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
+		return new Text(this.formatToolTitle(), 0, 0);
 	}
 
-	private createResultFallback(): Component | undefined {
+	private createResultFallback(): Text | undefined {
 		const output = this.getTextOutput();
 		if (!output) {
 			return undefined;
@@ -392,26 +396,55 @@ export class ToolExecutionComponent extends Container {
 
 	private decorateSemanticSections(lines: string[], width: number): string[] {
 		if (!this.semanticBoundariesEnabled || this.semanticDecoratorsV2.length === 0 || this.isPartial) return lines;
+		const rows = this.locatedSemanticRows(width) ?? this.wholeCallSemanticRows(width);
+		if (!rows || rows.body >= lines.length) return lines;
+		return decorateMessageRenderV2(lines, rows.body, width, "tool", 0, {
+			entryId: this.toolCallId,
+			...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
+			beginRow: rows.header,
+			decorators: this.semanticDecoratorsV2,
+			sourcePointRevision: this.sourcePointRevision,
+		});
+	}
+
+	/** The header and body rows that the call renderer locates in its own component; undefined without both. */
+	private locatedSemanticRows(width: number): { header: number; body: number } | undefined {
 		const component = this.callRendererComponent;
 		const headerLocator = this.getCallHeaderRowLocator();
 		const bodyLocator = this.getCallBodyRowLocator();
-		if (!component || !headerLocator || !bodyLocator) return lines;
+		if (!component || !headerLocator || !bodyLocator) return undefined;
 		try {
-			const componentWidth = this.getRenderShell() === "self" ? width : Math.max(0, width - 2);
-			component.render(componentWidth);
-			const offset = this.getRenderShell() === "self" ? 1 : 2;
+			component.render(this.getRenderShell() === "self" ? width : Math.max(0, width - 2));
 			const headerRow = headerLocator(component);
 			const bodyRow = bodyLocator(component);
-			if (headerRow === undefined || bodyRow === undefined || headerRow < 0 || bodyRow <= headerRow) return lines;
-			return decorateMessageRenderV2(lines, offset + bodyRow, width, "tool", 0, {
-				entryId: this.toolCallId,
-				...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
-				beginRow: offset + headerRow,
-				decorators: this.semanticDecoratorsV2,
-				sourcePointRevision: this.sourcePointRevision,
-			});
+			if (headerRow === undefined || bodyRow === undefined || headerRow < 0 || bodyRow <= headerRow)
+				return undefined;
+			const offset = this.getRenderShell() === "self" ? 1 : 2;
+			return { header: offset + headerRow, body: offset + bodyRow };
 		} catch {
-			return lines;
+			return undefined;
+		}
+	}
+
+	/**
+	 * The rows of the whole call when the renderer does not locate them: the call part is the header and the rest of
+	 * the tool is the body. The rows come from the layout that this component owns, never from the rendered text.
+	 */
+	private wholeCallSemanticRows(width: number): { header: number; body: number } | undefined {
+		if (!this.hasRendererDefinition()) {
+			// The leading Spacer and the top padding of the generic Text precede the title.
+			const titleRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
+			return { header: 2, body: 2 + titleRows };
+		}
+		const component = this.callPartComponent;
+		if (!component) return undefined;
+		try {
+			const self = this.getRenderShell() === "self";
+			const callRows = component.render(self ? width : Math.max(0, width - 2)).length;
+			const offset = self ? 1 : 2;
+			return callRows > 0 ? { header: offset, body: offset + callRows } : undefined;
+		} catch {
+			return undefined;
 		}
 	}
 
@@ -500,20 +533,24 @@ export class ToolExecutionComponent extends Container {
 				renderContainer.setBgFn(bgFn);
 			}
 			renderContainer.clear();
+			this.fallbackResultText = undefined;
 
 			const callRenderer = this.getCallRenderer();
 			if (!callRenderer) {
-				renderContainer.addChild(this.createResultRegion(this.createCallFallback()));
+				this.callPartComponent = this.createCallFallback();
+				renderContainer.addChild(this.createResultRegion(this.callPartComponent));
 				hasContent = true;
 			} else {
 				try {
 					const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
 					this.callRendererComponent = component;
+					this.callPartComponent = component;
 					renderContainer.addChild(this.createResultRegion(component));
 					hasContent = true;
 				} catch {
 					this.callRendererComponent = undefined;
-					renderContainer.addChild(this.createResultRegion(this.createCallFallback()));
+					this.callPartComponent = this.createCallFallback();
+					renderContainer.addChild(this.createResultRegion(this.callPartComponent));
 					hasContent = true;
 				}
 			}
@@ -521,9 +558,9 @@ export class ToolExecutionComponent extends Container {
 			if (this.result && !this.isCompactLiveToolCall()) {
 				const resultRenderer = this.getResultRenderer();
 				if (!resultRenderer) {
-					const component = this.createResultFallback();
-					if (component) {
-						renderContainer.addChild(this.createResultRegion(component));
+					this.fallbackResultText = this.createResultFallback();
+					if (this.fallbackResultText) {
+						renderContainer.addChild(this.createResultRegion(this.fallbackResultText));
 						hasContent = true;
 					}
 				} else {
@@ -539,9 +576,9 @@ export class ToolExecutionComponent extends Container {
 						hasContent = true;
 					} catch {
 						this.resultRendererComponent = undefined;
-						const component = this.createResultFallback();
-						if (component) {
-							renderContainer.addChild(this.createResultRegion(component));
+						this.fallbackResultText = this.createResultFallback();
+						if (this.fallbackResultText) {
+							renderContainer.addChild(this.createResultRegion(this.fallbackResultText));
 							hasContent = true;
 						}
 					}
@@ -604,9 +641,13 @@ export class ToolExecutionComponent extends Container {
 			? this.toolDefinition?.getRenderCallSourceText?.(this.callRendererComponent)
 			: undefined;
 		const output = this.getTextOutput();
+		// Without a definition the generic Text of this component is the one source of the whole call.
+		const genericText = this.hasRendererDefinition() ? undefined : this.contentText;
 		const source = callText
 			? sourcePointPresentation(stripTerminalSequences(callText.getText().replace(/\t/g, "   ")), output)
-			: sourcePointPresentation(output);
+			: genericText
+				? sourcePointPresentation(stripTerminalSequences(genericText.getText().replace(/\t/g, "   ")))
+				: sourcePointPresentation(output);
 		this.presentation = `${this.expanded}:${this.isPartial}:${source}`;
 		if (this.sourcePointFoldRole === "tool") {
 			this.sourcePointRevision =
@@ -636,13 +677,16 @@ export class ToolExecutionComponent extends Container {
 			sourcePointRevision: this.sourcePointRevision,
 		};
 		// The call body renders in full. A collapsed result renders only a preview, so it needs expansion.
-		const resultText =
-			this.expanded && this.toolDefinition?.renderResult === this.toolDefinition?.semanticSourceTextRenderer
-				? findFirstText(this.resultRendererComponent)
-				: undefined;
+		const resultText = !this.expanded
+			? undefined
+			: (this.fallbackResultText ??
+				(this.toolDefinition?.renderResult === this.toolDefinition?.semanticSourceTextRenderer
+					? findFirstText(this.resultRendererComponent)
+					: undefined));
 		const sources = [
 			...(callText ? [{ text: callText, owner: { ...owner, sourcePart: "call" as const } }] : []),
 			...(resultText && resultText !== callText ? [{ text: resultText, owner }] : []),
+			...(genericText ? [{ text: genericText, owner }] : []),
 		];
 		for (const { text, owner: sourceOwner } of sources) {
 			text.setPreWrapDecorator(
@@ -656,8 +700,12 @@ export class ToolExecutionComponent extends Container {
 		return getRenderedTextOutput(this.result, this.showImages);
 	}
 
+	private formatToolTitle(): string {
+		return theme.fg("toolTitle", theme.bold(this.toolName));
+	}
+
 	private formatToolExecution(): string {
-		let text = theme.fg("toolTitle", theme.bold(this.toolName));
+		let text = this.formatToolTitle();
 		const content = JSON.stringify(this.args, null, 2);
 		if (content) {
 			text += `\n\n${content}`;

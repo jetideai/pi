@@ -711,6 +711,59 @@ export default function (pi) {
 		}
 	});
 
+	it("restores a saved call of a tool without a loaded extension as one whole-call block", () => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage(user);
+		const ownerId = sessionManager.appendMessage(
+			assistant(
+				[{ type: "toolCall", id: "call-process", name: "process", arguments: { action: "list" } }],
+				"toolUse",
+			),
+		);
+		sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "call-process",
+			toolName: "process",
+			content: [{ type: "text", text: "process output" }],
+			isError: false,
+			timestamp: 2,
+		});
+		const { mode, chatContainer } = modeHarness(sessionManager);
+		const controls = { begin: "\x1b]777;begin\x07", body: "\x1b]777;body\x07", end: "\x1b]777;end\x07" };
+		const candidates: MessageRenderBoundaryCandidateV3[] = [];
+		Object.assign(mode, {
+			session: { ...mode.session, getToolDefinition: () => undefined },
+			getRegisteredToolDefinition: Reflect.get(InteractiveMode.prototype, "getRegisteredToolDefinition"),
+			getMessageRenderBoundarySelectorsV3: () => [
+				(candidate: Readonly<MessageRenderBoundaryCandidateV3>) => {
+					candidates.push(candidate);
+					return () => controls;
+				},
+			],
+		});
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+
+		renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+
+		const rows = chatContainer.render(100);
+		const count = (marker: string) => rows.reduce((total, row) => total + row.split(marker).length - 1, 0);
+		const begin = rows.findIndex((row) => row.includes(controls.begin));
+		expect(candidates).toContainEqual(
+			expect.objectContaining({
+				entryId: "call-process",
+				blockId: "call-process",
+				role: "tool",
+				ownerEntryId: ownerId,
+			}),
+		);
+		expect([count(controls.begin), count(controls.body), count(controls.end)]).toEqual([1, 1, 1]);
+		expect(stripAnsi(rows[begin]!).trim()).toBe("process");
+		expect(rows.findIndex((row) => row.includes(controls.body))).toBe(begin + 1);
+	});
+
 	it("restores the same projection identity and order as the live path", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const originUser = {

@@ -160,6 +160,59 @@ function renderBashSources(command: string, result: string, width: number, withC
 const numbered = (prefix: string, count: number) =>
 	Array.from({ length: count }, (_, index) => `${prefix}-${index}`).join("\n");
 
+/** A saved call of a tool whose renderers come from [renderers]; undefined is a tool without a definition. */
+function savedCall(renderers: ToolRenderers | undefined, points: MessageRenderSourcePointV1[] = []) {
+	const component = new ToolExecutionComponent(
+		"process",
+		"call-process",
+		{ action: "list" },
+		{
+			ownerEntryId: "assistant-a",
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [() => () => controls],
+			sourcePointDecoratorsV1: [
+				(source: Readonly<MessageRenderSourcePointV1>) => {
+					points.push({ ...source });
+					return EDIT_POINT;
+				},
+			],
+		},
+		renderers,
+		{ requestRender() {} } as unknown as TUI,
+		process.cwd(),
+	);
+	component.updateResult({ content: [{ type: "text", text: "process output" }], isError: false });
+	return component;
+}
+
+/** The rows of each boundary control and the rows without controls. */
+function boundaryRows(rows: string[]) {
+	const at = (control: string) => rows.flatMap((row, index) => (row.includes(control) ? [index] : []));
+	const count = (control: string) => rows.reduce((total, row) => total + row.split(control).length - 1, 0);
+	return {
+		begin: at(controls.begin),
+		body: at(controls.body),
+		end: at(controls.end),
+		counts: [count(controls.begin), count(controls.body), count(controls.end)],
+		visible: rows.map((row) => stripAnsi(row.replaceAll(EDIT_POINT, "")).trimEnd()),
+	};
+}
+
+function plainRows(renderers: ToolRenderers | undefined, width: number) {
+	const component = new ToolExecutionComponent(
+		"process",
+		"call-process",
+		{ action: "list" },
+		{},
+		renderers,
+		{ requestRender() {} } as unknown as TUI,
+		process.cwd(),
+	);
+	component.updateResult({ content: [{ type: "text", text: "process output" }], isError: false });
+	return component.render(width).map((row) => stripAnsi(row).trimEnd());
+}
+
 describe("semantic Tool Call and Tool Group presentation", () => {
 	beforeAll(() => initTheme("dark"));
 
@@ -621,6 +674,94 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(points.filter((point) => point.sourceOffset > 0).length).toBeGreaterThan(0);
 		expect(points.filter((point) => point.sourceOffset > 0).every((point) => point.sourcePart === "call")).toBe(true);
+	});
+
+	it("gives a saved call of a tool without a definition one whole-call range below its title", () => {
+		const rows = boundaryRows(savedCall(undefined).render(80));
+
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect(rows.visible[rows.begin[0]!]).toBe(" process");
+		expect(rows.body).toEqual([rows.begin[0]! + 1]);
+		expect(rows.end).toEqual([rows.visible.length - 1]);
+		expect(rows.visible).toEqual(plainRows(undefined, 80));
+	});
+
+	it("gives a call without a call renderer its title as the header and its result as the body", () => {
+		const renderers: ToolRenderers = {};
+		const rows = boundaryRows(savedCall(renderers).render(80));
+
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect(rows.visible[rows.begin[0]!]).toBe(" process");
+		expect(rows.visible[rows.body[0]!]).toBe(" process output");
+		expect(rows.visible).toEqual(plainRows(renderers, 80));
+	});
+
+	it("keeps the whole-call range of a call whose renderer throws on its fallback title", () => {
+		const renderers: ToolRenderers = {
+			renderCall: () => {
+				throw new Error("renderer failure");
+			},
+		};
+		const rows = boundaryRows(savedCall(renderers).render(80));
+
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect(rows.visible[rows.begin[0]!]).toBe(" process");
+		expect(rows.visible[rows.body[0]!]).toBe(" process output");
+	});
+
+	it("gives a custom self renderer without row locators its whole call as the header", () => {
+		const renderers: ToolRenderers = {
+			renderShell: "self",
+			renderCall: () => new Text("custom call\ncustom arguments", 0, 0),
+			renderResult: () => new Text("custom result", 0, 0),
+		};
+		const rows = boundaryRows(savedCall(renderers).render(80));
+
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect(rows.visible[rows.begin[0]!]).toBe("custom call");
+		expect(rows.visible[rows.body[0]!]).toBe("custom result");
+		expect(rows.visible).toEqual(plainRows(renderers, 80));
+	});
+
+	it("keeps the located rows of a renderer that has row locators", () => {
+		const rows = boundaryRows(tool("tool-located").render(80));
+		const component = tool("tool-located");
+		component.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+		const settled = boundaryRows(component.render(80));
+
+		expect(rows.counts).toEqual([0, 0, 0]);
+		expect(settled.counts).toEqual([1, 1, 1]);
+		expect(settled.visible[settled.begin[0]!]).toBe("stock header");
+		expect(settled.visible[settled.body[0]!]).toBe("stock preview");
+	});
+
+	it("marks source points in the generic text of a tool without a definition", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = savedCall(undefined, points);
+		component.updateResult({ content: [{ type: "text", text: numbered("line", 30) }], isError: false });
+		points.length = 0;
+
+		component.render(80);
+
+		expect(points.length).toBeGreaterThan(1);
+		expect(points.every((point) => point.entryId === "call-process" && point.role === "tool")).toBe(true);
+		expect(points.every((point) => point.ownerEntryId === "assistant-a" && point.sourcePart === undefined)).toBe(
+			true,
+		);
+		expect(points[0]).toMatchObject({ pointKind: "line", sourceOffset: 0 });
+	});
+
+	it("marks source points in the expanded fallback result of a call without a result renderer", () => {
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = savedCall({}, points);
+		component.setExpanded(true);
+		component.updateResult({ content: [{ type: "text", text: numbered("line", 30) }], isError: false });
+		points.length = 0;
+
+		component.render(80);
+
+		expect(points.length).toBeGreaterThan(1);
+		expect(points.every((point) => point.entryId === "call-process" && point.sourcePart === undefined)).toBe(true);
 	});
 
 	it("leaves a singleton on its existing Tool Call path", () => {
