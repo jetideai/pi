@@ -397,7 +397,8 @@ export class ToolExecutionComponent extends Container {
 	private decorateSemanticSections(lines: string[], width: number): string[] {
 		if (!this.semanticBoundariesEnabled || this.semanticDecoratorsV2.length === 0 || this.isPartial) return lines;
 		const rows = this.locatedSemanticRows(width) ?? this.wholeCallSemanticRows(width);
-		if (!rows || rows.body >= lines.length) return lines;
+		if (!rows || rows.header >= lines.length) return lines;
+		// Without a body row the call is a plain range: the decorator context then has no foldable body.
 		return decorateMessageRenderV2(lines, rows.body, width, "tool", 0, {
 			entryId: this.toolCallId,
 			...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
@@ -427,22 +428,33 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * The rows of the whole call when the renderer does not locate them: the call part is the header and the rest of
-	 * the tool is the body. The rows come from the layout that this component owns, never from the rendered text.
+	 * The rows of the whole call when the renderer does not locate them: the call part is the header, and the result
+	 * rows, or else the images, are the body. A call without either has no body. The rows come from the layout that
+	 * this component owns, never from the rendered text or from padding.
 	 */
-	private wholeCallSemanticRows(width: number): { header: number; body: number } | undefined {
+	private wholeCallSemanticRows(width: number): { header: number; body?: number } | undefined {
+		const images = this.imageComponents.length > 0;
 		if (!this.hasRendererDefinition()) {
 			// The leading Spacer and the top padding of the generic Text precede the title.
+			const textRows = this.contentText.render(width).length;
 			const titleRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
-			return { header: 2, body: 2 + titleRows };
+			const body = textRows - 2 > titleRows ? 2 + titleRows : images ? 1 + textRows : undefined;
+			return { header: 2, ...(body !== undefined ? { body } : {}) };
 		}
 		const component = this.callPartComponent;
 		if (!component) return undefined;
 		try {
 			const self = this.getRenderShell() === "self";
 			const callRows = component.render(self ? width : Math.max(0, width - 2)).length;
+			if (callRows === 0) return undefined;
+			// The self shell has one leading row; the default shell adds its Spacer and the Box padding rows.
+			const shellRows = self
+				? this.selfRenderContainer.render(width).length
+				: this.contentBox.render(width).length - 2;
 			const offset = self ? 1 : 2;
-			return callRows > 0 ? { header: offset, body: offset + callRows } : undefined;
+			const shellEnd = self ? 1 + shellRows : 1 + shellRows + 2;
+			const body = shellRows > callRows ? offset + callRows : images ? shellEnd : undefined;
+			return { header: offset, ...(body !== undefined ? { body } : {}) };
 		} catch {
 			return undefined;
 		}

@@ -1,4 +1,4 @@
-import { Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilities, Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type {
@@ -13,7 +13,10 @@ import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { generateDiffString } from "../src/core/tools/edit-diff.ts";
 import { withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
-import { SourcePointRevisions } from "../src/modes/interactive/components/message-render-boundaries.ts";
+import {
+	decorateMessageRenderV2,
+	SourcePointRevisions,
+} from "../src/modes/interactive/components/message-render-boundaries.ts";
 import type { ToolRenderers } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolGroupComponent, ToolGroupMemberComponent } from "../src/modes/interactive/components/tool-group.ts";
@@ -161,7 +164,11 @@ const numbered = (prefix: string, count: number) =>
 	Array.from({ length: count }, (_, index) => `${prefix}-${index}`).join("\n");
 
 /** A saved call of a tool whose renderers come from [renderers]; undefined is a tool without a definition. */
-function savedCall(renderers: ToolRenderers | undefined, points: MessageRenderSourcePointV1[] = []) {
+function savedCall(
+	renderers: ToolRenderers | undefined,
+	points: MessageRenderSourcePointV1[] = [],
+	selectors: MessageRenderBoundarySelectorV3[] = [() => () => controls],
+) {
 	const component = new ToolExecutionComponent(
 		"process",
 		"call-process",
@@ -170,7 +177,7 @@ function savedCall(renderers: ToolRenderers | undefined, points: MessageRenderSo
 			ownerEntryId: "assistant-a",
 			producerSessionId: "session-a",
 			renderScopeId: "scope-a",
-			semanticSelectorsV3: [() => () => controls],
+			semanticSelectorsV3: selectors,
 			sourcePointDecoratorsV1: [
 				(source: Readonly<MessageRenderSourcePointV1>) => {
 					points.push({ ...source });
@@ -184,6 +191,16 @@ function savedCall(renderers: ToolRenderers | undefined, points: MessageRenderSo
 	);
 	component.updateResult({ content: [{ type: "text", text: "process output" }], isError: false });
 	return component;
+}
+
+/** A selector that records each decorator context and answers with the fixed controls. */
+function recording(contexts: MessageRenderBoundaryContextV1[]): MessageRenderBoundarySelectorV3[] {
+	return [
+		() => (context) => {
+			contexts.push(context);
+			return controls;
+		},
+	];
 }
 
 /** The rows of each boundary control and the rows without controls. */
@@ -728,6 +745,96 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rows.visible[rows.begin[0]!]).toBe("custom call");
 		expect(rows.visible[rows.body[0]!]).toBe("custom result");
 		expect(rows.visible).toEqual(plainRows(renderers, 80));
+	});
+
+	it("gives a completed self-rendered call with an empty result one plain whole-call range", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const component = savedCall(
+			{ renderShell: "self", renderCall: () => new Text("custom call", 0, 0) },
+			[],
+			recording(contexts),
+		);
+		component.updateResult({ content: [], isError: false });
+		const rows = boundaryRows(component.render(80));
+
+		expect(rows.visible).toEqual(["", "custom call"]);
+		expect(rows.counts).toEqual([1, 0, 1]);
+		expect([rows.begin, rows.end]).toEqual([[1], [1]]);
+		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
+	});
+
+	it("does not make the bottom padding of a call without a result the body of its range", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const component = savedCall({}, [], recording(contexts));
+		component.updateResult({ content: [], isError: false });
+		const rows = boundaryRows(component.render(80));
+
+		expect(rows.visible).toEqual(["", "", " process", ""]);
+		expect(rows.counts).toEqual([1, 0, 1]);
+		expect([rows.begin, rows.end]).toEqual([[2], [3]]);
+		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
+	});
+
+	it("gives a call whose result renderer draws no rows a plain range", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const component = savedCall(
+			{ renderCall: () => new Text("custom call", 0, 0), renderResult: () => new Text("", 0, 0) },
+			[],
+			recording(contexts),
+		);
+		const rows = boundaryRows(component.render(80));
+
+		expect(rows.visible).toEqual(["", "", " custom call", ""]);
+		expect(rows.counts).toEqual([1, 0, 1]);
+		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
+	});
+
+	it("starts the body of a call whose result is only an image at the image, after the padding", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const contexts: MessageRenderBoundaryContextV1[] = [];
+			const component = savedCall({}, [], recording(contexts));
+			component.updateResult({
+				content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+				isError: false,
+			});
+			const rows = boundaryRows(component.render(80));
+
+			expect(rows.visible.slice(0, 5)).toEqual(["", "", " process", "", ""]);
+			expect(rows.counts).toEqual([1, 1, 1]);
+			expect([rows.begin, rows.body]).toEqual([[2], [4]]);
+			expect(contexts.at(-1)?.bodyRow).toBe(4);
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	it("gives the context of a call with a result the row of its foldable body", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const rows = boundaryRows(savedCall({}, [], recording(contexts)).render(80));
+
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect(contexts.at(-1)?.bodyRow).toBe(rows.body[0]);
+	});
+
+	it("gives a decorator context a body row only when the helper places the body", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const decorators = [
+			(context: Readonly<MessageRenderBoundaryContextV1>) => {
+				contexts.push(context);
+				return controls;
+			},
+		];
+		const options = { entryId: "tool-a", beginRow: 1, decorators };
+
+		const folded = decorateMessageRenderV2(["a", "b", "c"], 2, 80, "tool", 0, options);
+		const outside = decorateMessageRenderV2(["a", "b"], 2, 80, "tool", 0, options);
+		const atBegin = decorateMessageRenderV2(["a", "b"], 1, 80, "tool", 0, options);
+		const absent = decorateMessageRenderV2(["a", "b"], undefined, 80, "tool", 0, options);
+
+		expect(contexts.map((context) => context.bodyRow)).toEqual([2, undefined, undefined, undefined]);
+		expect(folded).toEqual(["a", `${controls.begin}b`, `${controls.body}c${controls.end}`]);
+		for (const plain of [outside, atBegin, absent]) expect(plain).toEqual(["a", `${controls.begin}b${controls.end}`]);
 	});
 
 	it("keeps the located rows of a renderer that has row locators", () => {

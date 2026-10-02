@@ -165,6 +165,12 @@ export function decorateMessageRenderV2(
 	},
 ): string[] {
 	if (!options || options.decorators.length === 0 || lines.length === 0) return lines;
+	const beginRow = options.beginRow ?? 0;
+	// A body starts after the begin row and inside the lines; otherwise the block has no foldable body.
+	const foldableBodyRow =
+		bodyRow !== undefined && Number.isSafeInteger(bodyRow) && bodyRow > beginRow && bodyRow < lines.length
+			? bodyRow
+			: undefined;
 	const context = Object.freeze({
 		entryId: options.entryId,
 		...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
@@ -174,6 +180,7 @@ export function decorateMessageRenderV2(
 		sourcePointRevision: options.sourcePointRevision ?? 1,
 		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
 		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
+		...(foldableBodyRow !== undefined ? { bodyRow: foldableBodyRow } : {}),
 	});
 	const begins: string[] = [];
 	const bodies: string[] = [];
@@ -187,11 +194,8 @@ export function decorateMessageRenderV2(
 			if (boundaries.end) ends.unshift(boundaries.end);
 		} catch {}
 	}
-	const beginRow = options.beginRow ?? 0;
 	if (beginRow >= 0 && beginRow < lines.length) lines[beginRow] = begins.join("") + lines[beginRow];
-	if (bodyRow !== undefined && bodyRow >= 0 && bodyRow < lines.length) {
-		lines[bodyRow] = bodies.join("") + lines[bodyRow];
-	}
+	if (foldableBodyRow !== undefined) lines[foldableBodyRow] = bodies.join("") + lines[foldableBodyRow];
 	lines[lines.length - 1] += ends.join("");
 	return lines;
 }

@@ -1452,6 +1452,11 @@ export interface MessageRenderBoundaryContextV1 {
 	sourcePointRevision: number;
 	allocatedColumns: Readonly<MessageRenderRangeV1>;
 	stockRows: Readonly<MessageRenderRangeV1>;
+	/**
+	 * The row of the rendered lines where the foldable body of the block starts. It is present exactly when this render
+	 * places a body boundary. Without it the block has no foldable body in this render.
+	 */
+	readonly bodyRow?: number;
 }
 
 /** Zero-column terminal controls to place around one built-in message render. */
