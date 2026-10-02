@@ -101,3 +101,15 @@ describe("Text retained layout", () => {
 		assert.deepEqual(painted, ["five    ", "six     "]);
 	});
 });
+
+describe("Text summary row", () => {
+	it("gives no summary row when the first line fits one row", () => {
+		assert.equal(new Text("short\nsecond line", 1, 0).summaryRow(20), undefined);
+	});
+
+	it("gives the first line as one padded row of the width with an ellipsis where it is cut", () => {
+		const row = new Text("a first line that is longer than the row\nsecond", 1, 1).summaryRow(20);
+
+		assert.equal(stripTerminalSequences(row ?? ""), " a first line that… ");
+	});
+});

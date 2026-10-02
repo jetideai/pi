@@ -11,8 +11,6 @@ import {
 	Text,
 	type TUI,
 	type TuiMouseEvent,
-	truncateToWidth,
-	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundaryDecoratorV2,
@@ -122,10 +120,10 @@ export class ToolExecutionComponent extends Container {
 	private readonly sourcePointRevisions?: SourcePointRevisions;
 	private sourcePointRevision = 1;
 	private presentation = "";
-	/** The background of the generic Text of a tool without a definition. */
-	private genericBgFn?: (text: string) => string;
-	/** The last render put a summary row before the wrapped title of a tool without a definition. */
-	private genericSummary = false;
+	/** The background of the padded shell and of the generic Text of a tool without a definition. */
+	private shellBgFn?: (text: string) => string;
+	/** The last render put a summary row before the call rows. */
+	private callSummary = false;
 	private decoratedSourceTexts: Text[] = [];
 
 	constructor(
@@ -461,17 +459,17 @@ export class ToolExecutionComponent extends Container {
 			let shellLines: number;
 			if (!this.hasRendererDefinition()) {
 				const textLines = this.contentText.render(width).length;
-				const summaryRows = this.rendersSemanticSections() && this.genericSummaryRow(width) !== undefined ? 1 : 0;
-				contentRows = Math.max(0, textLines - 2) + summaryRows;
+				contentRows = Math.max(0, textLines - 2) + this.summaryRows(width);
 				callRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
 				shellLines = this.contentStartRow() + contentRows + 1;
 			} else if (this.getRenderShell() === "self") {
-				contentRows = this.selfRenderContainer.render(width).length;
+				const selfRows = this.selfRenderContainer.render(width).length;
+				contentRows = selfRows > 0 ? selfRows + this.summaryRows(width) : 0;
 				callRows = this.callPartComponent?.render(width).length ?? 0;
 				shellLines = contentRows > 0 ? 1 + contentRows : 0;
 			} else {
 				const boxLines = this.contentBox.render(width).length;
-				contentRows = Math.max(0, boxLines - 2);
+				contentRows = Math.max(0, boxLines - 2) + this.summaryRows(width);
 				callRows = this.callPartComponent?.render(Math.max(0, width - 2)).length ?? 0;
 				shellLines = this.contentStartRow() + contentRows + 1;
 			}
@@ -494,8 +492,11 @@ export class ToolExecutionComponent extends Container {
 			if (contentLines.length === 0 && this.imageComponents.length === 0) return [];
 
 			const lines: string[] = [];
+			const summary = contentLines.length > 0 ? this.callSummaryRow(width) : undefined;
+			this.callSummary = summary !== undefined;
 			if (contentLines.length > 0) {
 				lines.push("");
+				if (summary !== undefined) lines.push(summary);
 				lines.push(...contentLines);
 			}
 			for (let i = 0; i < this.imageComponents.length; i++) {
@@ -507,27 +508,56 @@ export class ToolExecutionComponent extends Container {
 			return lines;
 		}
 		const lines = super.render(width);
-		this.genericSummary = false;
+		this.callSummary = false;
 		if (!this.rendersSemanticSections() || lines.length <= 1) return lines;
 		// The Spacer renders one row; the next row is the top padding of the padded shell.
 		lines.splice(1, 1);
-		const summary = this.genericSummaryRow(width);
+		const summary = this.callSummaryRow(width);
 		if (summary !== undefined) {
 			lines.splice(1, 0, summary);
-			this.genericSummary = true;
+			this.callSummary = true;
 		}
 		return lines;
 	}
 
 	/**
-	 * The one summary row of a tool without a definition whose title does not fit: the title with an ellipsis. The
-	 * complete title follows it in the body.
+	 * The one summary row of a call whose first line does not fit one row: that line with an ellipsis, styled as the
+	 * call rows. The complete call follows it in the body. A renderer that locates its own header rows, a sectioned
+	 * header that summarizes itself, and a call part that is not one Text give no summary row.
 	 */
-	private genericSummaryRow(width: number): string | undefined {
-		if (this.hasRendererDefinition()) return undefined;
-		const title = this.formatToolTitle();
-		if (visibleWidth(title) <= Math.max(0, width - 2)) return undefined;
-		return new Text(truncateToWidth(title, Math.max(0, width - 2), "…"), 1, 0, this.genericBgFn).render(width)[0];
+	private callSummaryRow(width: number): string | undefined {
+		if (!this.rendersSemanticSections()) return undefined;
+		if (!this.hasRendererDefinition()) return this.contentText.summaryRow(width);
+		const call = this.callPartComponent;
+		if (!(call instanceof Text) || call instanceof SectionedToolCallHeader || this.locatesOwnRows(width)) {
+			return undefined;
+		}
+		if (this.getRenderShell() === "self") return call.summaryRow(width);
+		const row = call.summaryRow(Math.max(0, width - 2));
+		if (row === undefined) return undefined;
+		const shell = new Box(1, 0, this.shellBgFn);
+		shell.addChild({ render: () => [row], invalidate: () => {} });
+		return shell.render(width)[0];
+	}
+
+	private summaryRows(width: number): number {
+		return this.callSummaryRow(width) === undefined ? 0 : 1;
+	}
+
+	/** True when the call renderer locates a valid header and body row in its own component. */
+	private locatesOwnRows(width: number): boolean {
+		const component = this.callRendererComponent;
+		const headerLocator = this.getCallHeaderRowLocator();
+		const bodyLocator = this.getCallBodyRowLocator();
+		if (!component || !headerLocator || !bodyLocator) return false;
+		try {
+			component.render(this.getRenderShell() === "self" ? width : Math.max(0, width - 2));
+			const headerRow = headerLocator(component);
+			const bodyRow = bodyLocator(component);
+			return headerRow !== undefined && bodyRow !== undefined && headerRow >= 0 && bodyRow > headerRow;
+		} catch {
+			return false;
+		}
 	}
 
 	/** Settled semantic sections own the header row: the padded shell then has no top padding row. */
@@ -549,13 +579,15 @@ export class ToolExecutionComponent extends Container {
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
 			// The children still render the top padding row that the semantic shell omits, and not its summary row.
 			if (!this.rendersSemanticSections() || event.y < 1) return super.handleMouse(event);
-			if (this.genericSummary) return super.handleMouse({ ...event, y: Math.max(event.y, 2) });
+			if (this.callSummary) return super.handleMouse({ ...event, y: Math.max(event.y, 2) });
 			return super.handleMouse({ ...event, y: event.y + 1, height: event.height + 1 });
 		}
-		if (event.y <= 0 || event.y > this.selfRenderHeight) return undefined;
+		// A summary row before the self-rendered rows points at the first of them.
+		const summaryRows = this.callSummary ? 1 : 0;
+		if (event.y <= 0 || event.y > this.selfRenderHeight + summaryRows) return undefined;
 		return this.selfRenderContainer.handleMouse({
 			...event,
-			y: event.y - 1,
+			y: Math.max(event.y - 1 - summaryRows, 0),
 			height: this.selfRenderHeight,
 		});
 	}
@@ -613,6 +645,7 @@ export class ToolExecutionComponent extends Container {
 			if (renderContainer instanceof Box) {
 				renderContainer.setBgFn(bgFn);
 			}
+			this.shellBgFn = bgFn;
 			renderContainer.clear();
 			this.fallbackResultText = undefined;
 
@@ -667,7 +700,7 @@ export class ToolExecutionComponent extends Container {
 			}
 		} else {
 			this.contentText.setCustomBgFn(bgFn);
-			this.genericBgFn = bgFn;
+			this.shellBgFn = bgFn;
 			this.contentText.setText(this.formatToolExecution());
 			hasContent = true;
 		}

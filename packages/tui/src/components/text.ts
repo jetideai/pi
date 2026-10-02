@@ -4,6 +4,7 @@ import {
 	decoratePreWrapText,
 	PreparedTextWithAnsi,
 	type PreWrapTextDecorator,
+	truncateToWidth,
 	visibleWidth,
 } from "../utils.ts";
 
@@ -28,6 +29,19 @@ export class Text implements Component {
 
 	getText(): string {
 		return this.text;
+	}
+
+	/**
+	 * One rendered row of the first line of this text at [width], with [ellipsis] where the line is cut, styled as the
+	 * other rows. Undefined when the first line already fits one row.
+	 */
+	summaryRow(width: number, ellipsis = "…"): string | undefined {
+		const firstLine = this.text.split("\n", 1)[0] ?? "";
+		const contentWidth = Math.max(1, width - this.paddingX * 2);
+		if (visibleWidth(firstLine) <= contentWidth) return undefined;
+		return new Text(truncateToWidth(firstLine, contentWidth, ellipsis), this.paddingX, 0, this.customBgFn).render(
+			width,
+		)[0];
 	}
 
 	setText(text: string): void {

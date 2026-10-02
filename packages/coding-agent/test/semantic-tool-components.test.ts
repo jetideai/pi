@@ -1194,6 +1194,26 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(rows.some((row) => row.includes("…"))).toBe(false);
 	});
 
+	it.each([
+		["default", undefined],
+		["self", "self"],
+	] as const)(
+		"shows a collapsed %s shell call renderer without row locators and a long first line as one row with an ellipsis",
+		(_name, renderShell) => {
+			const rows = savedCall({
+				...(renderShell ? { renderShell } : {}),
+				renderCall: () => new Text("a long logical custom call title that wraps at a narrow width\nargs", 0, 0),
+				renderResult: () => new Text("custom result", 0, 0),
+			}).render(30);
+			const open = foldedRows(rows, () => false).join(" ");
+
+			expect(foldedRows(rows, () => true)).toEqual(["", expect.stringMatching(/^a long .*…$/)]);
+			expect(open).toContain("narrow width");
+			expect(open).toContain("args");
+			expect(open).toContain("custom result");
+		},
+	);
+
 	it("shows a collapsed call of a tool without a definition and a long name as one row that ends with an ellipsis", () => {
 		const component = new ToolExecutionComponent(
 			"a_tool_name_that_wraps_at_a_narrow_width",
