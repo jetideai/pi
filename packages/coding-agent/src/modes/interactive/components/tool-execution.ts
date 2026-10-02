@@ -11,6 +11,7 @@ import {
 	Text,
 	type TUI,
 	type TuiMouseEvent,
+	truncateToWidth,
 } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundaryDecoratorV2,
@@ -521,22 +522,28 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * The one summary row of a call whose first line does not fit one row: that line with an ellipsis, styled as the
-	 * call rows. The complete call follows it in the body. A renderer that locates its own header rows, a sectioned
-	 * header that summarizes itself, and a call part that is not one Text give no summary row.
+	 * The one summary row before the call rows, when the first call row is not a whole header. A call part that is one
+	 * Text gives its first line with an ellipsis when that line does not fit. Another call component does not tell its
+	 * first line, so the summary is the tool title, with an ellipsis when it does not fit. The complete call follows the
+	 * summary in the body. A renderer that locates its own header rows, a sectioned header that summarizes itself, and a
+	 * call part without rows give no summary row.
 	 */
 	private callSummaryRow(width: number): string | undefined {
 		if (!this.rendersSemanticSections()) return undefined;
 		if (!this.hasRendererDefinition()) return this.contentText.summaryRow(width);
 		const call = this.callPartComponent;
-		if (!(call instanceof Text) || call instanceof SectionedToolCallHeader || this.locatesOwnRows(width)) {
-			return undefined;
-		}
-		if (this.getRenderShell() === "self") return call.summaryRow(width);
-		const row = call.summaryRow(Math.max(0, width - 2));
-		if (row === undefined) return undefined;
+		if (!call || call instanceof SectionedToolCallHeader || this.locatesOwnRows(width)) return undefined;
+		const self = this.getRenderShell() === "self";
+		const callWidth = self ? width : Math.max(0, width - 2);
+		const summary =
+			call instanceof Text
+				? call.summaryRow(callWidth)
+				: call.render(callWidth).length > 0
+					? truncateToWidth(this.formatToolTitle(), callWidth, "…")
+					: undefined;
+		if (summary === undefined || self) return summary;
 		const shell = new Box(1, 0, this.shellBgFn);
-		shell.addChild({ render: () => [row], invalidate: () => {} });
+		shell.addChild({ render: () => [summary], invalidate: () => {} });
 		return shell.render(width)[0];
 	}
 

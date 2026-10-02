@@ -1,4 +1,5 @@
 import {
+	type Component,
 	resetCapabilitiesCache,
 	setCapabilities,
 	Text,
@@ -1213,6 +1214,56 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 			expect(open).toContain("custom result");
 		},
 	);
+
+	it.each([
+		["a short", "opaque_tool", 80, /^opaque_tool$/],
+		["a long", "an_opaque_tool_name_that_does_not_fit", 24, /^an_opaque.*…$/],
+	] as const)(
+		"shows a collapsed opaque call renderer without row locators as one tool title row for %s name",
+		(_name, toolName, width, title) => {
+			const opaque = (): Component => ({
+				render: () => ["opaque first row that may continue", "opaque second row"],
+				invalidate: () => {},
+			});
+			const component = new ToolExecutionComponent(
+				toolName,
+				"call-opaque",
+				{},
+				{
+					ownerEntryId: "assistant-a",
+					producerSessionId: "session-a",
+					renderScopeId: "scope-a",
+					semanticSelectorsV3: [() => () => controls],
+				},
+				{ renderCall: opaque, renderResult: () => new Text("opaque result", 0, 0) },
+				{ requestRender() {} } as unknown as TUI,
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
+			const rows = component.render(width);
+			const open = foldedRows(rows, () => false);
+
+			expect(foldedRows(rows, () => true)).toEqual(["", expect.stringMatching(title)]);
+			expect(open).toEqual(
+				expect.arrayContaining(["opaque first row that may continue", "opaque second row", "opaque result"]),
+			);
+		},
+	);
+
+	it("keeps the stock rows of an opaque call renderer when folding is off", () => {
+		const component = new ToolExecutionComponent(
+			"opaque_tool",
+			"call-opaque",
+			{},
+			{},
+			{ renderCall: () => ({ render: () => ["opaque row"], invalidate: () => {} }) },
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
+
+		expect(foldedRows(component.render(80), () => true).filter((row) => row.includes("opaque_tool"))).toEqual([]);
+	});
 
 	it("shows a collapsed call of a tool without a definition and a long name as one row that ends with an ellipsis", () => {
 		const component = new ToolExecutionComponent(
