@@ -846,3 +846,125 @@ export default function (pi) {
 		]);
 	});
 });
+
+const foldControls = { begin: "\x1b]777;begin\x07", body: "\x1b]777;body\x07", end: "\x1b]777;end\x07" };
+
+function savedToolResult(toolCallId: string, toolName: string, text: string): ToolResultMessage {
+	return { role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError: false, timestamp: 2 };
+}
+
+/** A restored transcript: the user question, the given assistant tool responses with results, and a final answer. */
+function restoredTranscript(responses: AssistantMessage["content"][], hideThinkingBlock: boolean) {
+	const sessionManager = SessionManager.inMemory();
+	sessionManager.appendMessage(user);
+	for (const content of responses) {
+		sessionManager.appendMessage(assistant(content, "toolUse"));
+		for (const call of content) {
+			if (call.type === "toolCall")
+				sessionManager.appendMessage(savedToolResult(call.id, call.name, `${call.id} output`));
+		}
+	}
+	sessionManager.appendMessage(assistant([{ type: "text", text: "Done." }], "stop"));
+	const { mode, chatContainer, projections } = modeHarness(sessionManager);
+	Object.assign(mode, {
+		hideThinkingBlock,
+		session: { ...mode.session, getToolDefinition: () => undefined },
+		getRegisteredToolDefinition: Reflect.get(InteractiveMode.prototype, "getRegisteredToolDefinition"),
+		getMessageRenderBoundarySelectorsV3: () => [() => () => foldControls],
+	});
+	const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+		this: typeof mode,
+		entries: ReturnType<SessionManager["getBranch"]>,
+	) => void;
+	renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+	return { rows: chatContainer.render(100), members: projections.at(-1)?.members ?? [] };
+}
+
+/** The visible text of the rows that native shows when every Fold is collapsed. */
+function collapsedRows(rows: string[]): string[] {
+	const hidden = new Set<number>();
+	// The body row of each open range, innermost last.
+	const bodies: (number | undefined)[] = [];
+	rows.forEach((row, index) => {
+		for (const match of row.matchAll(/\x1b\]777;(begin|body|end)\x07/g)) {
+			if (match[1] === "begin") bodies.push(undefined);
+			else if (match[1] === "body") bodies[bodies.length - 1] ??= index;
+			else {
+				const body = bodies.pop();
+				for (let hiddenRow = body ?? index + 1; hiddenRow <= index; hiddenRow++) hidden.add(hiddenRow);
+			}
+		}
+	});
+	return rows.flatMap((row, index) => {
+		if (hidden.has(index)) return [];
+		const text = stripAnsi(row).trim();
+		return [/\x1b\[48;/.test(row) && text === "" ? "<shaded blank>" : text];
+	});
+}
+
+const thinking = (text: string) => ({ type: "thinking" as const, thinking: text });
+const toolCall = (id: string) => ({ type: "toolCall" as const, id, name: "process", arguments: { action: "list" } });
+
+describe("restored Tool Group composition and separators", () => {
+	beforeAll(() => initTheme("dark"));
+
+	it("keeps visible thinking between tool-only responses as a group boundary", () => {
+		const { members } = restoredTranscript(
+			[
+				[thinking("Inspecting A"), toolCall("call-a")],
+				[thinking("Inspecting B"), toolCall("call-b")],
+			],
+			false,
+		);
+
+		expect(members.filter((member) => member.role === "tool").map((member) => member.groupId)).toEqual([
+			undefined,
+			undefined,
+		]);
+	});
+
+	it("keeps visible assistant prose between tool calls as a group boundary", () => {
+		const { members } = restoredTranscript(
+			[[toolCall("call-a")], [{ type: "text", text: "Visible prose." }, toolCall("call-b")]],
+			true,
+		);
+
+		expect(members.filter((member) => member.role === "tool").map((member) => member.groupId)).toEqual([
+			undefined,
+			undefined,
+		]);
+	});
+
+	it("restores settled thinking without rows when thinking is hidden", () => {
+		const { rows } = restoredTranscript([[thinking("Inspecting A"), toolCall("call-a")]], true);
+
+		expect(rows.some((row) => stripAnsi(row).includes("Inspecting A"))).toBe(false);
+	});
+
+	it("separates collapsed tool calls and visible thinking by one blank row", () => {
+		const { rows } = restoredTranscript(
+			[
+				[thinking("Inspecting A"), toolCall("call-a")],
+				[thinking("Inspecting B"), toolCall("call-b")],
+			],
+			false,
+		);
+
+		expect(collapsedRows(rows).slice(3, -2)).toEqual([
+			"",
+			"Inspecting A",
+			"",
+			"process",
+			"",
+			"Inspecting B",
+			"",
+			"process",
+		]);
+	});
+
+	it("separates a collapsed Tool Group header from the previous block by one blank row", () => {
+		const { rows } = restoredTranscript([[toolCall("call-a"), toolCall("call-b")]], true);
+
+		expect(collapsedRows(rows).slice(3, -2)).toEqual(["", "$ Used tools"]);
+	});
+});

@@ -27,21 +27,21 @@ export interface ToolGroupOptions {
 	sourcePointRevisions?: SourcePointRevisions;
 }
 
+/** A member of a closed Tool Group: it adds the one separator row that a compact live header does not render. */
 export class ToolGroupMemberComponent implements Component {
 	readonly component: ToolExecutionComponent;
-	private readonly separator: boolean;
 	private renderedHeight = 0;
+	private separated = false;
 
-	constructor(component: ToolExecutionComponent, separator: boolean) {
+	constructor(component: ToolExecutionComponent) {
 		this.component = component;
-		this.separator = separator;
 	}
 
 	render(width: number): string[] {
 		const rows = this.component.render(width);
 		this.renderedHeight = rows.length;
-		if (rows.length === 0 || !this.separator) return rows;
-		return ["", ...rows];
+		this.separated = rows.length > 0 && !this.component.rendersLeadingSeparator;
+		return this.separated ? ["", ...rows] : rows;
 	}
 
 	invalidate(): void {
@@ -49,7 +49,7 @@ export class ToolGroupMemberComponent implements Component {
 	}
 
 	handleMouse(event: TuiMouseEvent): ReturnType<NonNullable<Component["handleMouse"]>> {
-		const offset = this.separator && this.renderedHeight > 0 ? 1 : 0;
+		const offset = this.separated ? 1 : 0;
 		if (event.y < offset) return undefined;
 		return this.component.handleMouse({ ...event, y: event.y - offset, height: this.renderedHeight });
 	}
@@ -89,16 +89,11 @@ export class ToolGroupComponent extends Container {
 				: [];
 	}
 
+	/** Each member keeps its own Tool Call range and source points inside the range of the group. */
 	addTool(component: ToolExecutionComponent, member: ToolGroupMemberV1): void {
-		component.setSemanticBoundariesEnabled(false);
-		this.addChild(this.semanticDecoratorsV2.length > 0 ? new ToolGroupMemberComponent(component, true) : component);
+		this.addChild(this.semanticDecoratorsV2.length > 0 ? new ToolGroupMemberComponent(component) : component);
 		this.members.push(member);
 		this.memberComponents.push(component);
-		if (this.memberComponents.length >= 2) {
-			for (const memberComponent of this.memberComponents) {
-				memberComponent.setSourcePointContainingFold(this.groupId, "tool-group");
-			}
-		}
 	}
 
 	/** Expand or collapse the output of every member Tool Call. */
@@ -119,7 +114,6 @@ export class ToolGroupComponent extends Container {
 						this.closed,
 					) ?? 1)
 				: 1;
-		for (const member of this.memberComponents) member.setSourcePointRevision(revision);
 		const body = super.render(width);
 		if (!this.closed || this.members.length < 2 || this.semanticDecoratorsV2.length === 0) return body;
 		const header = truncateToWidth(
@@ -127,7 +121,9 @@ export class ToolGroupComponent extends Container {
 			width,
 			"…",
 		);
-		return decorateMessageRenderV2([header, ...body], 1, width, "tool-group", this.outputPad, {
+		// The group owns one separator row before its header; each member renders its own before its call.
+		return decorateMessageRenderV2(["", header, ...body], 2, width, "tool-group", this.outputPad, {
+			beginRow: 1,
 			entryId: this.groupId,
 			...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
 			decorators: this.semanticDecoratorsV2,
@@ -139,8 +135,8 @@ export class ToolGroupComponent extends Container {
 		if (!this.closed || this.members.length < 2 || this.semanticDecoratorsV2.length === 0) {
 			return super.handleMouse(event);
 		}
-		if (event.y === 0) return undefined;
-		return super.handleMouse({ ...event, y: event.y - 1, height: event.height - 1 });
+		if (event.y < 2) return undefined;
+		return super.handleMouse({ ...event, y: event.y - 2, height: event.height - 2 });
 	}
 }
 

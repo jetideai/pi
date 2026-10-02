@@ -110,14 +110,13 @@ export class ToolExecutionComponent extends Container {
 	> = new Map();
 	private hideComponent = false;
 	private compactLiveToolCall = false;
+	/** The selected presentation lets the native Fold own the settled body, so Pi renders its canonical content. */
+	private readonly foldOwnsBody: boolean;
 	private readonly ownerEntryId?: string;
 	private readonly semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[];
-	private semanticBoundariesEnabled = true;
 	private readonly producerSessionId?: string;
 	private readonly renderScopeId?: string;
 	private readonly sourcePointDecoratorsV1: readonly MessageRenderSourcePointDecoratorV1[];
-	private sourcePointFoldRole: "tool" | "tool-group" = "tool";
-	private sourcePointFoldBlockId: string;
 	private readonly sourcePointRevisions?: SourcePointRevisions;
 	private sourcePointRevision = 1;
 	private presentation = "";
@@ -142,7 +141,6 @@ export class ToolExecutionComponent extends Container {
 		this.renderScopeId = options.renderScopeId;
 		this.sourcePointDecoratorsV1 = options.sourcePointDecoratorsV1 ?? [];
 		this.sourcePointRevisions = options.sourcePointRevisions;
-		this.sourcePointFoldBlockId = toolCallId;
 		this.semanticDecoratorsV2 =
 			options.producerSessionId && options.renderScopeId
 				? selectMessageRenderBoundaryDecoratorsV3(
@@ -158,10 +156,11 @@ export class ToolExecutionComponent extends Container {
 						options.semanticSelectorsV3 ?? [],
 					)
 				: [];
-		this.compactLiveToolCall = this.selectCompactLiveToolCall(
+		this.foldOwnsBody = this.selectFoldPresentation(
 			options.toolExecutionPresentationSelectorsV1 ?? [],
 			options.hasInitialCollapsedBoundaries ?? this.semanticDecoratorsV2.length > 0,
 		);
+		this.compactLiveToolCall = this.foldOwnsBody;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.ui = ui;
@@ -224,7 +223,7 @@ export class ToolExecutionComponent extends Container {
 			executionStarted: this.executionStarted,
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
-			expanded: this.expanded,
+			expanded: this.isBodyExpanded(),
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
 			sectioned: this.isCompactLiveToolCall(),
@@ -242,7 +241,7 @@ export class ToolExecutionComponent extends Container {
 		}
 
 		const lines = output.split("\n");
-		const displayLines = this.expanded ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
+		const displayLines = this.isBodyExpanded() ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
 		const remaining = lines.length - displayLines.length;
 		let text = displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
 		if (remaining > 0) {
@@ -325,25 +324,13 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
-	setSemanticBoundariesEnabled(enabled: boolean): void {
-		this.semanticBoundariesEnabled = enabled;
-		this.invalidate();
-	}
-
 	get sourcePointPresentation(): string {
 		return this.presentation;
 	}
 
-	setSourcePointRevision(revision: number): void {
-		if (this.sourcePointFoldRole !== "tool-group" || revision === this.sourcePointRevision) return;
-		this.sourcePointRevision = revision;
-		this.updateSourcePoints();
-	}
-
-	setSourcePointContainingFold(blockId: string, role: "tool" | "tool-group"): void {
-		this.sourcePointFoldBlockId = blockId;
-		this.sourcePointFoldRole = role;
-		this.updateSourcePoints();
+	/** False only for the compact live header, which renders no separator row before it. */
+	get rendersLeadingSeparator(): boolean {
+		return !this.isCompactLiveToolCall();
 	}
 
 	setShowImages(show: boolean): void {
@@ -395,7 +382,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private decorateSemanticSections(lines: string[], width: number): string[] {
-		if (!this.semanticBoundariesEnabled || this.semanticDecoratorsV2.length === 0 || this.isPartial) return lines;
+		if (!this.rendersSemanticSections()) return lines;
 		const rows = this.locatedSemanticRows(width) ?? this.wholeCallSemanticRows(width);
 		if (!rows || rows.header >= lines.length) return lines;
 		// Without a body row the call is a plain range: the decorator context then has no foldable body.
@@ -409,7 +396,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/** The header and body rows that the call renderer locates in its own component; undefined without both. */
-	private locatedSemanticRows(width: number): { header: number; body: number } | undefined {
+	private locatedSemanticRows(width: number): { header: number; body?: number } | undefined {
 		const component = this.callRendererComponent;
 		const headerLocator = this.getCallHeaderRowLocator();
 		const bodyLocator = this.getCallBodyRowLocator();
@@ -420,8 +407,14 @@ export class ToolExecutionComponent extends Container {
 			const bodyRow = bodyLocator(component);
 			if (headerRow === undefined || bodyRow === undefined || headerRow < 0 || bodyRow <= headerRow)
 				return undefined;
-			const offset = this.getRenderShell() === "self" ? 1 : 2;
-			return { header: offset + headerRow, body: offset + bodyRow };
+			const offset = this.getRenderShell() === "self" ? 1 : this.contentStartRow();
+			const layout = this.ownedLayout(width);
+			const body = offset + bodyRow;
+			// A located body row after the content and before the first image is shell padding, not a body.
+			if (layout && body >= layout.contentStart + layout.contentRows && body !== layout.firstImageRow) {
+				return { header: offset + headerRow };
+			}
+			return { header: offset + headerRow, body };
 		} catch {
 			return undefined;
 		}
@@ -461,7 +454,7 @@ export class ToolExecutionComponent extends Container {
 				const textLines = this.contentText.render(width).length;
 				contentRows = Math.max(0, textLines - 2);
 				callRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
-				shellLines = 1 + textLines;
+				shellLines = this.contentStartRow() + contentRows + 1;
 			} else if (this.getRenderShell() === "self") {
 				contentRows = this.selfRenderContainer.render(width).length;
 				callRows = this.callPartComponent?.render(width).length ?? 0;
@@ -470,9 +463,10 @@ export class ToolExecutionComponent extends Container {
 				const boxLines = this.contentBox.render(width).length;
 				contentRows = Math.max(0, boxLines - 2);
 				callRows = this.callPartComponent?.render(Math.max(0, width - 2)).length ?? 0;
-				shellLines = 1 + boxLines;
+				shellLines = this.contentStartRow() + contentRows + 1;
 			}
-			const contentStart = this.hasRendererDefinition() && this.getRenderShell() === "self" ? 1 : 2;
+			const contentStart =
+				this.hasRendererDefinition() && this.getRenderShell() === "self" ? 1 : this.contentStartRow();
 			const firstImageRow =
 				this.imageComponents.length > 0
 					? shellLines + (this.imageSpacers[0]?.render(width).length ?? 0)
@@ -502,11 +496,33 @@ export class ToolExecutionComponent extends Container {
 			}
 			return lines;
 		}
-		return super.render(width);
+		const lines = super.render(width);
+		// The Spacer renders one row; the next row is the top padding of the padded shell.
+		if (this.rendersSemanticSections() && lines.length > 1) lines.splice(1, 1);
+		return lines;
+	}
+
+	/** Settled semantic sections own the header row: the padded shell then has no top padding row. */
+	private rendersSemanticSections(): boolean {
+		return this.semanticDecoratorsV2.length > 0 && !this.isPartial;
+	}
+
+	/** The first content row of the padded shell, after the Spacer and the top padding when it renders. */
+	private contentStartRow(): number {
+		return this.rendersSemanticSections() ? 1 : 2;
+	}
+
+	/** Pi tool output expansion, or the canonical settled body that a native Fold owns. */
+	private isBodyExpanded(): boolean {
+		return this.expanded || (this.foldOwnsBody && this.rendersSemanticSections());
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") return super.handleMouse(event);
+		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
+			// The children still render the top padding row that the semantic shell omits.
+			if (!this.rendersSemanticSections() || event.y < 1) return super.handleMouse(event);
+			return super.handleMouse({ ...event, y: event.y + 1, height: event.height + 1 });
+		}
 		if (event.y <= 0 || event.y > this.selfRenderHeight) return undefined;
 		return this.selfRenderContainer.handleMouse({
 			...event,
@@ -515,7 +531,8 @@ export class ToolExecutionComponent extends Container {
 		});
 	}
 
-	private selectCompactLiveToolCall(
+	/** True when an extension selects the compact live header and the native Fold of the canonical settled body. */
+	private selectFoldPresentation(
 		selectors: readonly ToolExecutionPresentationSelectorV1[],
 		hasInitialCollapsedBoundaries: boolean,
 	): boolean {
@@ -602,7 +619,7 @@ export class ToolExecutionComponent extends Container {
 					try {
 						const component = resultRenderer(
 							{ content: this.result.content as any, details: this.result.details },
-							{ expanded: this.expanded, isPartial: this.isPartial },
+							{ expanded: this.isBodyExpanded(), isPartial: this.isPartial },
 							theme,
 							this.getRenderContext(this.resultRendererComponent),
 						);
@@ -683,14 +700,12 @@ export class ToolExecutionComponent extends Container {
 			: genericText
 				? sourcePointPresentation(stripTerminalSequences(genericText.getText().replace(/\t/g, "   ")))
 				: sourcePointPresentation(output);
-		this.presentation = `${this.expanded}:${this.isPartial}:${source}`;
-		if (this.sourcePointFoldRole === "tool") {
+		this.presentation = `${this.isBodyExpanded()}:${this.isPartial}:${source}`;
+		// Only a settled call renders a range or points. A rebuilt component passes a partial state first, which must
+		// not count as a new presentation of its settled key.
+		if (!this.isPartial) {
 			this.sourcePointRevision =
-				this.sourcePointRevisions?.resolve(
-					`${this.sourcePointFoldBlockId}#0`,
-					this.presentation,
-					!this.isPartial,
-				) ?? 1;
+				this.sourcePointRevisions?.resolve(`${this.toolCallId}#0`, this.presentation, true) ?? 1;
 		}
 		if (
 			this.isPartial ||
@@ -707,12 +722,12 @@ export class ToolExecutionComponent extends Container {
 			state: "expanded" as const,
 			producerSessionId: this.producerSessionId,
 			renderScopeId: this.renderScopeId,
-			blockId: this.sourcePointFoldBlockId,
-			foldRole: this.sourcePointFoldRole,
+			blockId: this.toolCallId,
+			foldRole: "tool" as const,
 			sourcePointRevision: this.sourcePointRevision,
 		};
 		// The call body renders in full. A collapsed result renders only a preview, so it needs expansion.
-		const resultText = !this.expanded
+		const resultText = !this.isBodyExpanded()
 			? undefined
 			: (this.fallbackResultText ??
 				(this.toolDefinition?.renderResult === this.toolDefinition?.semanticSourceTextRenderer

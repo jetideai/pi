@@ -243,32 +243,6 @@ describe("source point revisions", () => {
 		expect(own.every((entry) => entry.revision === 3)).toBe(true);
 	});
 
-	it("gives the owning tool group one new revision for each collapse and expansion", async () => {
-		const h = harness({ bashTools: true });
-		const initial = await h.frame();
-		const groupKeys = [...new Set(initial.markers.filter((e) => e.key.startsWith("tool-group:")).map((e) => e.key))];
-		expect(groupKeys.length).toBeGreaterThan(0);
-		expect(initial.markers.some((e) => e.phase === "mark" && groupKeys.includes(e.key))).toBe(true);
-
-		for (const tool of h.tools()) tool.setExpanded(false);
-		const collapsed = await h.frame();
-		for (const key of groupKeys) {
-			const own = collapsed.markers.filter((e) => e.key === key);
-			const initialMarks = initial.markers.filter((e) => e.key === key && e.phase === "mark").length;
-			expect(own.filter((e) => e.phase !== "mark").map((e) => e.phase)).toEqual(["begin", "body", "end"]);
-			expect(own.filter((e) => e.phase === "mark").length).toBeLessThan(initialMarks);
-			expect(own.every((e) => e.revision === 2)).toBe(true);
-		}
-
-		for (const tool of h.tools()) tool.setExpanded(true);
-		const expanded = await h.frame();
-		for (const key of groupKeys) {
-			const own = expanded.markers.filter((e) => e.key === key);
-			expect(own.filter((e) => e.phase === "mark").length).toBeGreaterThan(0);
-			expect(own.every((e) => e.revision === 3)).toBe(true);
-		}
-	});
-
 	it("bumps once when a final message streams again and never for a streaming delta", async () => {
 		const h = harness();
 		await h.frame();
@@ -310,58 +284,36 @@ describe("source point revisions", () => {
 		expect(own.every((e) => e.revision === 3)).toBe(true);
 	});
 
-	it("continues a shared tool group revision after its components are rebuilt", async () => {
-		const h = harness({ bashTools: true });
-		const initial = await h.frame();
-		const groupKeys = [...new Set(initial.markers.filter((e) => e.key.startsWith("tool-group:")).map((e) => e.key))];
-		for (const tool of h.tools()) tool.setExpanded(false);
-		await h.frame();
+	it.each([
+		["grouped", false],
+		["single", true],
+	] as const)(
+		"marks the result source points of %s restored Tool Calls with collapsed Pi tool output",
+		async (_name, singleTools) => {
+			const h = harness({ bashTools: true, singleTools, toolOutputExpanded: false });
+			const { markers } = await h.frame();
 
-		h.rebuild();
-		const rebuilt = await h.frame();
-
-		for (const key of groupKeys) {
-			const own = rebuilt.markers.filter((e) => e.key === key);
-			expect(own.map((e) => e.phase)).toEqual(expect.arrayContaining(["begin", "body", "end"]));
-			expect(own.every((e) => e.revision === 3)).toBe(true);
-		}
-	});
-
-	it("marks restored Tool Call result source points after tool output expands", async () => {
-		const h = harness({ bashTools: true, toolOutputExpanded: false });
-		await h.frame();
-
-		h.expandTools(true);
-		const { markers } = await h.frame();
-
-		expect(markers.some((entry) => entry.phase === "mark" && entry.key.startsWith("tool"))).toBe(true);
-	});
+			expect(markers.some((entry) => entry.phase === "mark" && entry.key.startsWith("tool:"))).toBe(true);
+		},
+	);
 
 	it.each([
-		["grouped", "tool-group", false],
-		["single", "tool", true],
+		["grouped", false],
+		["single", true],
 	] as const)(
-		"follows expand, collapse, and expand of %s restored Tool Calls with new revisions",
-		async (_name, kind, singleTools) => {
+		"keeps %s restored Tool Calls unchanged when Pi tool output expands and collapses",
+		async (_name, singleTools) => {
 			const h = harness({ bashTools: true, singleTools, toolOutputExpanded: false });
 			await h.frame();
-			const revisions = (markers: readonly Marker[]) =>
-				new Set(
-					markers
-						.filter((entry) => entry.phase === "mark" && entry.key.startsWith(`${kind}:`))
-						.map((entry) => entry.revision),
-				);
 
 			h.expandTools(true);
-			const expanded = revisions((await h.frame()).markers);
+			const expanded = await h.frame();
 			h.expandTools(false);
-			const collapsed = revisions((await h.frame()).markers);
-			h.expandTools(true);
-			const reexpanded = revisions((await h.frame()).markers);
+			const collapsed = await h.frame();
 
-			expect(expanded.size).toBeGreaterThan(0);
-			expect(Math.min(...collapsed)).toBeGreaterThan(Math.max(...expanded));
-			expect(Math.min(...reexpanded)).toBeGreaterThan(Math.max(...collapsed));
+			expect([...expanded.markers, ...collapsed.markers].filter((entry) => entry.key.startsWith("tool"))).toEqual(
+				[],
+			);
 		},
 	);
 

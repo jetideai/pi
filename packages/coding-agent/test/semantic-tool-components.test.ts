@@ -12,7 +12,9 @@ import type {
 import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { generateDiffString } from "../src/core/tools/edit-diff.ts";
+import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
+import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import {
 	decorateMessageRenderV2,
 	SourcePointRevisions,
@@ -225,6 +227,11 @@ function pointRows(rows: string[]) {
 	);
 }
 
+/** The stock rows of a padded shell without its top padding row, which a semantic shell omits. */
+function withoutShellTopPadding(rows: string[]) {
+	return [rows[0]!, ...rows.slice(2)];
+}
+
 function plainRows(renderers: ToolRenderers | undefined, width: number) {
 	const component = new ToolExecutionComponent(
 		"process",
@@ -310,12 +317,13 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(secondRender).toHaveBeenCalledOnce();
 		expect(stripAnsi(rendered)).toContain("$ Read files, Ran commands");
 		expect(rendered.indexOf("stock header")).toBeLessThan(rendered.lastIndexOf("stock header"));
-		expect(rendered.split(controls.begin)).toHaveLength(2);
-		expect(rendered.split(controls.body)).toHaveLength(2);
-		expect(rendered.split(controls.end)).toHaveLength(2);
+		// The group range and the range of each member.
+		expect(rendered.split(controls.begin)).toHaveLength(4);
+		expect(rendered.split(controls.body)).toHaveLength(4);
+		expect(rendered.split(controls.end)).toHaveLength(4);
 	});
 
-	it("keeps expanded stock tool points stable and assigns the containing Tool Group fold", () => {
+	it("keeps expanded stock tool points stable and gives each grouped call its own fold", () => {
 		const points: MessageRenderSourcePointV1[] = [];
 		const sourcePointDecoratorsV1 = [
 			(point: Readonly<MessageRenderSourcePointV1>) => {
@@ -375,18 +383,11 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(points.length).toBeGreaterThan(0);
 		expect(points).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({
-					entryId: "tool-a",
-					blockId: "tool-group:assistant-a:tool-a",
-					foldRole: "tool-group",
-				}),
-				expect.objectContaining({
-					entryId: "tool-b",
-					blockId: "tool-group:assistant-a:tool-a",
-					foldRole: "tool-group",
-				}),
+				expect.objectContaining({ entryId: "tool-a", blockId: "tool-a", foldRole: "tool" }),
+				expect.objectContaining({ entryId: "tool-b", blockId: "tool-b", foldRole: "tool" }),
 			]),
 		);
+		expect(points.some((point) => point.foldRole === "tool-group")).toBe(false);
 	});
 
 	it("marks stable source points inside a settled expanded edit diff", () => {
@@ -521,14 +522,12 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(group.render(80)).toEqual(expected);
 	});
 
-	it("maps group-header and member-separator mouse rows to each child", () => {
+	it("maps the group separator, header and member-separator mouse rows to each child", () => {
 		const makeChild = (rows: string[]) => ({
 			render: vi.fn(() => rows),
 			invalidate: vi.fn(),
 			handleMouse: vi.fn(() => ({ handled: true as const })),
-			setSemanticBoundariesEnabled: vi.fn(),
-			setSourcePointContainingFold: vi.fn(),
-			setSourcePointRevision: vi.fn(),
+			rendersLeadingSeparator: false,
 		});
 		const first = makeChild(["first-0", "first-1"]);
 		const second = makeChild(["second-0"]);
@@ -560,31 +559,32 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(group.handleMouse(event(0))).toBeUndefined();
 		expect(group.handleMouse(event(1))).toBeUndefined();
-		expect(group.handleMouse(event(2))).toMatchObject({ handled: true });
+		expect(group.handleMouse(event(2))).toBeUndefined();
+		expect(group.handleMouse(event(3))).toMatchObject({ handled: true });
 		expect(first.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 2 }));
-		expect(group.handleMouse(event(5))).toMatchObject({ handled: true });
+		expect(group.handleMouse(event(6))).toMatchObject({ handled: true });
 		expect(second.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 1 }));
 	});
 
 	it.each([
-		["default shell", ["", "default header", "default body"]],
-		["self shell", ["", "self header", "self result"]],
-		["error", ["", "error header", "error body"]],
-		["image", ["image header", "\x1b_Gi=1,r=1;AAAA\x1b\\"]],
-		["image only", ["\x1b_Gi=2,r=1;AAAA\x1b\\"]],
-		["I3 partial", ["stock header"]],
-		["empty", []],
-	] as const)("keeps %s member rows transparent", (_name, childRows) => {
-		const component = {
-			render: vi.fn(() => [...childRows]),
-			invalidate: vi.fn(),
-			handleMouse: vi.fn(),
-		} as unknown as ToolExecutionComponent;
-		const member = new ToolGroupMemberComponent(component, true);
+		["a settled call with its own separator", true, ["", "header", "body"], ["", "header", "body"]],
+		["a compact live header", false, ["stock header"], ["", "stock header"]],
+		["an empty member", false, [], []],
+	] as const)(
+		"adds one separator row only before a member without its own: %s",
+		(_name, separated, childRows, rows) => {
+			const component = {
+				render: vi.fn(() => [...childRows]),
+				invalidate: vi.fn(),
+				handleMouse: vi.fn(),
+				rendersLeadingSeparator: separated,
+			} as unknown as ToolExecutionComponent;
+			const member = new ToolGroupMemberComponent(component);
 
-		expect(member.render(80)).toEqual(childRows.length === 0 ? [] : ["", ...childRows]);
-		expect(component.render).toHaveBeenCalledOnce();
-	});
+			expect(member.render(80)).toEqual(rows);
+			expect(component.render).toHaveBeenCalledOnce();
+		},
+	);
 
 	it("marks call source points inside a long bash command and keeps its result points", () => {
 		const sources = renderBashSources(numbered("echo command", 40), "done", 80);
@@ -665,7 +665,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(points.some((point) => point.sourcePart === undefined)).toBe(false);
 	});
 
-	it("gives bash call and result source points the containing Tool Group fold", () => {
+	it("gives the bash call and result source points of a grouped call its own fold", () => {
 		const points: MessageRenderSourcePointV1[] = [];
 		const first = bashComponent("echo first", points, "tool-a");
 		const second = bashComponent("echo second", points, "tool-b");
@@ -680,16 +680,8 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		for (const sourcePart of ["call", undefined]) {
 			expect(points.filter((point) => point.sourcePart === sourcePart)).toEqual(
 				expect.arrayContaining([
-					expect.objectContaining({
-						entryId: "tool-a",
-						blockId: "tool-group:assistant-a:tool-a",
-						foldRole: "tool-group",
-					}),
-					expect.objectContaining({
-						entryId: "tool-b",
-						blockId: "tool-group:assistant-a:tool-a",
-						foldRole: "tool-group",
-					}),
+					expect.objectContaining({ entryId: "tool-a", blockId: "tool-a", foldRole: "tool" }),
+					expect.objectContaining({ entryId: "tool-b", blockId: "tool-b", foldRole: "tool" }),
 				]),
 			);
 		}
@@ -709,7 +701,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rows.visible[rows.begin[0]!]).toBe(" process");
 		expect(rows.body).toEqual([rows.begin[0]! + 1]);
 		expect(rows.end).toEqual([rows.visible.length - 1]);
-		expect(rows.visible).toEqual(plainRows(undefined, 80));
+		expect(rows.visible).toEqual(withoutShellTopPadding(plainRows(undefined, 80)));
 	});
 
 	it("gives a call without a call renderer its title as the header and its result as the body", () => {
@@ -719,7 +711,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rows.counts).toEqual([1, 1, 1]);
 		expect(rows.visible[rows.begin[0]!]).toBe(" process");
 		expect(rows.visible[rows.body[0]!]).toBe(" process output");
-		expect(rows.visible).toEqual(plainRows(renderers, 80));
+		expect(rows.visible).toEqual(withoutShellTopPadding(plainRows(renderers, 80)));
 	});
 
 	it("keeps the whole-call range of a call whose renderer throws on its fallback title", () => {
@@ -771,9 +763,9 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		component.updateResult({ content: [], isError: false });
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", "", " process", ""]);
+		expect(rows.visible).toEqual(["", " process", ""]);
 		expect(rows.counts).toEqual([1, 0, 1]);
-		expect([rows.begin, rows.end]).toEqual([[2], [3]]);
+		expect([rows.begin, rows.end]).toEqual([[1], [2]]);
 		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
 	});
 
@@ -786,7 +778,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		);
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", "", " custom call", ""]);
+		expect(rows.visible).toEqual(["", " custom call", ""]);
 		expect(rows.counts).toEqual([1, 0, 1]);
 		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
 	});
@@ -795,8 +787,8 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
 			const shells: [ToolRenderers, number, number][] = [
-				// The default shell: Spacer, padding, title, padding, image spacer, image.
-				[{}, 2, 5],
+				// The default semantic shell: Spacer, title, padding, image spacer, image.
+				[{}, 1, 4],
 				// The self shell: leading row, call, image spacer, image.
 				[{ renderShell: "self", renderCall: () => new Text("custom call", 0, 0) }, 1, 3],
 			];
@@ -826,9 +818,9 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		);
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", "", " custom result", ""]);
+		expect(rows.visible).toEqual(["", " custom result", ""]);
 		expect(rows.counts).toEqual([1, 0, 1]);
-		expect([rows.begin, rows.end]).toEqual([[2], [3]]);
+		expect([rows.begin, rows.end]).toEqual([[1], [2]]);
 		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
 	});
 
@@ -936,5 +928,179 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		group.addTool(child, { toolName: "read", toolCallId: "tool-only" });
 
 		expect(group.render(80)).toEqual(child.render(80));
+	});
+});
+
+/** A completed call of a tool without a definition, with a result. */
+function unknownCall(id: string, selectors: MessageRenderBoundarySelectorV3[] = [() => () => controls]) {
+	const component = new ToolExecutionComponent(
+		"process",
+		id,
+		{ action: "list" },
+		{
+			ownerEntryId: "assistant-a",
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: selectors,
+		},
+		undefined,
+		{ requestRender() {} } as unknown as TUI,
+		process.cwd(),
+	);
+	component.updateResult({ content: [{ type: "text", text: `${id} output` }], isError: false });
+	return component;
+}
+
+/** A completed built-in call with native folding and its presentation, with Pi tool output collapsed. */
+function foldedBuiltIn(name: string, renderers: ToolRenderers, args: object, output: string) {
+	const component = new ToolExecutionComponent(
+		name,
+		`call-${name}`,
+		args,
+		{
+			ownerEntryId: "assistant-a",
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [() => () => controls],
+			toolExecutionPresentationSelectorsV1: [admitCompact],
+		},
+		renderers,
+		{ requestRender() {} } as unknown as TUI,
+		process.cwd(),
+	);
+	component.updateResult({ content: [{ type: "text", text: output }], isError: false });
+	return component;
+}
+
+const readCall = () =>
+	foldedBuiltIn(
+		"read",
+		withBuiltInRenderers("read", createReadToolDefinition(process.cwd()) as unknown as ToolRenderers)!,
+		{ path: "a.md" },
+		"line 1\nline 2",
+	);
+
+/** The rows that native shows when each Fold that [collapsed] selects hides its body through its end row. */
+function foldedRows(rows: string[], collapsed: (depth: number) => boolean): string[] {
+	const open: { body?: number; depth: number }[] = [];
+	const hidden = new Set<number>();
+	rows.forEach((row, index) => {
+		const controlsInRow = [...row.matchAll(/\x1b\]777;(begin|body|end)\x07/g)].map((match) => match[1]);
+		for (const control of controlsInRow) {
+			if (control === "begin") open.push({ depth: open.length });
+			else if (control === "body") {
+				const fold = [...open].reverse().find((candidate) => candidate.body === undefined);
+				if (fold) fold.body = index;
+			} else {
+				const fold = open.pop();
+				if (fold?.body === undefined || !collapsed(fold.depth)) continue;
+				for (let hiddenRow = fold.body; hiddenRow <= index; hiddenRow++) hidden.add(hiddenRow);
+			}
+		}
+	});
+	return rows.flatMap((row, index) => {
+		if (hidden.has(index)) return [];
+		const text = stripAnsi(row.replaceAll(EDIT_POINT, "")).trim();
+		return [/\x1b\[48;/.test(row) && text === "" ? "<shaded blank>" : text];
+	});
+}
+
+describe("collapsed Tool Call and Tool Group layout", () => {
+	beforeAll(() => initTheme("dark"));
+
+	it("shows a collapsed tool call as one separator row and its header row", () => {
+		expect(foldedRows(unknownCall("call-a").render(80), () => true)).toEqual(["", "process"]);
+	});
+
+	it("shows a collapsed built-in tool call as one separator row and its header row", () => {
+		expect(foldedRows(readCall().render(80), () => true)).toEqual(["", "read a.md"]);
+	});
+
+	it("opens the Fold of a saved read with collapsed Pi output to its saved result", () => {
+		const rows = foldedRows(readCall().render(80), () => false);
+
+		expect(rows).toEqual(expect.arrayContaining(["line 1", "line 2"]));
+	});
+
+	it("gives a located call whose result draws no rows no fold body", () => {
+		const rows = foldedBuiltIn(
+			"custom_tool",
+			{
+				renderCall: () => new Text("custom header", 0, 0),
+				getRenderCallHeaderRow: () => 0,
+				getRenderCallBodyRow: () => 1,
+				renderResult: () => new Text("", 0, 0),
+			},
+			{},
+			"ignored",
+		).render(80);
+
+		expect(boundaryRows(rows).counts).toEqual([1, 0, 1]);
+	});
+
+	it("keeps a long bash command on one collapsed row and its complete command and output in the body", () => {
+		const command = numbered("echo command", 40);
+		const rows = foldedBuiltIn(
+			"bash",
+			withBuiltInRenderers("bash", createBashToolDefinition(process.cwd()) as unknown as ToolRenderers)!,
+			{ command },
+			numbered("out", 40),
+		).render(80);
+
+		expect(foldedRows(rows, () => true)).toHaveLength(2);
+		expect(foldedRows(rows, () => false)).toEqual(
+			expect.arrayContaining([expect.stringContaining("echo command-39"), "out-39"]),
+		);
+	});
+
+	it("keeps a long write call on one collapsed row and its complete content in the body", () => {
+		const rows = foldedBuiltIn(
+			"write",
+			withBuiltInRenderers("write", createWriteToolDefinition(process.cwd()) as unknown as ToolRenderers)!,
+			{ path: "notes.txt", content: numbered("note", 40) },
+			"Wrote notes.txt",
+		).render(80);
+
+		expect(foldedRows(rows, () => true)).toHaveLength(2);
+		expect(foldedRows(rows, () => false)).toEqual(expect.arrayContaining([expect.stringContaining("note-39")]));
+	});
+
+	it("keeps one Fold for each child of a closed Tool Group", () => {
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:assistant-a:call-a",
+			ownerEntryId: "assistant-a",
+			closed: true,
+			outputPad: 1,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [() => () => controls],
+		});
+		group.addTool(unknownCall("call-a"), { toolName: "process", toolCallId: "call-a" });
+		group.addTool(unknownCall("call-b"), { toolName: "process", toolCallId: "call-b" });
+
+		expect(boundaryRows(group.render(80)).counts).toEqual([3, 3, 3]);
+	});
+
+	it("shows an expanded Tool Group with collapsed children as its header and one separator before each child", () => {
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:assistant-a:call-a",
+			ownerEntryId: "assistant-a",
+			closed: true,
+			outputPad: 1,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [() => () => controls],
+		});
+		group.addTool(unknownCall("call-a"), { toolName: "process", toolCallId: "call-a" });
+		group.addTool(unknownCall("call-b"), { toolName: "process", toolCallId: "call-b" });
+
+		expect(foldedRows(group.render(80), (depth) => depth > 0)).toEqual([
+			"",
+			"$ Used tools",
+			"",
+			"process",
+			"",
+			"process",
+		]);
 	});
 });
