@@ -223,6 +223,23 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		return buffer;
 	}
 
+	/**
+	 * After the image line at [index], move down through its reserved rows and write the own content of each row
+	 * there, once. Reserved rows have no visible cells, but their zero-width controls must keep their rows and their
+	 * order after the image line.
+	 */
+	private appendReservedImageRows(
+		output: BoundedTerminalWriter,
+		lines: string[],
+		index: number,
+		reservedRows: number,
+	): void {
+		for (let row = 1; row < reservedRows; row++) {
+			output.append("\x1b[1B");
+			output.append(lines[index + row] ?? "");
+		}
+	}
+
 	private getKittyImageReservedRows(lines: string[], index: number, maxIndex = lines.length - 1): number {
 		const rows = extractKittyImageRows(lines[index] ?? "");
 		if (rows <= 1) return 1;
@@ -357,7 +374,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 					}
 					output.append(`\x1b[${imageReservedRows - 1}A`);
 					output.append(line);
-					output.append(`\x1b[${imageReservedRows - 1}B`);
+					this.appendReservedImageRows(output, newLines, i, imageReservedRows);
 					i += imageReservedRows - 1;
 					continue;
 				}
@@ -585,7 +602,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				}
 				output.append(`\x1b[${imageReservedRows - 1}A`);
 				output.append(line);
-				output.append(`\x1b[${imageReservedRows - 1}B`);
+				this.appendReservedImageRows(output, newLines, i, imageReservedRows);
 				i += imageReservedRows - 1;
 				continue;
 			}

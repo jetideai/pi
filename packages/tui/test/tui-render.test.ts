@@ -256,6 +256,33 @@ describe("TUI crash dump without configured log directory", () => {
 	});
 });
 
+/** A range BEGIN on the header row, BODY before the image, a mark and END on two reserved image rows. */
+function reservedRowMarkerLines(image: string): string[] {
+	return [`${osc("begin")}header`, `${osc("body")}${image}`, osc("mark"), osc("end"), "after"];
+}
+
+const RESERVED_ROW_MARKS: Array<[string, number]> = [
+	["begin", 0],
+	["body", 1],
+	["mark", 2],
+	["end", 3],
+];
+
+function osc(mark: string): string {
+	return `\x1b]7799;${mark}\x1b\\`;
+}
+
+/** The OSC 7799 payloads in parser order, each with the buffer row of the cursor when xterm parsed it. */
+function recordOscRows(terminal: VirtualTerminal): Array<[string, number]> {
+	const xterm = (terminal as unknown as { xterm: XtermTerminalType }).xterm;
+	const marks: Array<[string, number]> = [];
+	xterm.parser.registerOscHandler(7799, (data) => {
+		marks.push([data, xterm.buffer.active.baseY + xterm.buffer.active.cursorY]);
+		return true;
+	});
+	return marks;
+}
+
 describe("TUI Kitty image cleanup", () => {
 	it("clears reserved Kitty image rows before drawing appended image placements", async () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
@@ -368,7 +395,7 @@ describe("TUI Kitty image cleanup", () => {
 			const writes = terminal.getWrites();
 			assert.ok(tui.fullRedraws > redrawsBeforeImage, "scrolling image append should force a full redraw");
 			assert.ok(
-				writes.includes(`\r\n\r\n\x1b[2A${imageSequence}\x1b[2B`),
+				writes.includes(`\r\n\r\n\x1b[2A${imageSequence}\x1b[1B`),
 				"full redraw should reserve visible image rows before drawing the placement",
 			);
 			assert.ok(
@@ -380,6 +407,61 @@ describe("TUI Kitty image cleanup", () => {
 		} finally {
 			resetCapabilitiesCache();
 			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
+	it("writes the zero-width content of reserved Kitty image rows at their rows during a full render", async () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const terminal = new LoggingVirtualTerminal(40, 10);
+			const marks = recordOscRows(terminal);
+			const tui: TUI = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+			const image = encodeKitty("AAAA", { columns: 2, rows: 3, imageId: 51, moveCursor: false });
+			component.lines = reservedRowMarkerLines(image);
+
+			tui.start();
+			await terminal.waitForRender();
+			await terminal.flush();
+
+			assert.deepEqual(marks, RESERVED_ROW_MARKS);
+			assert.equal(terminal.getWrites().split(image).length - 1, 1, "the image placement is written once");
+			tui.stop();
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	it("writes the zero-width content of reserved Kitty image rows at their rows during a differential render", async () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const terminal = new LoggingVirtualTerminal(40, 10);
+			const marks = recordOscRows(terminal);
+			const tui: TUI = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+			component.lines = ["before"];
+			tui.start();
+			await terminal.waitForRender();
+			const redraws = tui.fullRedraws;
+			terminal.clearWrites();
+			const image = encodeKitty("AAAA", { columns: 2, rows: 3, imageId: 52, moveCursor: false });
+
+			component.lines = ["before", ...reservedRowMarkerLines(image)];
+			tui.requestRender();
+			await terminal.waitForRender();
+			await terminal.flush();
+
+			assert.equal(tui.fullRedraws, redraws, "the append stays a differential render");
+			assert.deepEqual(
+				marks,
+				RESERVED_ROW_MARKS.map(([mark, row]) => [mark, row + 1]),
+			);
+			assert.equal(terminal.getWrites().split(image).length - 1, 1, "the image placement is written once");
+			tui.stop();
+		} finally {
+			resetCapabilitiesCache();
 		}
 	});
 
