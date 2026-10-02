@@ -156,11 +156,12 @@ export class ToolExecutionComponent extends Container {
 						options.semanticSelectorsV3 ?? [],
 					)
 				: [];
-		this.foldOwnsBody = this.selectFoldPresentation(
+		const presentation = this.selectPresentation(
 			options.toolExecutionPresentationSelectorsV1 ?? [],
 			options.hasInitialCollapsedBoundaries ?? this.semanticDecoratorsV2.length > 0,
 		);
-		this.compactLiveToolCall = this.foldOwnsBody;
+		this.foldOwnsBody = presentation.foldOwnsBody;
+		this.compactLiveToolCall = presentation.compactLive;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.ui = ui;
@@ -421,10 +422,10 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * The rows of the whole call when the renderer does not locate them: the call part is the header, and the result
-	 * rows, or else the first image, are the body. A call without either has no body. A call part without rows gives no
-	 * distinct header, so the whole visible content is one plain range. The rows come from the layout that this
-	 * component owns, never from the rendered text, padding or spacers.
+	 * The rows of the whole call when the renderer does not locate them: the first call row is the header, and the
+	 * other call rows and the result rows, or else the first image, are the body. A call with one content row and no
+	 * image has no body. A call part without rows gives no distinct header, so the whole visible content is one plain
+	 * range. The rows come from the layout that this component owns, never from the rendered text, padding or spacers.
 	 */
 	private wholeCallSemanticRows(width: number): { header: number; body?: number } | undefined {
 		const layout = this.ownedLayout(width);
@@ -434,7 +435,7 @@ export class ToolExecutionComponent extends Container {
 			const header = contentRows > 0 ? contentStart : firstImageRow;
 			return header === undefined ? undefined : { header };
 		}
-		const body = contentRows > callRows ? contentStart + callRows : firstImageRow;
+		const body = contentRows > 1 ? contentStart + 1 : firstImageRow;
 		return { header: contentStart, ...(body !== undefined ? { body } : {}) };
 	}
 
@@ -531,39 +532,39 @@ export class ToolExecutionComponent extends Container {
 		});
 	}
 
-	/** True when an extension selects the compact live header and the native Fold of the canonical settled body. */
-	private selectFoldPresentation(
+	/**
+	 * The presentation that the extensions select. The native Fold owns the canonical settled body of a call with
+	 * initial collapsed boundaries; the compact live header also needs the exact header seam and a result renderer.
+	 */
+	private selectPresentation(
 		selectors: readonly ToolExecutionPresentationSelectorV1[],
 		hasInitialCollapsedBoundaries: boolean,
-	): boolean {
-		if (selectors.length === 0) return false;
+	): { compactLive: boolean; foldOwnsBody: boolean } {
+		const selected = { compactLive: false, foldOwnsBody: false };
+		if (selectors.length === 0 || !hasInitialCollapsedBoundaries) return selected;
 		const candidate = {
 			role: "tool" as const,
 			hasExactHeaderSeam: Boolean(this.getCallHeaderRowLocator() && this.getCallBodyRowLocator()),
 			hasCanonicalResultRenderer: Boolean(this.getResultRenderer()),
 			hasInitialCollapsedBoundaries,
 		};
-		if (
-			!candidate.hasExactHeaderSeam ||
-			!candidate.hasCanonicalResultRenderer ||
-			!candidate.hasInitialCollapsedBoundaries
-		) {
-			return false;
-		}
 		for (const selector of selectors) {
 			try {
 				const selection = selector(candidate);
+				if (selection?.settled !== "canonical-initial-collapsed") continue;
+				selected.foldOwnsBody = true;
 				if (
-					selection?.liveToolCall === "compact-stock-header" &&
+					candidate.hasExactHeaderSeam &&
+					candidate.hasCanonicalResultRenderer &&
+					selection.liveToolCall === "compact-stock-header" &&
 					selection.liveToolGroup === "compact-stock-header" &&
-					selection.header === "exact-one-row" &&
-					selection.settled === "canonical-initial-collapsed"
+					selection.header === "exact-one-row"
 				) {
-					return true;
+					selected.compactLive = true;
 				}
 			} catch {}
 		}
-		return false;
+		return selected;
 	}
 
 	private isCompactLiveToolCall(): boolean {

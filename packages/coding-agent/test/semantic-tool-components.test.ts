@@ -26,6 +26,13 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const controls = { begin: "\x1b]777;begin\x07", body: "\x1b]777;body\x07", end: "\x1b]777;end\x07" };
+/** The presentation that an extension selects for a call without the exact header seam. */
+const settledCanonicalOnly: ToolExecutionPresentationSelectorV1 = () => ({
+	liveToolCall: "stock",
+	liveToolGroup: "stock",
+	header: "stock",
+	settled: "canonical-initial-collapsed",
+});
 const admitCompact: ToolExecutionPresentationSelectorV1 = () => ({
 	liveToolCall: "compact-stock-header",
 	liveToolGroup: "compact-stock-header",
@@ -727,7 +734,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rows.visible[rows.body[0]!]).toBe(" process output");
 	});
 
-	it("gives a custom self renderer without row locators its whole call as the header", () => {
+	it("gives a custom self renderer without row locators its first call row as the header", () => {
 		const renderers: ToolRenderers = {
 			renderShell: "self",
 			renderCall: () => new Text("custom call\ncustom arguments", 0, 0),
@@ -737,7 +744,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(rows.counts).toEqual([1, 1, 1]);
 		expect(rows.visible[rows.begin[0]!]).toBe("custom call");
-		expect(rows.visible[rows.body[0]!]).toBe("custom result");
+		expect(rows.visible[rows.body[0]!]).toBe("custom arguments");
 		expect(rows.visible).toEqual(plainRows(renderers, 80));
 	});
 
@@ -1064,6 +1071,75 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(foldedRows(rows, () => true)).toHaveLength(2);
 		expect(foldedRows(rows, () => false)).toEqual(expect.arrayContaining([expect.stringContaining("note-39")]));
 	});
+
+	it("shows a collapsed custom call with a multirow call renderer as one row and all its content when open", () => {
+		const rows = savedCall({
+			renderShell: "self",
+			renderCall: () => new Text("custom call\ncustom arguments", 0, 0),
+			renderResult: () => new Text("custom result", 0, 0),
+		}).render(80);
+
+		expect(foldedRows(rows, () => true)).toEqual(["", "custom call"]);
+		expect(foldedRows(rows, () => false)).toEqual(["", "custom call", "custom arguments", "custom result"]);
+	});
+
+	it("shows a collapsed call of a tool without a definition and a wrapped long name as one row", () => {
+		const component = new ToolExecutionComponent(
+			"a_tool_name_that_wraps_at_a_narrow_width",
+			"call-long-name",
+			{ action: "list" },
+			{
+				ownerEntryId: "assistant-a",
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => controls],
+			},
+			undefined,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "long name output" }], isError: false });
+		const rows = component.render(24);
+
+		expect(foldedRows(rows, () => true)).toHaveLength(2);
+		expect(foldedRows(rows, () => false).join("")).toContain("long name output");
+	});
+
+	it.each([
+		[
+			"a call without a result renderer under native folding",
+			true,
+			{ renderCall: () => new Text("call", 0, 0) },
+			true,
+		],
+		["a call without a result renderer with folding off", false, { renderCall: () => new Text("call", 0, 0) }, false],
+		["a call of a tool without a definition under native folding", true, undefined, true],
+	] as const)(
+		"opens %s to its complete saved output only when the Fold owns it",
+		(_name, folded, renderers, complete) => {
+			const component = new ToolExecutionComponent(
+				"process",
+				"call-fallback",
+				{ action: "list" },
+				folded
+					? {
+							ownerEntryId: "assistant-a",
+							producerSessionId: "session-a",
+							renderScopeId: "scope-a",
+							semanticSelectorsV3: [() => () => controls],
+							toolExecutionPresentationSelectorsV1: [settledCanonicalOnly],
+						}
+					: {},
+				renderers,
+				{ requestRender() {} } as unknown as TUI,
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "text", text: numbered("out", 15) }], isError: false });
+			const text = foldedRows(component.render(80), () => false).join("\n");
+
+			expect(text.includes("out-14")).toBe(complete);
+		},
+	);
 
 	it("keeps one Fold for each child of a closed Tool Group", () => {
 		const group = new ToolGroupComponent({

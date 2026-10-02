@@ -317,6 +317,26 @@ describe("source point revisions", () => {
 		},
 	);
 
+	it.each([
+		["grouped", false],
+		["single", true],
+	] as const)(
+		"gives a %s restored Tool Call a new revision when its settled result changes",
+		async (_name, singleTools) => {
+			const h = harness({ bashTools: true, singleTools, toolOutputExpanded: false });
+			await h.frame();
+			const tool = h.tools()[0]!;
+			const key = `tool:${Reflect.get(tool, "toolCallId") as string}`;
+
+			tool.updateResult({ content: [{ type: "text", text: "changed output line" }], isError: false });
+			const { markers } = await h.frame();
+			const own = markers.filter((entry) => entry.key === key);
+
+			expect(own.map((entry) => entry.phase)).toEqual(expect.arrayContaining(["begin", "body", "end"]));
+			expect(own.every((entry) => entry.revision === 2)).toBe(true);
+		},
+	);
+
 	it("uses one revision for every marker of a key in one render", async () => {
 		const h = harness({ bashTools: true });
 		const frames = [await h.frame()];
