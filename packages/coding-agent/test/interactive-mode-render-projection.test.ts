@@ -908,6 +908,23 @@ const toolCall = (id: string) => ({ type: "toolCall" as const, id, name: "proces
 describe("restored Tool Group composition and separators", () => {
 	beforeAll(() => initTheme("dark"));
 
+	it("restores one response that calls read and an unknown tool as a group range around two call ranges", () => {
+		const { rows } = restoredTranscript(
+			[
+				[
+					{ type: "toolCall", id: "call-read", name: "read", arguments: { path: "notes.md" } },
+					toolCall("call-process"),
+				],
+			],
+			true,
+		);
+		const rendered = rows.join("\n");
+
+		expect(rendered.split(foldControls.begin)).toHaveLength(4);
+		expect(rendered.split(foldControls.body)).toHaveLength(4);
+		expect(stripAnsi(rendered)).toContain("call-read output");
+	});
+
 	it("keeps visible thinking between tool-only responses as a group boundary", () => {
 		const { members } = restoredTranscript(
 			[
