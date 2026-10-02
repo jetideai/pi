@@ -8,6 +8,7 @@ import {
 	imageFallback,
 	Text,
 	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
@@ -34,15 +35,18 @@ export class SectionedToolCallHeader extends Text {
 		this.setText(canonicalText);
 	}
 
+	/**
+	 * A sectioned header is one summary row of its first line, with an ellipsis when that line does not fit the width.
+	 * The canonical rows follow it: all of them when the first line wraps, so no text is lost.
+	 */
 	override render(width: number): string[] {
 		if (!this.sectioned) return super.render(width);
 		const canonicalLines = super.render(width);
 		const firstLogicalLine = this.canonicalText.split("\n", 1)[0] ?? "";
-		const summary = truncateToWidth(firstLogicalLine, width, "");
-		if (canonicalLines.length === 1 && stripAnsi(canonicalLines[0] ?? "").trim() === stripAnsi(summary).trim()) {
-			return [summary];
+		if (visibleWidth(firstLogicalLine) <= width) {
+			return [truncateToWidth(firstLogicalLine, width, ""), ...canonicalLines.slice(1)];
 		}
-		return [summary, ...canonicalLines.slice(1)];
+		return [truncateToWidth(firstLogicalLine, width, "…"), ...canonicalLines];
 	}
 }
 

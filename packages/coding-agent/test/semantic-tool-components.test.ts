@@ -1,4 +1,11 @@
-import { resetCapabilitiesCache, setCapabilities, Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import {
+	resetCapabilitiesCache,
+	setCapabilities,
+	Text,
+	type TUI,
+	type TuiMouseEvent,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type {
@@ -1103,6 +1110,108 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 
 		expect(foldedRows(rows, () => true)).toHaveLength(2);
 		expect(foldedRows(rows, () => false).join("")).toContain("long name output");
+	});
+
+	it("shows a collapsed built-in edit with a long path as one row that ends with an ellipsis", () => {
+		const path = `../jetbrains-terminal_worktrees/semantic-resize-r0/src/uiTest/kotlin/${"segment/".repeat(4)}Long.kt`;
+		const component = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path, edits: [{ oldText: "a", newText: "b" }] },
+			"ok",
+		);
+		const rows = component.render(60);
+
+		expect(foldedRows(rows, () => true)).toEqual(["", expect.stringMatching(/^edit .*…$/)]);
+	});
+
+	it("keeps the complete long path of a built-in edit in its open Fold", () => {
+		const path = `../jetbrains-terminal_worktrees/semantic-resize-r0/src/uiTest/kotlin/${"segment/".repeat(4)}Long.kt`;
+		const component = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path, edits: [{ oldText: "a", newText: "b" }] },
+			"ok",
+		);
+
+		expect(foldedRows(component.render(60), () => false).join("")).toContain("Long.kt");
+	});
+
+	it("shows a collapsed built-in edit whose header fits as its one header row without a repeated header", () => {
+		const component = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path: "a.ts", edits: [{ oldText: "a", newText: "b" }] },
+			"ok",
+		);
+		const rows = component.render(80);
+
+		expect(foldedRows(rows, () => true)).toEqual(["", "edit a.ts"]);
+		expect(foldedRows(rows, () => false).filter((row) => row.startsWith("edit "))).toHaveLength(1);
+	});
+
+	it("recomputes the collapsed summary of a built-in edit from narrow to wide to narrow", () => {
+		const path = `src/${"目录/".repeat(6)}${"segment/".repeat(4)}Long.kt`;
+		const component = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path, edits: [{ oldText: "a", newText: "b" }] },
+			"ok",
+		);
+		const summary = (width: number) => {
+			const rows = component.render(width);
+			const begin = boundaryRows(rows).begin[0]!;
+			return { row: rows[begin]!, body: boundaryRows(rows).body[0], begin, collapsed: foldedRows(rows, () => true) };
+		};
+
+		const narrow = summary(40);
+		const wide = summary(200);
+		const again = summary(40);
+
+		expect(narrow.collapsed).toEqual(["", expect.stringMatching(/^edit .*…$/)]);
+		expect(visibleWidth(narrow.row.replaceAll(controls.begin, ""))).toBeLessThanOrEqual(40);
+		expect(narrow.row).toContain("\x1b[");
+		expect(narrow.body).toBe(narrow.begin + 1);
+		expect(wide.collapsed).toEqual(["", expect.stringMatching(/^edit .*Long\.kt$/)]);
+		expect(again).toEqual(narrow);
+	});
+
+	it("keeps the stock layout of a built-in edit with a long path when folding is off", () => {
+		const path = `../jetbrains-terminal_worktrees/semantic-resize-r0/src/uiTest/kotlin/${"segment/".repeat(4)}Long.kt`;
+		const component = new ToolExecutionComponent(
+			"edit",
+			"call-edit",
+			{ path, edits: [{ oldText: "a", newText: "b" }] },
+			{},
+			editRenderersFor(),
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
+		const rows = foldedRows(component.render(60), () => true);
+
+		expect(rows.slice(0, 3)).toEqual(["", "<shaded blank>", "edit"]);
+		expect(rows.some((row) => row.includes("…"))).toBe(false);
+	});
+
+	it("shows a collapsed call of a tool without a definition and a long name as one row that ends with an ellipsis", () => {
+		const component = new ToolExecutionComponent(
+			"a_tool_name_that_wraps_at_a_narrow_width",
+			"call-long-title",
+			{ action: "list" },
+			{
+				ownerEntryId: "assistant-a",
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => controls],
+			},
+			undefined,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "output" }], isError: false });
+
+		expect(foldedRows(component.render(24), () => true)).toEqual(["", expect.stringMatching(/…$/)]);
 	});
 
 	it.each([

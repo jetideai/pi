@@ -11,6 +11,8 @@ import {
 	Text,
 	type TUI,
 	type TuiMouseEvent,
+	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundaryDecoratorV2,
@@ -45,7 +47,7 @@ export interface ToolRenderers {
 	) => Component;
 }
 
-import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { getTextOutput as getRenderedTextOutput, SectionedToolCallHeader } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -120,6 +122,10 @@ export class ToolExecutionComponent extends Container {
 	private readonly sourcePointRevisions?: SourcePointRevisions;
 	private sourcePointRevision = 1;
 	private presentation = "";
+	/** The background of the generic Text of a tool without a definition. */
+	private genericBgFn?: (text: string) => string;
+	/** The last render put a summary row before the wrapped title of a tool without a definition. */
+	private genericSummary = false;
 	private decoratedSourceTexts: Text[] = [];
 
 	constructor(
@@ -227,12 +233,14 @@ export class ToolExecutionComponent extends Container {
 			expanded: this.isBodyExpanded(),
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
-			sectioned: this.isCompactLiveToolCall(),
+			sectioned: this.isCompactLiveToolCall() || (this.foldOwnsBody && this.rendersSemanticSections()),
 		};
 	}
 
 	private createCallFallback(): Component {
-		return new Text(this.formatToolTitle(), 0, 0);
+		const header = new SectionedToolCallHeader("", 0, 0);
+		header.setSectionedText(this.formatToolTitle(), this.rendersSemanticSections());
+		return header;
 	}
 
 	private createResultFallback(): Text | undefined {
@@ -453,7 +461,8 @@ export class ToolExecutionComponent extends Container {
 			let shellLines: number;
 			if (!this.hasRendererDefinition()) {
 				const textLines = this.contentText.render(width).length;
-				contentRows = Math.max(0, textLines - 2);
+				const summaryRows = this.rendersSemanticSections() && this.genericSummaryRow(width) !== undefined ? 1 : 0;
+				contentRows = Math.max(0, textLines - 2) + summaryRows;
 				callRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
 				shellLines = this.contentStartRow() + contentRows + 1;
 			} else if (this.getRenderShell() === "self") {
@@ -498,9 +507,27 @@ export class ToolExecutionComponent extends Container {
 			return lines;
 		}
 		const lines = super.render(width);
+		this.genericSummary = false;
+		if (!this.rendersSemanticSections() || lines.length <= 1) return lines;
 		// The Spacer renders one row; the next row is the top padding of the padded shell.
-		if (this.rendersSemanticSections() && lines.length > 1) lines.splice(1, 1);
+		lines.splice(1, 1);
+		const summary = this.genericSummaryRow(width);
+		if (summary !== undefined) {
+			lines.splice(1, 0, summary);
+			this.genericSummary = true;
+		}
 		return lines;
+	}
+
+	/**
+	 * The one summary row of a tool without a definition whose title does not fit: the title with an ellipsis. The
+	 * complete title follows it in the body.
+	 */
+	private genericSummaryRow(width: number): string | undefined {
+		if (this.hasRendererDefinition()) return undefined;
+		const title = this.formatToolTitle();
+		if (visibleWidth(title) <= Math.max(0, width - 2)) return undefined;
+		return new Text(truncateToWidth(title, Math.max(0, width - 2), "…"), 1, 0, this.genericBgFn).render(width)[0];
 	}
 
 	/** Settled semantic sections own the header row: the padded shell then has no top padding row. */
@@ -520,8 +547,9 @@ export class ToolExecutionComponent extends Container {
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
-			// The children still render the top padding row that the semantic shell omits.
+			// The children still render the top padding row that the semantic shell omits, and not its summary row.
 			if (!this.rendersSemanticSections() || event.y < 1) return super.handleMouse(event);
+			if (this.genericSummary) return super.handleMouse({ ...event, y: Math.max(event.y, 2) });
 			return super.handleMouse({ ...event, y: event.y + 1, height: event.height + 1 });
 		}
 		if (event.y <= 0 || event.y > this.selfRenderHeight) return undefined;
@@ -639,6 +667,7 @@ export class ToolExecutionComponent extends Container {
 			}
 		} else {
 			this.contentText.setCustomBgFn(bgFn);
+			this.genericBgFn = bgFn;
 			this.contentText.setText(this.formatToolExecution());
 			hasContent = true;
 		}
