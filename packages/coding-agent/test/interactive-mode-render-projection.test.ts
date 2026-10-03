@@ -85,6 +85,7 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 		chatContainer,
 		pendingTools: new Map(),
 		uncommittedToolResults: new UncommittedToolResults(),
+		entriesRenderedByBoundaryCompaction: new Set<string>(),
 		messageRenderMembers: [],
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "scope-a",
@@ -1411,9 +1412,10 @@ describe("live Tool Group runs across responses", () => {
 	}
 
 	/** The members that a restore of the same history publishes. */
-	function restoredMembers(sessionManager: SessionManager, hideThinkingBlock: boolean) {
+	function restoredMembers(sessionManager: SessionManager, hideThinkingBlock: boolean, extensionRunner?: unknown) {
 		const { mode, projections } = foldingHarness(sessionManager);
 		Object.assign(mode, { hideThinkingBlock, getRegisteredToolDefinition: () => undefined });
+		if (extensionRunner) Object.assign(mode.session, { extensionRunner });
 		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
 			this: typeof mode,
 			entries: ReturnType<SessionManager["getBranch"]>,
@@ -1488,6 +1490,68 @@ describe("live Tool Group runs across responses", () => {
 				.members.filter((member) => member.role === "tool")
 				.map(groupOf),
 		).toEqual(groups);
+	});
+
+	it.each([
+		["a custom entry that renders content ends the run", true, ["tool-group:call-a", "tool-group:call-b"]],
+		["a custom entry that renders nothing does not end the run", false, ["tool-group:call-a", "tool-group:call-a"]],
+	] as const)("%s, live as on restore", async (_name, displayed, groups) => {
+		const run = liveAgentRun(true);
+		const extensionRunner = { getEntryRenderer: () => (displayed ? () => new Text("[progress]", 0, 0) : undefined) };
+		Object.assign(run.mode.session, { extensionRunner });
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		const entryId = run.sessionManager.appendCustomEntry("progress", { text: "[progress]" });
+		await run.emit({ type: "entry_appended", entry: run.sessionManager.getEntry(entryId) });
+		await run.stream([toolCall("call-b")]);
+		await run.execute("call-b");
+		await run.end();
+		const live = run.projections.at(-1)!.members;
+
+		expect(live.filter((member) => member.role === "tool").map(groupOf)).toEqual(groups);
+		expect(identity(live)).toEqual(identity(restoredMembers(run.sessionManager, true, extensionRunner)));
+	});
+
+	it.each([
+		["a shown cache miss notice", "maybeShowCacheMissNotice"],
+		["a shown thinking dropped notice", "maybeShowThinkingDropNotice"],
+	] as const)("ends the live run at %s after a response", async (_name, notice) => {
+		const run = liveAgentRun(true);
+		let shown = true;
+		Object.assign(run.mode, { [notice]: () => shown });
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		shown = false;
+		await run.execute("call-a");
+		await run.stream([toolCall("call-b")]);
+
+		expect(
+			run.projections
+				.at(-1)!
+				.members.filter((member) => member.role === "tool")
+				.map(groupOf),
+		).toEqual(["tool-group:call-a", "tool-group:call-b"]);
+	});
+
+	it("keeps a live-only thinking dropped notice in its visible order, which a restore without it merges", async () => {
+		const run = liveAgentRun(true);
+		let shown = true;
+		Object.assign(run.mode, { maybeShowThinkingDropNotice: () => shown });
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		shown = false;
+		await run.execute("call-a");
+		await run.stream([toolCall("call-b")]);
+		await run.execute("call-b");
+		await run.end();
+		const calls = (members: readonly Member[]) => members.filter((member) => member.role === "tool").map(groupOf);
+
+		// The history does not keep the notice, so a reload composes one run: a replace with the default Fold state.
+		expect([calls(run.projections.at(-1)!.members), calls(restoredMembers(run.sessionManager, true))]).toEqual([
+			["tool-group:call-a", "tool-group:call-b"],
+			["tool-group:call-a", "tool-group:call-a"],
+		]);
 	});
 
 	it("shows no placeholder for hidden thinking while it streams", async () => {
@@ -1565,5 +1629,30 @@ describe("live Tool Group runs across responses", () => {
 			kept: { children, runLoaded: [false], pending: 0 },
 			later: true,
 		});
+	});
+});
+
+describe("restored cache miss boundaries", () => {
+	it.each([
+		["a cache miss below the notice threshold does not cut", 100, [undefined, undefined, undefined]],
+		["a shown cache miss notice cuts the run after its response", 50_000, [undefined, true, undefined]],
+	] as const)("%s", (_name, missedTokens, cuts) => {
+		const sessionManager = SessionManager.inMemory();
+		const { mode } = modeHarness(sessionManager);
+		const first = assistant([toolCall("call-a")], "toolUse");
+		const items = [
+			{ message: first, entryId: "assistant-a" },
+			{ message: savedToolResult("call-a", "process", "a"), entryId: "result-a" },
+			{ message: assistant([toolCall("call-b")], "toolUse"), entryId: "assistant-b" },
+		];
+		const miss = { missedTokens, missedCost: 0, modelChanged: false, idleMs: 0 };
+		const toolGroupRunItems = Reflect.get(InteractiveMode.prototype, "toolGroupRunItems") as (
+			this: typeof mode,
+			...args: unknown[]
+		) => { cutBefore?: boolean }[];
+
+		const runItems = toolGroupRunItems.call(mode, items, new Map([[first, miss]]), undefined, undefined);
+
+		expect(runItems.map((item) => item.cutBefore)).toEqual(cuts);
 	});
 });

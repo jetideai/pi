@@ -352,6 +352,11 @@ function sameProjectionMember(
  * Live output after a window render appends to its last section: a compaction rebuilds the window. Members that the
  * window render gave a section keep it.
  */
+/** A cache miss shows its notice only when it costs enough; a hidden miss is no visible boundary. */
+function isShownCacheMiss(miss: CacheMiss | undefined): boolean {
+	return miss !== undefined && (miss.missedTokens >= 20_000 || miss.missedCost >= 0.1);
+}
+
 function withAppendedSections(
 	members: readonly MessageRenderProjectionMemberV1[],
 ): readonly MessageRenderProjectionMemberV1[] {
@@ -2384,6 +2389,32 @@ export class InteractiveMode {
 	}
 
 	/**
+	 * A notice after a response that the chat shows is visible content: it ends the run in its actual visible order. A
+	 * live-only notice that the history does not show can end a live run that a restore merges.
+	 */
+	private endLiveRunAtShownNotice(shown: readonly boolean[]): void {
+		if (!this.liveRun || !shown.some(Boolean)) return;
+		this.setLiveRunItem({ type: "boundary" });
+		this.publishLiveRun(true);
+	}
+
+	/**
+	 * A session entry that the run appends shows content or nothing. Its item takes its history place: before the
+	 * response that streams now, which the history gets only at its end.
+	 */
+	private addLiveRunEntry(visible: boolean): void {
+		const run = this.liveRun;
+		if (!run) return;
+		const item: ToolGroupRunItem = { type: visible ? "boundary" : "transparent" };
+		const streaming = run.entries.findIndex(
+			(entry) => entry.item.type === "response" && entry.item.message === this.streamingMessage,
+		);
+		if (streaming >= 0) run.entries.splice(streaming, 0, { item });
+		else run.entries.push({ item });
+		this.publishLiveRun(true);
+	}
+
+	/**
 	 * Compose the live run with the one transcript rule and publish its members after the members before the run. A
 	 * group of the open run stays open across responses. While an older loaded window is in view, the members are
 	 * published as not loaded, so the Timeline has every turn while the loaded rows stay the same. A mounted group whose
@@ -4094,15 +4125,25 @@ export class InteractiveMode {
 
 			case "entry_appended":
 				if (this.entriesRenderedByBoundaryCompaction.delete(event.entry.id)) break;
-				if (event.entry.type !== "compaction" && !this.liveViewAtTail()) {
-					// An older loaded window stays in view; the history shows the entry when the tail loads.
-				} else if (event.entry.type === "custom") {
-					this.addCustomEntryToChat(event.entry);
-					this.ui.requestRender();
+				if (event.entry.type === "custom") {
+					// The same decision as the restore: an entry is visible when its renderer gives content.
+					const component = this.customEntryComponent(event.entry);
+					this.addLiveRunEntry(component !== undefined);
+					if (component && this.liveViewAtTail()) {
+						this.addCustomEntryComponentToChat(component);
+						this.ui.requestRender();
+					}
 				} else if (event.entry.type === "usage" && event.entry.kind === "cache_warm") {
-					this.addCacheWarmingUsage(event.entry);
-					this.ui.requestRender();
+					this.addLiveRunEntry(this.settingsManager.getShowCacheMissNotices());
+					if (this.liveViewAtTail()) {
+						this.addCacheWarmingUsage(event.entry);
+						this.ui.requestRender();
+					}
+				} else if (event.entry.type !== "compaction" && !this.liveViewAtTail()) {
+					if (event.entry.type === "custom_message" && event.entry.display) this.addLiveRunEntry(true);
+					// An older loaded window stays in view; the history shows the entry when the tail loads.
 				} else if (event.entry.type === "custom_message" && event.entry.display) {
+					this.addLiveRunEntry(true);
 					this.addMessageToChat(
 						createCustomMessage(
 							event.entry.customType,
@@ -4319,8 +4360,10 @@ export class InteractiveMode {
 						this.pendingTools.clear();
 					} else {
 						for (const component of this.pendingTools.values()) component.setArgsComplete();
-						this.maybeShowThinkingDropNotice(event.message);
-						this.maybeShowCacheMissNotice(event.message);
+						this.endLiveRunAtShownNotice([
+							this.maybeShowThinkingDropNotice(event.message),
+							this.maybeShowCacheMissNotice(event.message),
+						]);
 					}
 					this.semanticStreamingContainer = undefined;
 					this.streamingMessage = undefined;
@@ -4357,8 +4400,10 @@ export class InteractiveMode {
 						for (const [, component] of this.pendingTools.entries()) {
 							component.setArgsComplete();
 						}
-						this.maybeShowThinkingDropNotice(this.streamingMessage);
-						this.maybeShowCacheMissNotice(this.streamingMessage);
+						this.endLiveRunAtShownNotice([
+							this.maybeShowThinkingDropNotice(this.streamingMessage),
+							this.maybeShowCacheMissNotice(this.streamingMessage),
+						]);
 					}
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
@@ -4653,12 +4698,14 @@ export class InteractiveMode {
 
 	private addCustomEntryToChat(entry: Extract<SessionEntry, { type: "custom" }>): void {
 		const component = this.customEntryComponent(entry);
-		if (!component) {
-			return;
-		}
+		if (component) this.addCustomEntryComponentToChat(component);
+	}
 
-		if (this.streamingComponent) {
-			const streamingIndex = this.chatContainer.children.indexOf(this.streamingComponent);
+	/** A custom entry takes its history place: before the response that streams now. */
+	private addCustomEntryComponentToChat(component: CustomEntryComponent): void {
+		const streaming = this.streamingComponent ?? this.semanticStreamingContainer;
+		if (streaming) {
+			const streamingIndex = this.chatContainer.children.indexOf(streaming);
 			if (streamingIndex >= 0) {
 				this.chatContainer.children.splice(streamingIndex, 0, component);
 				return;
@@ -4998,7 +5045,7 @@ export class InteractiveMode {
 				index === window?.start ||
 				index === window?.end ||
 				(index > 0 && sections !== undefined && sections[index] !== sections[index - 1]) ||
-				(previousMessage?.role === "assistant" && cacheMisses.has(previousMessage));
+				(previousMessage?.role === "assistant" && isShownCacheMiss(cacheMisses.get(previousMessage)));
 			const run = { ...(cutBefore ? { cutBefore: true } : {}) };
 			if (isCustomSessionEntry(item)) {
 				return { type: this.customEntryComponent(item) ? "boundary" : "transparent", ...run };
@@ -5174,11 +5221,12 @@ export class InteractiveMode {
 		return count;
 	}
 
-	private maybeShowThinkingDropNotice(message: AssistantMessage): void {
-		if (!this.settingsManager.getShowCacheMissNotices()) return;
+	/** Show the thinking dropped notice of a response that just ended; returns whether the notice is visible. */
+	private maybeShowThinkingDropNotice(message: AssistantMessage): boolean {
+		if (!this.settingsManager.getShowCacheMissNotices()) return false;
 
 		const droppedCount = InteractiveMode.countDroppedThinkingBlocks(message);
-		if (droppedCount === 0) return;
+		if (droppedCount === 0) return false;
 
 		let previousDroppedCount = 0;
 		// message_end reaches the UI before the current message is persisted,
@@ -5191,13 +5239,14 @@ export class InteractiveMode {
 				break;
 			}
 		}
-		if (droppedCount <= previousDroppedCount) return;
+		if (droppedCount <= previousDroppedCount) return false;
 
 		const noun = droppedCount === 1 ? "thinking block" : "thinking blocks";
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(
 			new Text(theme.fg("warning", `Anthropic dropped ${droppedCount} ${noun} (details in session)`), 1, 0),
 		);
+		return true;
 	}
 
 	/**
@@ -5205,16 +5254,19 @@ export class InteractiveMode {
 	 * significant cache miss. Only states observable facts: the miss itself,
 	 * a model switch, or an idle gap past the cache TTL.
 	 */
-	private maybeShowCacheMissNotice(message: AssistantMessage): void {
-		if (!this.settingsManager.getShowCacheMissNotices()) return;
+	/** Show the cache miss notice of a response that just ended; returns whether the notice is visible. */
+	private maybeShowCacheMissNotice(message: AssistantMessage): boolean {
+		if (!this.settingsManager.getShowCacheMissNotices()) return false;
 
 		// Entries don't contain `message` yet: message_end fires before persistence.
 		const miss = detectCacheMiss(this.sessionManager.getEntries(), message, this.session.modelRuntime);
-		if (miss) this.addCacheMissNotice(miss);
+		if (!miss || !isShownCacheMiss(miss)) return false;
+		this.addCacheMissNotice(miss);
+		return true;
 	}
 
 	private addCacheMissNotice(miss: CacheMiss): void {
-		if (miss.missedTokens < 20_000 && miss.missedCost < 0.1) return;
+		if (!isShownCacheMiss(miss)) return;
 
 		const cost = miss.missedCost >= 0.01 ? ` (~$${miss.missedCost.toFixed(2)})` : "";
 		const reBilled = `${formatTokens(miss.missedTokens)} tokens re-billed${cost}`;
