@@ -1116,6 +1116,31 @@ describe("InteractiveMode transcript window", () => {
 			expect(text()).not.toContain("Question 7");
 		});
 
+		it("keeps an older loaded section through an unsolicited boundary compaction at turn end", async () => {
+			const { mode, runtimeHost, journal, requestWindow, latest, text } = await openWindowedSession(nineTurns, {
+				transcriptWindows: true,
+				turnEndCompaction: true,
+				faux: answering,
+			});
+			requestWindow({ entryId: journal[1]![0]!, role: "user" });
+			const before = { users: loadedUsers(latest()), text: text() };
+
+			await runtimeHost.session.prompt("Question 9");
+			await drainEvents();
+			const reply = runtimeHost.session.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "message" && entry.message.role === "user")
+				.at(-1)!.id;
+
+			expect({
+				users: loadedUsers(latest()),
+				text: text(),
+				liveTail: latest().liveTail,
+				summaries: summaries(mode),
+				replyKnown: latest().members.some((member) => member.entryId === reply),
+			}).toEqual({ ...before, liveTail: false, summaries: 0, replyKnown: true });
+		});
+
 		it("opens the latest section of the new path on /reload after a branch change", async () => {
 			const { mode, branch, journal, requestWindow, latest } = await openWindowedSession(nineTurns, compactable);
 			requestWindow({ entryId: journal[1]![0]!, role: "user" });

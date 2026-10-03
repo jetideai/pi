@@ -4132,13 +4132,15 @@ export class InteractiveMode {
 						? { type: "compaction_cost", kind: "compaction", usage: event.entry.usage }
 						: undefined;
 					if (this.acceptsTranscriptWindows()) {
-						// The latest section that has items: the closed section, or the entries after the cut.
-						const transcript = this.selectTranscript({ tail: true });
+						// The latest section that has items: the closed section, or the entries after the cut. An older
+						// loaded window stays, and the summary belongs to the tail.
+						const transcript = this.transcriptAfterCompaction(false);
+						const atTail = transcript.window?.liveTail !== false;
 						if (entriesAfterCompaction.size === 0) {
 							this.renderTranscript(transcript, { inferMissingTurns: true });
-							this.addCompactionSummary(summary, cost);
+							if (atTail) this.addCompactionSummary(summary, cost);
 						} else {
-							this.addCompactionSummary(summary, cost);
+							if (atTail) this.addCompactionSummary(summary, cost);
 							this.renderTranscript(transcript, { inferMissingTurns: true });
 						}
 					} else {
@@ -4491,22 +4493,28 @@ export class InteractiveMode {
 					this.liveRun = undefined;
 					this.ui.markReplayCause("compact");
 					this.chatContainer.clear();
+					let atTail = true;
 					if (this.acceptsTranscriptWindows()) {
-						// The new tail is empty, so the latest section that has items is the closed one.
-						this.renderTranscript(this.selectTranscript({ tail: true }), { inferMissingTurns: true });
+						// The new tail is empty, so the latest section that has items is the closed one. An automatic
+						// compaction keeps an older loaded window.
+						const transcript = this.transcriptAfterCompaction(event.reason === "manual");
+						atTail = transcript.window?.liveTail !== false;
+						this.renderTranscript(transcript, { inferMissingTurns: true });
 					} else {
 						// The sections keep the compaction cuts that the flat transcript entries do not show.
 						const { items, sections } = this.selectTranscript();
 						this.renderSessionItems(items, { sections });
 					}
-					this.addMessageToChat(
-						createCompactionSummaryMessage(
-							event.result.summary,
-							event.result.tokensBefore,
-							new Date().toISOString(),
-						),
-					);
-					if (event.result.usage) {
+					if (atTail) {
+						this.addMessageToChat(
+							createCompactionSummaryMessage(
+								event.result.summary,
+								event.result.tokensBefore,
+								new Date().toISOString(),
+							),
+						);
+					}
+					if (atTail && event.result.usage) {
 						this.addCompactionCostNotice({
 							type: "compaction_cost",
 							kind: "compaction",
@@ -5291,6 +5299,17 @@ export class InteractiveMode {
 		// Appended entries extend the path; another branch does not contain the earlier leaf.
 		const appended = loaded.liveTail && this.sessionManager.getBranch().some((entry) => entry.id === loaded.leafId);
 		return appended ? { from: loaded.from } : { tail: true };
+	}
+
+	/**
+	 * The transcript after a compaction. A compaction that the user asked for, or one while the live tail is in view,
+	 * opens the latest section that has items. Otherwise the older loaded window keeps its exact interval while the
+	 * interval is on the path; a cut after it does not change it.
+	 */
+	private transcriptAfterCompaction(userRequested: boolean): ReturnType<InteractiveMode["selectTranscript"]> {
+		const loaded = this.loadedTranscript;
+		if (userRequested || this.liveViewAtTail() || !loaded) return this.selectTranscript({ tail: true });
+		return this.selectTranscript({ from: loaded.from, to: loaded.to });
 	}
 
 	// =========================================================================
