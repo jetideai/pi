@@ -113,3 +113,13 @@ describe("Text summary row", () => {
 		assert.equal(stripTerminalSequences(row ?? ""), " a first line that… ");
 	});
 });
+
+describe("Text first line fill", () => {
+	it("fills the first row of its first line only when asked", () => {
+		const text = new Text(`edit ${"e".repeat(12)}`, 0, 0);
+
+		assert.deepEqual(text.render(10), ["edit      ", "eeeeeeeeee", "ee        "]);
+		text.setFillFirstLine(true);
+		assert.deepEqual(text.render(10), ["edit eeeee", "eeeeeee   "]);
+	});
+});

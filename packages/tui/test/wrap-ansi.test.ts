@@ -320,3 +320,43 @@ describe("wrapTextWithAnsi with OSC 8 hyperlinks", () => {
 		assert.strictEqual(closeCount, 1);
 	});
 });
+
+describe("PreparedTextWithAnsi first line fill", () => {
+	it("fills the first row before a long unbroken token instead of leaving a label alone", () => {
+		const text = `edit ${"a".repeat(22)}`;
+
+		assert.deepStrictEqual(new PreparedTextWithAnsi(text).wrap(10), ["edit", "aaaaaaaaaa", "aaaaaaaaaa", "aa"]);
+		assert.deepStrictEqual(new PreparedTextWithAnsi(text).wrap(10, { fillFirstLine: true }), [
+			"edit aaaaa",
+			"aaaaaaaaaa",
+			"aaaaaaa",
+		]);
+	});
+
+	it("keeps the styles and every character of a filled first line", () => {
+		const text = `\x1b[1medit\x1b[22m \x1b[36m${"b".repeat(18)}\x1b[39m`;
+		const rows = new PreparedTextWithAnsi(text).wrap(8, { fillFirstLine: true });
+
+		assert.strictEqual(rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, "")).join(""), `edit ${"b".repeat(18)}`);
+		assert.ok(rows.every((row) => visibleWidth(row) <= 8));
+		assert.ok(rows[1]?.startsWith("\x1b[36m"), rows[1]);
+	});
+
+	it("keeps wide characters whole at the row end of a filled first line", () => {
+		const rows = new PreparedTextWithAnsi(`edit ${"目".repeat(6)}`).wrap(8, { fillFirstLine: true });
+
+		assert.deepStrictEqual(rows, ["edit 目", "目目目目", "目"]);
+	});
+
+	it("fills only the first logical line", () => {
+		const text = `edit ${"c".repeat(12)}\nnext ${"d".repeat(12)}`;
+
+		assert.deepStrictEqual(new PreparedTextWithAnsi(text).wrap(10, { fillFirstLine: true }), [
+			"edit ccccc",
+			"ccccccc",
+			"next",
+			"dddddddddd",
+			"dd",
+		]);
+	});
+});

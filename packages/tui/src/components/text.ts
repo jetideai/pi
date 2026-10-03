@@ -17,6 +17,7 @@ export class Text implements Component {
 	private paddingY: number; // Top/bottom padding
 	private customBgFn?: (text: string) => string;
 	private decoratePreWrap?: PreWrapTextDecorator;
+	private fillFirstLine = false;
 	private prepared?: PreparedTextWithAnsi;
 	private cached?: { width: number; maxLines: number | undefined; lines: string[]; totalLines: number };
 
@@ -47,6 +48,13 @@ export class Text implements Component {
 	setText(text: string): void {
 		if (this.text !== text) this.prepared = undefined;
 		this.text = text;
+		this.cached = undefined;
+	}
+
+	/** Fill the first row of the first line before a long unbroken token; see PreparedTextWithAnsi.wrap. */
+	setFillFirstLine(fill: boolean): void {
+		if (this.fillFirstLine === fill) return;
+		this.fillFirstLine = fill;
 		this.cached = undefined;
 	}
 
@@ -93,9 +101,10 @@ export class Text implements Component {
 		const paddingX = Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2)));
 		const contentWidth = Math.max(1, width - paddingX * 2);
 		const tailOnly = maxLines !== undefined && Number.isInteger(maxLines) && maxLines > 0;
+		const wrapOptions = { fillFirstLine: this.fillFirstLine };
 		const wrapped = tailOnly
-			? this.prepared.wrapTail(contentWidth, maxLines)
-			: { lines: this.prepared.wrap(contentWidth), totalLines: 0 };
+			? this.prepared.wrapTail(contentWidth, maxLines, wrapOptions)
+			: { lines: this.prepared.wrap(contentWidth, wrapOptions), totalLines: 0 };
 		const wrappedTotalLines = tailOnly ? wrapped.totalLines : wrapped.lines.length;
 		const paddingLines: null[] = [];
 		for (let i = 0; i < this.paddingY; i++) paddingLines.push(null);

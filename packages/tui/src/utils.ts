@@ -959,12 +959,20 @@ export class PreparedTextWithAnsi {
 		});
 	}
 
-	wrap(width: number): string[] {
-		return this.lines.flatMap((line) => layoutSingleLine(line, width, 0).lines);
+	/**
+	 * The rows of this text at [width]. With [options.fillFirstLine], a long unbroken token of the first line starts on
+	 * the row before it, so that row is full; the other lines wrap by words.
+	 */
+	wrap(width: number, options?: { fillFirstLine?: boolean }): string[] {
+		const fill = options?.fillFirstLine === true;
+		return this.lines.flatMap((line, index) => layoutSingleLine(line, width, 0, fill && index === 0).lines);
 	}
 
-	wrapTail(width: number, maxLines: number): WrappedAnsiLines {
-		const lineCounts = this.lines.map((line) => layoutSingleLine(line, width, Number.POSITIVE_INFINITY).totalLines);
+	wrapTail(width: number, maxLines: number, options?: { fillFirstLine?: boolean }): WrappedAnsiLines {
+		const fill = options?.fillFirstLine === true;
+		const lineCounts = this.lines.map(
+			(line, index) => layoutSingleLine(line, width, Number.POSITIVE_INFINITY, fill && index === 0).totalLines,
+		);
 		const totalLines = lineCounts.reduce((total, count) => total + count, 0);
 		const firstMaterializedLine = Math.max(0, totalLines - maxLines);
 		const lines: string[] = [];
@@ -974,8 +982,12 @@ export class PreparedTextWithAnsi {
 			const lineCount = lineCounts[index]!;
 			if (precedingLines + lineCount > firstMaterializedLine) {
 				lines.push(
-					...layoutSingleLine(this.lines[index]!, width, Math.max(0, firstMaterializedLine - precedingLines))
-						.lines,
+					...layoutSingleLine(
+						this.lines[index]!,
+						width,
+						Math.max(0, firstMaterializedLine - precedingLines),
+						fill && index === 0,
+					).lines,
 				);
 			}
 			precedingLines += lineCount;
@@ -985,7 +997,12 @@ export class PreparedTextWithAnsi {
 	}
 }
 
-function layoutSingleLine(line: PreparedAnsiLine, width: number, materializeFromLine: number): WrappedAnsiLines {
+function layoutSingleLine(
+	line: PreparedAnsiLine,
+	width: number,
+	materializeFromLine: number,
+	fillLongWords = false,
+): WrappedAnsiLines {
 	if (!line.text) {
 		return { lines: materializeFromLine <= 0 ? [""] : [], totalLines: 1 };
 	}
@@ -1033,8 +1050,11 @@ function layoutSingleLine(line: PreparedAnsiLine, width: number, materializeFrom
 		const isWhitespace = measured.isWhitespace;
 
 		if (tokenVisibleLength > width && !isWhitespace) {
-			if (currentLineHasContent) finishLine(false, tracker.getLineEndReset());
-			startContinuation();
+			// A filled line continues the long token on the current row; otherwise the token starts a new row.
+			if (!fillLongWords || currentVisibleLength >= width) {
+				if (currentLineHasContent) finishLine(false, tracker.getLineEndReset());
+				startContinuation();
+			}
 			appendLongWord(
 				token,
 				width,
