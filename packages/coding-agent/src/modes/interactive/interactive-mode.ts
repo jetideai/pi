@@ -355,12 +355,24 @@ function withAppendedSections(
 	return changed ? sectioned : members;
 }
 
+/** An append keeps each published member; it may only close a Tool Group that was open. */
 function isProjectionPrefix(
 	prefix: readonly Readonly<MessageRenderProjectionMemberV1>[],
 	members: readonly MessageRenderProjectionMemberV1[],
 ): boolean {
 	return (
-		prefix.length <= members.length && prefix.every((member, index) => sameProjectionMember(member, members[index]!))
+		prefix.length <= members.length &&
+		prefix.every((member, index) => {
+			const candidate = members[index]!;
+			if (sameProjectionMember(member, candidate)) return true;
+			return (
+				member.role === "tool-group" &&
+				candidate.role === "tool-group" &&
+				member.groupClosed === false &&
+				candidate.groupClosed === true &&
+				sameProjectionMember({ ...member, groupClosed: true }, candidate)
+			);
+		})
 	);
 }
 

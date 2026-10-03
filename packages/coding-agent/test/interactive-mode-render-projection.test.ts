@@ -1141,6 +1141,34 @@ describe("live Tool Group composition across assistant responses", () => {
 		]);
 	});
 
+	it("publishes the closure of a streamed Tool Group at message_end as an append", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const userId = sessionManager.appendMessage(user);
+		const { mode, projections } = foldingHarness(sessionManager);
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		await handleEvent.call(mode, { type: "message_start", message: user, entryId: userId });
+		const calls = [toolCall("call-a")];
+		const message = assistant(calls, "toolUse");
+		const entryId = sessionManager.appendMessage(message);
+		await handleEvent.call(mode, { type: "message_start", message: assistant([], "pending"), entryId });
+		await handleEvent.call(mode, {
+			type: "message_update",
+			message: assistant(calls, "pending"),
+			entryId,
+		} as AgentSessionEvent);
+		const open = projections.length;
+		await handleEvent.call(mode, { type: "message_end", message, entryId });
+
+		expect(projections.slice(open).map((projection) => projection.mode)).toEqual(["append"]);
+		expect(projections.at(-1)!.members.find((member) => member.role === "tool-group")).toMatchObject({
+			groupId: "tool-group:call-a",
+			groupClosed: true,
+		});
+	});
+
 	it("renders the partial output of an active call without a range and adds the range when the call ends", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const { mode, chatContainer } = foldingHarness(sessionManager);
