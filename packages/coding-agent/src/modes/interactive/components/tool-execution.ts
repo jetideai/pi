@@ -110,7 +110,6 @@ export class ToolExecutionComponent extends Container {
 		{ sourceData: string; sourceMimeType: string; data: string; mimeType: string }
 	> = new Map();
 	private hideComponent = false;
-	private compactLiveToolCall = false;
 	/** The selected presentation lets the native Fold own the settled body, so Pi renders its canonical content. */
 	private readonly foldOwnsBody: boolean;
 	private readonly ownerEntryId?: string;
@@ -166,7 +165,6 @@ export class ToolExecutionComponent extends Container {
 			options.hasInitialCollapsedBoundaries ?? this.semanticDecoratorsV2.length > 0,
 		);
 		this.foldOwnsBody = presentation.foldOwnsBody;
-		this.compactLiveToolCall = presentation.compactLive;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.ui = ui;
@@ -232,7 +230,7 @@ export class ToolExecutionComponent extends Container {
 			expanded: this.isBodyExpanded(),
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
-			sectioned: this.isCompactLiveToolCall() || (this.foldOwnsBody && this.rendersSemanticSections()),
+			sectioned: this.foldOwnsBody && this.rendersSemanticSections(),
 		};
 	}
 
@@ -336,11 +334,6 @@ export class ToolExecutionComponent extends Container {
 		return this.presentation;
 	}
 
-	/** False only for the compact live header, which renders no separator row before it. */
-	get rendersLeadingSeparator(): boolean {
-		return !this.isCompactLiveToolCall();
-	}
-
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.updateDisplay();
@@ -358,35 +351,7 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): string[] {
 		if (this.hideComponent) return [];
-		const lines = this.renderStock(width);
-		if (!this.isCompactLiveToolCall()) return this.decorateSemanticSections(lines, width);
-
-		const component = this.callRendererComponent;
-		const headerLocator = this.getCallHeaderRowLocator();
-		const bodyLocator = this.getCallBodyRowLocator();
-		if (component && headerLocator && bodyLocator) {
-			try {
-				const componentWidth = this.getRenderShell() === "self" ? width : Math.max(0, width - 2);
-				const componentRows = component.render(componentWidth);
-				const headerRow = headerLocator(component);
-				const bodyRow = bodyLocator(component);
-				const stockHeaderRow = (this.getRenderShell() === "self" ? 1 : 2) + (headerRow ?? -1);
-				if (
-					headerRow !== undefined &&
-					bodyRow !== undefined &&
-					headerRow >= 0 &&
-					bodyRow > headerRow &&
-					bodyRow <= componentRows.length &&
-					lines[stockHeaderRow] !== undefined
-				) {
-					return [lines[stockHeaderRow]];
-				}
-			} catch {}
-		}
-
-		this.compactLiveToolCall = false;
-		this.updateDisplay();
-		return this.renderStock(width);
+		return this.decorateSemanticSections(this.renderStock(width), width);
 	}
 
 	private decorateSemanticSections(lines: string[], width: number): string[] {
@@ -567,9 +532,18 @@ export class ToolExecutionComponent extends Container {
 		}
 	}
 
-	/** Settled semantic sections own the header row: the padded shell then has no top padding row. */
+	/**
+	 * Semantic sections own the header row: the padded shell then has no top padding row. A call whose body the native
+	 * Fold owns has them also while it is ready or runs; another call has them when it is settled.
+	 */
 	private rendersSemanticSections(): boolean {
-		return this.semanticDecoratorsV2.length > 0 && !this.isPartial;
+		return this.semanticDecoratorsV2.length > 0 && (this.foldOwnsBody || !this.isPartial);
+	}
+
+	/** The working row of an active call without output: it is no tool output and no source of a point. */
+	private workingRow(): string | undefined {
+		if (this.result || !this.isPartial || !this.foldOwnsBody || !this.rendersSemanticSections()) return undefined;
+		return theme.fg("muted", this.executionStarted ? "Running…" : "Waiting to start…");
 	}
 
 	/** The first content row of the padded shell, after the Spacer and the top padding when it renders. */
@@ -600,14 +574,14 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * The presentation that the extensions select. The native Fold owns the canonical settled body of a call with
-	 * initial collapsed boundaries; the compact live header also needs the exact header seam and a result renderer.
+	 * The presentation that the extensions select. The native Fold owns the canonical body of every call with initial
+	 * collapsed boundaries: the body of a settled call, and the current output or the working row of an active call.
 	 */
 	private selectPresentation(
 		selectors: readonly ToolExecutionPresentationSelectorV1[],
 		hasInitialCollapsedBoundaries: boolean,
-	): { compactLive: boolean; foldOwnsBody: boolean } {
-		const selected = { compactLive: false, foldOwnsBody: false };
+	): { foldOwnsBody: boolean } {
+		const selected = { foldOwnsBody: false };
 		if (selectors.length === 0 || !hasInitialCollapsedBoundaries) return selected;
 		const candidate = {
 			role: "tool" as const,
@@ -617,25 +591,10 @@ export class ToolExecutionComponent extends Container {
 		};
 		for (const selector of selectors) {
 			try {
-				const selection = selector(candidate);
-				if (selection?.settled !== "canonical-initial-collapsed") continue;
-				selected.foldOwnsBody = true;
-				if (
-					candidate.hasExactHeaderSeam &&
-					candidate.hasCanonicalResultRenderer &&
-					selection.liveToolCall === "compact-stock-header" &&
-					selection.liveToolGroup === "compact-stock-header" &&
-					selection.header === "exact-one-row"
-				) {
-					selected.compactLive = true;
-				}
+				if (selector(candidate)?.settled === "canonical-initial-collapsed") selected.foldOwnsBody = true;
 			} catch {}
 		}
 		return selected;
-	}
-
-	private isCompactLiveToolCall(): boolean {
-		return this.compactLiveToolCall && this.executionStarted && this.isPartial;
 	}
 
 	private updateDisplay(): void {
@@ -676,7 +635,7 @@ export class ToolExecutionComponent extends Container {
 				}
 			}
 
-			if (this.result && !this.isCompactLiveToolCall()) {
+			if (this.result) {
 				const resultRenderer = this.getResultRenderer();
 				if (!resultRenderer) {
 					this.fallbackResultText = this.createResultFallback();
@@ -705,10 +664,13 @@ export class ToolExecutionComponent extends Container {
 					}
 				}
 			}
+			const working = this.workingRow();
+			if (working) renderContainer.addChild(new Text(working, 0, 0));
 		} else {
 			this.contentText.setCustomBgFn(bgFn);
 			this.shellBgFn = bgFn;
-			this.contentText.setText(this.formatToolExecution());
+			const working = this.workingRow();
+			this.contentText.setText(working ? `${this.formatToolExecution()}\n${working}` : this.formatToolExecution());
 			hasContent = true;
 		}
 
@@ -721,7 +683,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		this.imageSpacers = [];
 
-		if (this.result && !this.isCompactLiveToolCall()) {
+		if (this.result) {
 			const imageBlocks = this.result.content.filter((c) => c.type === "image");
 			const caps = getCapabilities();
 			for (let i = 0; i < imageBlocks.length; i++) {

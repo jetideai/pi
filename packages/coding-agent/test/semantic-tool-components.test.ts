@@ -29,7 +29,7 @@ import {
 } from "../src/modes/interactive/components/message-render-boundaries.ts";
 import type { ToolRenderers } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { ToolGroupComponent, ToolGroupMemberComponent } from "../src/modes/interactive/components/tool-group.ts";
+import { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -300,12 +300,74 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rendered).toContain(controls.end);
 	});
 
-	it("keeps a compact live Tool Call on one stock header row without rendering its result", () => {
-		const component = tool("tool-live");
-		component.markExecutionStarted();
-		component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
+	/** A call of a tool without a definition, with native folding of its canonical body. */
+	const activeCall = (id: string) =>
+		new ToolExecutionComponent(
+			"process",
+			id,
+			{ action: "list" },
+			{
+				ownerEntryId: "assistant-a",
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => controls],
+				toolExecutionPresentationSelectorsV1: [settledCanonicalOnly],
+			},
+			undefined,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+	/** The text of the rows after the body control. */
+	const bodyText = (rows: string[]) => {
+		const body = rows.findIndex((row) => row.includes(controls.body));
+		return body < 0 ? undefined : stripAnsi(rows.slice(body).join("\n"));
+	};
 
-		expect(component.render(80).map((line) => stripAnsi(line).trimEnd())).toEqual(["stock header"]);
+	it.each([
+		["a ready call", false, "Waiting to start"],
+		["a running call without output", true, "Running"],
+	] as const)("gives %s its own Fold with a truthful working row as its body", (_name, started, row) => {
+		const component = activeCall("call-active");
+		if (started) component.markExecutionStarted();
+		const rows = component.render(80);
+
+		expect({
+			controls: [controls.begin, controls.body, controls.end].map(
+				(control) => rows.join("").split(control).length - 1,
+			),
+			body: bodyText(rows)?.includes(row),
+		}).toEqual({ controls: [1, 1, 1], body: true });
+	});
+
+	it("gives a running call the complete current partial output in the body of its Fold", () => {
+		const component = activeCall("call-running");
+		component.markExecutionStarted();
+		const output = Array.from({ length: 30 }, (_, line) => `partial line ${line + 1}`).join("\n");
+		component.updateResult({ content: [{ type: "text", text: output }], isError: false }, true);
+		const body = bodyText(component.render(80)) ?? "";
+
+		expect([body.includes("partial line 1"), body.includes("partial line 30"), body.includes("more lines")]).toEqual([
+			true,
+			true,
+			false,
+		]);
+	});
+
+	it("gives a group of two committed calls its range while its run is open", () => {
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:tool-a",
+			closed: false,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [() => () => controls],
+		});
+		const first = tool("tool-a");
+		const second = tool("tool-b");
+		first.updateResult({ content: [{ type: "text", text: "first" }], isError: false });
+		group.addTool(first, { toolName: "read", toolCallId: "tool-a" });
+		group.addTool(second, { toolName: "bash", toolCallId: "tool-b" });
+
+		expect(group.render(80).join("\n").split(controls.begin)).toHaveLength(4);
 	});
 
 	it("renders one presentation-only group around two existing children once", () => {
@@ -537,12 +599,11 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(group.render(80)).toEqual(expected);
 	});
 
-	it("maps the group separator, header and member-separator mouse rows to each child", () => {
+	it("maps the group separator and header mouse rows to no child and the member rows to each child", () => {
 		const makeChild = (rows: string[]) => ({
 			render: vi.fn(() => rows),
 			invalidate: vi.fn(),
 			handleMouse: vi.fn(() => ({ handled: true as const })),
-			rendersLeadingSeparator: false,
 		});
 		const first = makeChild(["first-0", "first-1"]);
 		const second = makeChild(["second-0"]);
@@ -574,32 +635,11 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(group.handleMouse(event(0))).toBeUndefined();
 		expect(group.handleMouse(event(1))).toBeUndefined();
-		expect(group.handleMouse(event(2))).toBeUndefined();
-		expect(group.handleMouse(event(3))).toMatchObject({ handled: true });
+		expect(group.handleMouse(event(2))).toMatchObject({ handled: true });
 		expect(first.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 2 }));
-		expect(group.handleMouse(event(6))).toMatchObject({ handled: true });
+		expect(group.handleMouse(event(4))).toMatchObject({ handled: true });
 		expect(second.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 1 }));
 	});
-
-	it.each([
-		["a settled call with its own separator", true, ["", "header", "body"], ["", "header", "body"]],
-		["a compact live header", false, ["stock header"], ["", "stock header"]],
-		["an empty member", false, [], []],
-	] as const)(
-		"adds one separator row only before a member without its own: %s",
-		(_name, separated, childRows, rows) => {
-			const component = {
-				render: vi.fn(() => [...childRows]),
-				invalidate: vi.fn(),
-				handleMouse: vi.fn(),
-				rendersLeadingSeparator: separated,
-			} as unknown as ToolExecutionComponent;
-			const member = new ToolGroupMemberComponent(component);
-
-			expect(member.render(80)).toEqual(rows);
-			expect(component.render).toHaveBeenCalledOnce();
-		},
-	);
 
 	it("marks call source points inside a long bash command and keeps its result points", () => {
 		const sources = renderBashSources(numbered("echo command", 40), "done", 80);
@@ -867,16 +907,17 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		for (const plain of [outside, atBegin, absent]) expect(plain).toEqual(["a", `${controls.begin}b${controls.end}`]);
 	});
 
-	it("keeps the located rows of a renderer that has row locators", () => {
-		const rows = boundaryRows(tool("tool-located").render(80));
+	it("keeps the located rows of a renderer that has row locators while the call is ready and when it settles", () => {
+		const ready = boundaryRows(tool("tool-located").render(80));
 		const component = tool("tool-located");
 		component.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
 		const settled = boundaryRows(component.render(80));
 
-		expect(rows.counts).toEqual([0, 0, 0]);
-		expect(settled.counts).toEqual([1, 1, 1]);
-		expect(settled.visible[settled.begin[0]!]).toBe("stock header");
-		expect(settled.visible[settled.body[0]!]).toBe("stock preview");
+		for (const rows of [ready, settled]) {
+			expect(rows.counts).toEqual([1, 1, 1]);
+			expect(rows.visible[rows.begin[0]!]).toBe("stock header");
+			expect(rows.visible[rows.body[0]!]).toBe("stock preview");
+		}
 	});
 
 	it("marks rendered source points in the body of the generic text of a tool without a definition", () => {

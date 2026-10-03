@@ -794,7 +794,7 @@ describe("ToolExecutionComponent parity", () => {
 		settled: "canonical-initial-collapsed",
 	});
 
-	test("keeps admitted partial output behind one renderer-owned header row", () => {
+	test("shows the stock partial output of an admitted call that has no native Fold", () => {
 		let resultRenders = 0;
 		const readDefinition = createReadToolDefinition(process.cwd());
 		const countedRenderResult: NonNullable<typeof readDefinition.renderResult> = (
@@ -821,13 +821,13 @@ describe("ToolExecutionComponent parity", () => {
 		component.markExecutionStarted();
 		component.updateResult({ content: [{ type: "text", text: "partial output" }], isError: false }, true);
 
-		expect(component.render(12)).toHaveLength(1);
-		expect(stripAnsi(component.render(12).join("\n"))).not.toContain("partial output");
-		expect(resultRenders).toBe(0);
+		// The stock result renderer draws the partial result; there is no compact header row.
+		expect(component.render(80).length).toBeGreaterThan(1);
+		expect(resultRenders).toBe(1);
 
 		component.updateResult({ content: [{ type: "text", text: "final output" }], isError: false }, false);
 		expect(stripAnsi(component.render(80).join("\n"))).not.toContain("final output");
-		expect(resultRenders).toBe(1);
+		expect(resultRenders).toBe(2);
 		component.setExpanded(true);
 		expect(stripAnsi(component.render(80).join("\n"))).toContain("final output");
 	});
@@ -901,10 +901,8 @@ describe("ToolExecutionComponent parity", () => {
 		expect({ headerLocations, bodyLocations }).toEqual({ headerLocations: 0, bodyLocations: 0 });
 	});
 
-	test("selects once at construction and locates once per admitted render", () => {
+	test("selects the presentation once at construction", () => {
 		let selections = 0;
-		let headerLocations = 0;
-		let bodyLocations = 0;
 		const selector: ToolExecutionPresentationSelectorV1 = (candidate) => {
 			selections += 1;
 			return admitCompactLiveToolCall(candidate);
@@ -913,14 +911,8 @@ describe("ToolExecutionComponent parity", () => {
 			...createBaseToolDefinition(),
 			renderCall: () => new Text("stock header", 0, 0),
 			renderResult: () => new Text("stock body", 0, 0),
-			getRenderCallHeaderRow: () => {
-				headerLocations += 1;
-				return 0;
-			},
-			getRenderCallBodyRow: () => {
-				bodyLocations += 1;
-				return 1;
-			},
+			getRenderCallHeaderRow: () => 0,
+			getRenderCallBodyRow: () => 1,
 		};
 		const component = new ToolExecutionComponent(
 			"custom_tool",
@@ -933,19 +925,10 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.markExecutionStarted();
 		component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
-
-		expect(component.render(80)).toHaveLength(1);
-		expect({ selections, headerLocations, bodyLocations }).toEqual({
-			selections: 1,
-			headerLocations: 1,
-			bodyLocations: 1,
-		});
+		component.render(80);
 		component.render(40);
-		expect({ selections, headerLocations, bodyLocations }).toEqual({
-			selections: 1,
-			headerLocations: 2,
-			bodyLocations: 2,
-		});
+
+		expect(selections).toBe(1);
 	});
 
 	test("fails open when an admitted locator does not identify one exact header", () => {
@@ -977,7 +960,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("stock partial body");
 	});
 
-	test("materializes self-shell errors and images only after the compact partial settles", () => {
+	test("materializes self-shell errors and images only after the partial result settles", () => {
 		let imageRenders = 0;
 		class CountingImage extends Image {
 			override render(width: number): string[] {
@@ -1018,7 +1001,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.markExecutionStarted();
 		component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
-		expect(component.render(80)).toHaveLength(1);
+		component.render(80);
 		expect(imageRenders).toBe(0);
 
 		component.updateResult({ content: [{ type: "text", text: "failed" }], isError: true }, false);

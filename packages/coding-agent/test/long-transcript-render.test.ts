@@ -11,7 +11,7 @@ import type {
 } from "../src/core/extensions/types.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { ToolGroupComponent, ToolGroupMemberComponent } from "../src/modes/interactive/components/tool-group.ts";
+import { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -80,7 +80,6 @@ function occurrences(value: string, needle: string): number {
 
 function descendants(root: Component): Component[] {
 	const result = [root];
-	if (root instanceof ToolGroupMemberComponent) result.push(...descendants(root.component));
 	if (root instanceof Container) {
 		for (const child of root.children) result.push(...descendants(child));
 	}

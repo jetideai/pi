@@ -1,4 +1,4 @@
-import { type Component, Container, type TuiMouseEvent, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, type TuiMouseEvent, truncateToWidth } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundaryDecoratorV2,
 	MessageRenderBoundarySelectorV3,
@@ -27,38 +27,9 @@ export interface ToolGroupOptions {
 	sourcePointRevisions?: SourcePointRevisions;
 }
 
-/** A member of a closed Tool Group: it adds the one separator row that a compact live header does not render. */
-export class ToolGroupMemberComponent implements Component {
-	readonly component: ToolExecutionComponent;
-	private renderedHeight = 0;
-	private separated = false;
-
-	constructor(component: ToolExecutionComponent) {
-		this.component = component;
-	}
-
-	render(width: number): string[] {
-		const rows = this.component.render(width);
-		this.renderedHeight = rows.length;
-		this.separated = rows.length > 0 && !this.component.rendersLeadingSeparator;
-		return this.separated ? ["", ...rows] : rows;
-	}
-
-	invalidate(): void {
-		this.component.invalidate();
-	}
-
-	handleMouse(event: TuiMouseEvent): ReturnType<NonNullable<Component["handleMouse"]>> {
-		const offset = this.separated ? 1 : 0;
-		if (event.y < offset) return undefined;
-		return this.component.handleMouse({ ...event, y: event.y - offset, height: this.renderedHeight });
-	}
-}
-
 export class ToolGroupComponent extends Container {
 	private readonly groupId: string;
 	private readonly ownerEntryId?: string;
-	private readonly options: ToolGroupOptions;
 	private closed = false;
 	private outputPad: number;
 	private semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[] = [];
@@ -71,16 +42,8 @@ export class ToolGroupComponent extends Container {
 		this.sourcePointRevisions = options.sourcePointRevisions;
 		this.groupId = options.groupId;
 		this.ownerEntryId = options.ownerEntryId;
-		this.options = options;
 		this.outputPad = options.outputPad ?? 1;
-		if (options.closed) this.close();
-	}
-
-	/** The run of the group ended: no call joins it any more, so it gets its group boundaries. */
-	close(): void {
-		if (this.closed) return;
-		this.closed = true;
-		const options = this.options;
+		this.closed = options.closed ?? false;
 		this.semanticDecoratorsV2 =
 			options.producerSessionId && options.renderScopeId
 				? selectMessageRenderBoundaryDecoratorsV3(
@@ -96,7 +59,11 @@ export class ToolGroupComponent extends Container {
 						options.semanticSelectorsV3 ?? [],
 					)
 				: [];
-		this.mountMembers();
+	}
+
+	/** The run of the group ended: no call joins it any more. Its boundaries do not depend on it. */
+	close(): void {
+		this.closed = true;
 	}
 
 	/**
@@ -118,13 +85,13 @@ export class ToolGroupComponent extends Container {
 	private mountMembers(): void {
 		this.clear();
 		for (const memberComponent of this.memberComponents) {
-			this.addChild(this.framed ? new ToolGroupMemberComponent(memberComponent) : memberComponent);
+			this.addChild(memberComponent);
 		}
 	}
 
-	/** A closed group of two or more calls shows its header and its range; a group of one call shows only its call. */
+	/** A group of two or more committed calls shows its header and its range; a group of one call shows only its call. */
 	private get framed(): boolean {
-		return this.closed && this.members.length >= 2 && this.semanticDecoratorsV2.length > 0;
+		return this.members.length >= 2 && this.semanticDecoratorsV2.length > 0;
 	}
 
 	/** Expand or collapse the output of every member Tool Call. */

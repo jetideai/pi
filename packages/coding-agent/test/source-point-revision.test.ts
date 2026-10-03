@@ -13,7 +13,6 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { SourcePointRevisions } from "../src/modes/interactive/components/message-render-boundaries.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { ToolGroupMemberComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { UncommittedToolResults } from "../src/modes/interactive/uncommitted-tool-results.ts";
@@ -42,7 +41,6 @@ function marker(phase: string, key: string, revision: number, point?: string): s
 
 function descendants(root: unknown): unknown[] {
 	const result = [root];
-	if (root instanceof ToolGroupMemberComponent) result.push(...descendants(root.component));
 	if (root instanceof Container) for (const child of root.children) result.push(...descendants(child));
 	return result;
 }

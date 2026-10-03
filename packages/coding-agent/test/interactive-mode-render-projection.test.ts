@@ -1185,7 +1185,7 @@ describe("live Tool Group composition across assistant responses", () => {
 		});
 	});
 
-	it("renders the partial output of an active call without a range and adds the range when the call ends", async () => {
+	it("renders an active call in its own range and keeps that range when the call ends", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const { mode, chatContainer } = foldingHarness(sessionManager);
 		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
@@ -1219,7 +1219,7 @@ describe("live Tool Group composition across assistant responses", () => {
 		});
 		const settled = chatContainer.render(100);
 
-		expect([count(active, markers.begin), count(settled, markers.begin)]).toEqual([0, 1]);
+		expect([count(active, markers.begin), count(settled, markers.begin)]).toEqual([1, 1]);
 	});
 });
 
@@ -1642,6 +1642,61 @@ describe("live Tool Group runs across responses", () => {
 			undefined,
 		]);
 	});
+
+	it.each([
+		// The new group header goes above A: when A has left the screen, that one change is a full redraw.
+		["above the screen", 40, 1],
+		["on the screen", 1, 0],
+	] as const)(
+		"forms a group with its first call %s and draws later partial output without a full redraw",
+		async (_name, lines, formation) => {
+			const run = liveAgentRun(true);
+			const terminal = new VirtualTerminal(80, 8);
+			const tui = new TuiMainScreen(terminal);
+			Object.assign(run.mode, { ui: tui });
+			tui.addChild(run.chatContainer);
+			tui.start();
+			const settle = async () => {
+				tui.requestRender();
+				await terminal.waitForRender();
+			};
+			await run.start();
+			await run.stream([toolCall("call-a")]);
+			const longOutput = Array.from({ length: lines }, (_, line) => `a line ${line + 1}`).join("\n");
+			await run.emit({ type: "tool_execution_start", toolCallId: "call-a", toolName: "process", args: {} });
+			await run.emit({
+				type: "tool_execution_end",
+				toolCallId: "call-a",
+				toolName: "process",
+				result: { content: [{ type: "text", text: longOutput }] },
+				isError: false,
+			});
+			await settle();
+			const beforeGroup = tui.fullRedraws;
+			await run.stream([thinking("plan b"), toolCall("call-b")]);
+			await settle();
+			const beforePartials = tui.fullRedraws;
+			await run.emit({ type: "tool_execution_start", toolCallId: "call-b", toolName: "process", args: {} });
+			let output = "";
+			for (let line = 1; line <= 10; line++) {
+				output += `${line > 1 ? "\n" : ""}b line ${line}`;
+				await run.emit({
+					type: "tool_execution_update",
+					toolCallId: "call-b",
+					toolName: "process",
+					args: {},
+					partialResult: { content: [{ type: "text", text: output }] },
+				});
+				await settle();
+			}
+			tui.stop();
+
+			expect({ formation: beforePartials - beforeGroup, partials: tui.fullRedraws - beforePartials }).toEqual({
+				formation,
+				partials: 0,
+			});
+		},
+	);
 
 	it("keeps a live-only thinking dropped notice in its visible order, which a restore without it merges", async () => {
 		const run = liveAgentRun(true);
