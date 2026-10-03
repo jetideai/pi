@@ -1518,6 +1518,82 @@ describe("Tool Call and Tool Group outcomes", () => {
 				}).toEqual({ cue: true, error: false, outcome: "cancelled", reason: true });
 			});
 
+			/** A self-rendered call whose call part is one Text: its first row is its canonical header. */
+			const textCall = (id: string, callText: string, located = false) =>
+				call(id, {
+					...definition(),
+					renderCall: () => new Text(callText, 0, 0),
+					getRenderCallHeaderRow: located ? () => 0 : undefined,
+					getRenderCallBodyRow: located ? () => 1 : undefined,
+				} as ToolDefinition);
+			const width = 40;
+			const fitting = "/workspace/project/src/modules/a-file.ts".slice(0, width);
+
+			it.each([
+				["a plain path", () => fitting, false],
+				// Four wide characters take eight columns, so the path takes exactly the width.
+				["a path of wide characters", () => "路径目录".repeat(width / 8), false],
+				["a styled path", () => theme.fg("accent", fitting), false],
+				["a path that the renderer locates as its header row", () => `${fitting}\nstock preview`, true],
+			] as const)(
+				"keeps %s of a failed call that just fits and shows the cue within the width",
+				(_name, text, located) => {
+					const callText = text();
+					const component = textCall("call-path", callText, located);
+					component.updateResult({ content: [{ type: "text", text: "no such file" }], isError: true });
+					const rows = component.render(width);
+					const firstLine = stripAnsi(callText.split("\n")[0]!);
+
+					expect({
+						cue: stripAnsi(headerRow(rows)).includes("Failed"),
+						kept: stripAnsi(rows.join("\n")).includes(firstLine),
+						widths: rows.every((row) => visibleWidth(row) <= width),
+					}).toEqual({ cue: true, kept: true, widths: true });
+				},
+			);
+
+			it("adds the cue to a located header row that has room, without a new row", () => {
+				const plain = textCall("call-room", "stock header\nstock preview", true);
+				plain.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+				const failed = textCall("call-room", "stock header\nstock preview", true);
+				failed.updateResult({ content: [{ type: "text", text: "done" }], isError: true });
+				const header = stripAnsi(headerRow(failed.render(width)));
+
+				expect([header.includes("stock header"), header.includes("Failed"), failed.render(width).length]).toEqual([
+					true,
+					true,
+					plain.render(width).length,
+				]);
+			});
+
+			it("keeps every row of a failed call within a width narrower than its cue", () => {
+				const component = textCall("call-narrow", "stock header");
+				component.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
+
+				expect(component.render(5).every((row) => visibleWidth(row) <= 5)).toBe(true);
+			});
+
+			it.each([30, 12])("keeps the failed count of a group with a long combined label at width %i", (groupWidth) => {
+				const group = new ToolGroupComponent({
+					groupId: "tool-group:call-a",
+					closed: false,
+					producerSessionId: "session-a",
+					renderScopeId: "scope-a",
+					semanticSelectorsV3: [() => () => controls],
+				});
+				for (const [index, toolName] of ["read", "bash", "edit", "write", "grep", "find"].entries()) {
+					const member = call(`call-${index}`);
+					member.updateResult({ content: [{ type: "text", text: "x" }], isError: index === 0 });
+					group.addTool(member, { toolName, toolCallId: `call-${index}` });
+				}
+				const header = headerRow(group.render(groupWidth));
+
+				expect([stripAnsi(header).trimEnd().endsWith("1 failed"), visibleWidth(header) <= groupWidth]).toEqual([
+					true,
+					true,
+				]);
+			});
+
 			it("counts the failed calls of a group once in its header, without cancelled calls", () => {
 				const group = new ToolGroupComponent({
 					groupId: "tool-group:call-a",

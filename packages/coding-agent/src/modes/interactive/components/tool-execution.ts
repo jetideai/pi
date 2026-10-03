@@ -394,23 +394,54 @@ export class ToolExecutionComponent extends Container {
 	 * not depend on the colors of a renderer, so a self-rendered call shows it too.
 	 */
 	private withOutcomeCue(lines: string[], width: number): string[] {
-		const outcome = this.outcome;
-		if (outcome !== "failed" && outcome !== "cancelled") return lines;
+		const cue = this.outcomeCue();
+		if (!cue) return lines;
 		const header = this.headerRowIndex();
 		const line = lines[header];
 		if (line === undefined) return lines;
-		const cue = outcome === "failed" ? theme.fg("error", " Failed") : theme.fg("warning", " Cancelled");
-		// Trailing padding is layout, not content: the cue follows the content of the row.
+		// Trailing padding is layout, not content: the cue follows the content of the row. The summary seam reserved its
+		// room; a header without room keeps all of its content and gets no cue.
 		const content = line.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
-		const room = Math.max(0, width - visibleWidth(cue));
+		if (visibleWidth(content) + visibleWidth(cue) > width) return lines;
 		const cued = [...lines];
-		cued[header] = `${visibleWidth(content) <= room ? content : truncateToWidth(content, room, "…")}${cue}`;
+		cued[header] = `${content}${cue}`;
 		return cued;
+	}
+
+	private outcomeCue(): string | undefined {
+		const outcome = this.outcome;
+		if (outcome === "failed") return theme.fg("error", " Failed");
+		if (outcome === "cancelled") return theme.fg("warning", " Cancelled");
+		return undefined;
+	}
+
+	/** The width that the header row keeps free for the outcome cue; none at a width that the cue does not fit. */
+	private reservedCueWidth(width: number): number {
+		const cue = this.outcomeCue();
+		const cueWidth = cue ? visibleWidth(cue) : 0;
+		return cueWidth > 0 && cueWidth < width ? cueWidth : 0;
+	}
+
+	/** True when the header row that the call renderer gives has room for [reserved] columns after its content. */
+	private ownHeaderRowHasRoom(callWidth: number, reserved: number): boolean {
+		const component = this.callRendererComponent ?? this.callPartComponent;
+		if (!component) return true;
+		try {
+			const rows = component.render(callWidth);
+			const located = this.getCallHeaderRowLocator()?.(component as never) ?? 0;
+			const row = rows[located] ?? "";
+			const content = row.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
+			return visibleWidth(content) + reserved <= callWidth;
+		} catch {
+			return true;
+		}
 	}
 
 	private decorateSemanticSections(lines: string[], width: number): string[] {
 		if (!this.rendersSemanticSections()) return lines;
-		const rows = this.locatedSemanticRows(width) ?? this.wholeCallSemanticRows(width);
+		// A summary row is the header: the located rows of the renderer are then body rows.
+		const rows =
+			(this.callSummary ? undefined : this.locatedSemanticRows(width)) ?? this.wholeCallSemanticRows(width);
 		if (!rows || rows.header >= lines.length) return lines;
 		// Without a body row the call is a plain range: the decorator context then has no foldable body.
 		return decorateMessageRenderV2(lines, rows.body, width, "tool", 0, {
@@ -549,17 +580,28 @@ export class ToolExecutionComponent extends Container {
 	 */
 	private callSummaryRow(width: number): string | undefined {
 		if (!this.rendersSemanticSections()) return undefined;
-		if (!this.hasRendererDefinition()) return this.contentText.summaryRow(width);
+		// A failed or cancelled call keeps room for its outcome cue: a first line that does not fit with it gets a summary,
+		// and its complete text follows in the body.
+		const reserved = this.reservedCueWidth(width);
+		if (!this.hasRendererDefinition()) return this.contentText.summaryRow(width - reserved);
 		const call = this.callPartComponent;
-		if (!call || call instanceof SectionedToolCallHeader || this.locatesOwnRows(width)) return undefined;
+		if (!call) return undefined;
 		const self = this.getRenderShell() === "self";
 		const callWidth = self ? width : Math.max(0, width - 2);
-		const summary =
-			call instanceof Text
-				? call.summaryRow(callWidth)
-				: call.render(callWidth).length > 0
-					? truncateToWidth(this.formatToolTitle(), callWidth, "…")
-					: undefined;
+		let summary: string | undefined;
+		if (call instanceof SectionedToolCallHeader || this.locatesOwnRows(width)) {
+			// The header row of the renderer keeps its place when it has room for the cue; otherwise the title summarizes
+			// it, and all rows of the call follow in the body.
+			if (reserved === 0 || this.ownHeaderRowHasRoom(callWidth, reserved)) return undefined;
+			summary = truncateToWidth(this.formatToolTitle(), callWidth - reserved, "…");
+		} else {
+			summary =
+				call instanceof Text
+					? call.summaryRow(callWidth - reserved)
+					: call.render(callWidth).length > 0
+						? truncateToWidth(this.formatToolTitle(), callWidth - reserved, "…")
+						: undefined;
+		}
 		if (summary === undefined || self) return summary;
 		const shell = new Box(1, 0, this.shellBgFn);
 		shell.addChild({ render: () => [summary], invalidate: () => {} });

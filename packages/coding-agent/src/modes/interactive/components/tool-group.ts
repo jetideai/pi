@@ -1,4 +1,4 @@
-import { Container, type TuiMouseEvent, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, type TuiMouseEvent, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundaryDecoratorV2,
 	MessageRenderBoundarySelectorV3,
@@ -114,15 +114,7 @@ export class ToolGroupComponent extends Container {
 				: 1;
 		const body = super.render(width);
 		if (!this.framed) return body;
-		// The failed calls of the group, from the outcome of each call; a cancelled call is no failure.
-		const failed = this.memberComponents.filter((member) => member.outcome === "failed").length;
-		const header = truncateToWidth(
-			`${" ".repeat(this.outputPad)}${theme.fg("muted", `$ ${toolGroupLabel(this.members)}`)}${
-				failed > 0 ? theme.fg("error", ` · ${failed} failed`) : ""
-			}`,
-			width,
-			"…",
-		);
+		const header = this.headerRow(width);
 		// The group owns one separator row before its header; each member renders its own before its call.
 		return decorateMessageRenderV2(["", header, ...body], 2, width, "tool-group", this.outputPad, {
 			beginRow: 1,
@@ -131,6 +123,21 @@ export class ToolGroupComponent extends Container {
 			decorators: this.semanticDecoratorsV2,
 			sourcePointRevision: revision,
 		});
+	}
+
+	/**
+	 * The header row: the action label, then the failed calls of the group, from the outcome of each call. A cancelled
+	 * call is no failure. The label gives way first, so a collapsed group shows its failures at every width.
+	 */
+	private headerRow(width: number): string {
+		const pad = " ".repeat(this.outputPad);
+		const label = `$ ${toolGroupLabel(this.members)}`;
+		const failed = this.memberComponents.filter((member) => member.outcome === "failed").length;
+		if (failed === 0) return truncateToWidth(`${pad}${theme.fg("muted", label)}`, width, "…");
+		const cue = ` · ${failed} failed`;
+		const room = width - visibleWidth(pad) - visibleWidth(cue);
+		if (room < 1) return truncateToWidth(theme.fg("error", `${failed} failed`), width, "…");
+		return `${pad}${theme.fg("muted", truncateToWidth(label, room, "…"))}${theme.fg("error", cue)}`;
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
