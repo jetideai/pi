@@ -283,6 +283,64 @@ function recordOscRows(terminal: VirtualTerminal): Array<[string, number]> {
 	return marks;
 }
 
+/** The buffer row of the cursor at each end of a synchronized block. */
+function recordSyncEndRows(terminal: VirtualTerminal): { ends: number[]; row: () => number } {
+	const xterm = (terminal as unknown as { xterm: XtermTerminalType }).xterm;
+	const row = () => xterm.buffer.active.baseY + xterm.buffer.active.cursorY;
+	const ends: number[] = [];
+	xterm.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+		if (params.includes(2026)) ends.push(row());
+		return false;
+	});
+	return { ends, row };
+}
+
+describe("TUI final cursor inside the synchronized block", () => {
+	// The production layout: the transcript, then the editor and the footer below it.
+	const transcript = (output: string) => ["header", output, "tail"];
+	for (const [name, editor, finalRow] of [
+		["the cursor of the focused component", `editor${CURSOR_MARKER}`, 3],
+		["the last content row without a cursor", "editor", 4],
+	] as const) {
+		for (const [path, before, after] of [
+			["a full render", undefined, [...transcript("output 1"), editor, "footer"]],
+			[
+				"a differential render",
+				[...transcript("output 1"), editor, "footer"],
+				[...transcript("output 2"), editor, "footer"],
+			],
+			[
+				"a render of deleted lines",
+				[...transcript("output 1"), editor, "footer", "status"],
+				[...transcript("output 1"), editor, "footer"],
+			],
+		] as const) {
+			it(`ends ${path} at ${name}`, async () => {
+				const terminal = new VirtualTerminal(40, 10);
+				const component = new TestComponent();
+				const tui: TUI = new TuiMainScreen(terminal);
+				tui.addChild(component);
+				if (before) {
+					component.lines = [...before];
+					tui.start();
+					await terminal.waitForRender();
+					await terminal.flush();
+				}
+				const rows = recordSyncEndRows(terminal);
+
+				component.lines = [...after];
+				if (before) tui.requestRender();
+				else tui.start();
+				await terminal.waitForRender();
+				await terminal.flush();
+
+				assert.deepEqual({ ends: rows.ends, final: rows.row() }, { ends: [finalRow], final: finalRow });
+				tui.stop();
+			});
+		}
+	}
+});
+
 describe("TUI Kitty image cleanup", () => {
 	it("clears reserved Kitty image rows before drawing appended image placements", async () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
