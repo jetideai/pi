@@ -339,6 +339,47 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		}).toEqual({ controls: [1, 1, 1], body: true });
 	});
 
+	it.each([
+		["the generic text of a tool without a definition", undefined],
+		[
+			"an owned result renderer",
+			{
+				...definition(),
+				renderShell: "default",
+				renderCall: () => new Text("owned header", 0, 0),
+				getRenderCallHeaderRow: undefined,
+				getRenderCallBodyRow: undefined,
+				renderResult: (result: { content: Array<{ type: string; text?: string }> }) =>
+					new Text(result.content.map((part) => part.text ?? "").join(""), 0, 0),
+			} as ToolDefinition,
+		],
+	] as const)("keeps the Fold body of a running call through an empty partial result: %s", (_name, toolDefinition) => {
+		const component = new ToolExecutionComponent(
+			"process",
+			"call-progress",
+			{ action: "list" },
+			{
+				ownerEntryId: "assistant-a",
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => controls],
+				toolExecutionPresentationSelectorsV1: [settledCanonicalOnly],
+			},
+			toolDefinition,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		const bodies = () => component.render(80).join("").split(controls.body).length - 1;
+		const states = [bodies()];
+		component.updateResult({ content: [], isError: false }, true);
+		states.push(bodies());
+		component.updateResult({ content: [{ type: "text", text: "first output" }], isError: false }, true);
+		states.push(bodies());
+
+		expect(states).toEqual([1, 1, 1]);
+	});
+
 	it("gives a running call the complete current partial output in the body of its Fold", () => {
 		const component = activeCall("call-running");
 		component.markExecutionStarted();

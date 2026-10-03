@@ -540,9 +540,16 @@ export class ToolExecutionComponent extends Container {
 		return this.semanticDecoratorsV2.length > 0 && (this.foldOwnsBody || !this.isPartial);
 	}
 
-	/** The working row of an active call without output: it is no tool output and no source of a point. */
+	/**
+	 * The working row of an active call whose result has no text or image yet, such as an empty progress update: it
+	 * keeps the body of the Fold, and it is no tool output and no source of a point.
+	 */
 	private workingRow(): string | undefined {
-		if (this.result || !this.isPartial || !this.foldOwnsBody || !this.rendersSemanticSections()) return undefined;
+		if (!this.isPartial || !this.foldOwnsBody || !this.rendersSemanticSections()) return undefined;
+		const output = this.result?.content.some(
+			(part) => (part.type === "text" && (part.text ?? "").length > 0) || part.type === "image",
+		);
+		if (output) return undefined;
 		return theme.fg("muted", this.executionStarted ? "Running…" : "Waiting to start…");
 	}
 
