@@ -1545,7 +1545,12 @@ describe("live Tool Group runs across responses", () => {
 		await run.end();
 		const kept = {
 			children: run.chatContainer.children.length,
-			published: run.projections.length - published,
+			// The Timeline still gets every member of the run, as members that the loaded window does not render.
+			runLoaded: [
+				...new Set(
+					run.projections.slice(published).flatMap((projection) => projection.members.map((m) => m.loaded)),
+				),
+			],
 			pending: run.mode.pendingTools.size,
 		};
 		Object.assign(run.mode, { loadedTranscript: undefined });
@@ -1557,7 +1562,7 @@ describe("live Tool Group runs across responses", () => {
 		renderSessionEntries.call(run.mode, run.sessionManager.buildTranscriptEntries());
 
 		expect({ kept, later: stripAnsi(run.chatContainer.render(100).join("\n")).includes("call-a done") }).toEqual({
-			kept: { children, published: 0, pending: 0 },
+			kept: { children, runLoaded: [false], pending: 0 },
 			later: true,
 		});
 	});

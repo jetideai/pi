@@ -549,6 +549,41 @@ describe("InteractiveMode transcript window", () => {
 		});
 	});
 
+	it("publishes the turn of an unsolicited run while an older section stays loaded", async () => {
+		const { runtimeHost, window, latest, text } = await createWindowedMode({
+			faux: (faux) => faux.setResponses([fauxAssistantMessage("background answer")]),
+		});
+		window(1);
+		const rows = () =>
+			latest()
+				.members.filter((member) => member.loaded !== false)
+				.map((member) => [member.entryId, member.role, member.section]);
+		const before = { text: text(), loaded: rows() };
+		const tailSection = Math.max(...latest().members.map((member) => member.section ?? -1));
+		const known = new Set(runtimeHost.session.sessionManager.getEntries().map((entry) => entry.id));
+
+		await runtimeHost.session.prompt("Background question");
+		const runIds = runtimeHost.session.sessionManager
+			.getEntries()
+			.filter((entry) => !known.has(entry.id) && entry.type === "message")
+			.map((entry) => entry.id);
+		await vi.waitFor(() => expect(latest().members.some((member) => member.entryId === runIds.at(-1))).toBe(true));
+
+		expect({
+			text: text(),
+			loaded: rows(),
+			run: latest()
+				.members.filter((member) => runIds.includes(member.entryId))
+				.map((member) => [member.role, member.loaded, member.section]),
+		}).toEqual({
+			...before,
+			run: [
+				["user", false, tailSection],
+				["assistant", false, tailSection],
+			],
+		});
+	});
+
 	it("returns to A with the same projection and chat content after B", async () => {
 		const { mode, window, latest, text } = await createWindowedMode();
 		window(1);

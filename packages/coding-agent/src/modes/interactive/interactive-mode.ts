@@ -2384,8 +2384,10 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Compose the live run with the one transcript rule. While the run is in view, publish its members after the members
-	 * before the run, and close each mounted group whose run ended. A group of the open run stays open across responses.
+	 * Compose the live run with the one transcript rule and publish its members after the members before the run. A
+	 * group of the open run stays open across responses. While an older loaded window is in view, the members are
+	 * published as not loaded, so the Timeline has every turn while the loaded rows stay the same. A mounted group whose
+	 * run ended closes.
 	 */
 	private publishLiveRun(
 		open: boolean,
@@ -2397,16 +2399,16 @@ export class InteractiveMode {
 			open,
 			this.hideThinkingBlock,
 		);
-		if (!run.groups) return compositions;
 		const runMembers = run.entries.flatMap((entry, index) =>
 			entry.member ? [entry.member] : (compositions[index]?.members ?? []),
 		);
-		this.messageRenderMembers = [...this.messageRenderMembers.slice(0, run.baseMemberCount), ...runMembers];
+		const published = run.groups ? runMembers : runMembers.map((member) => ({ ...member, loaded: false as const }));
+		this.messageRenderMembers = [...this.messageRenderMembers.slice(0, run.baseMemberCount), ...published];
 		if (this.getMessageRenderProjectionObserversV1().length > 0) {
 			this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", finalized);
 		}
 		for (const member of runMembers) {
-			if (member.role === "tool-group" && member.groupClosed) run.groups.get(member.groupId)?.close();
+			if (member.role === "tool-group" && member.groupClosed) run.groups?.get(member.groupId)?.close();
 		}
 		return compositions;
 	}
