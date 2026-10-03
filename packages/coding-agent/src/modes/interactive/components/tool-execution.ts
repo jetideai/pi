@@ -394,32 +394,35 @@ export class ToolExecutionComponent extends Container {
 	 * not depend on the colors of a renderer, so a self-rendered call shows it too.
 	 */
 	private withOutcomeCue(lines: string[], width: number): string[] {
-		const cue = this.outcomeCue();
-		if (!cue) return lines;
+		if (this.outcomeCues().length === 0) return lines;
 		const header = this.headerRowIndex();
 		const line = lines[header];
 		if (line === undefined) return lines;
 		// Trailing padding is layout, not content: the cue follows the content of the row. The summary seam reserved its
-		// room; a header without room keeps all of its content and gets no cue.
+		// room; the full cue goes where it fits, else the compact cue. A header without room keeps all of its content.
 		const content = line.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
-		if (visibleWidth(content) + visibleWidth(cue) > width) return lines;
+		const cue = this.outcomeCues().find((candidate) => visibleWidth(content) + visibleWidth(candidate) <= width);
+		if (!cue) return lines;
 		const cued = [...lines];
 		cued[header] = `${content}${cue}`;
 		return cued;
 	}
 
-	private outcomeCue(): string | undefined {
+	/** The theme cues of a failed or cancelled call, full first, then compact for a narrow row. */
+	private outcomeCues(): string[] {
 		const outcome = this.outcome;
-		if (outcome === "failed") return theme.fg("error", " Failed");
-		if (outcome === "cancelled") return theme.fg("warning", " Cancelled");
-		return undefined;
+		if (outcome === "failed") return [theme.fg("error", " Failed"), theme.fg("error", " ✗")];
+		if (outcome === "cancelled") return [theme.fg("warning", " Cancelled"), theme.fg("warning", " ⊘")];
+		return [];
 	}
 
-	/** The width that the header row keeps free for the outcome cue; none at a width that the cue does not fit. */
-	private reservedCueWidth(width: number): number {
-		const cue = this.outcomeCue();
-		const cueWidth = cue ? visibleWidth(cue) : 0;
-		return cueWidth > 0 && cueWidth < width ? cueWidth : 0;
+	/**
+	 * The columns that a header row of [room] columns keeps free for the outcome cue: the full cue where it leaves room
+	 * for content, else the compact cue, else none.
+	 */
+	private reservedCueWidth(room: number): number {
+		const cue = this.outcomeCues().find((candidate) => visibleWidth(candidate) < room);
+		return cue ? visibleWidth(cue) : 0;
 	}
 
 	/** True when the header row that the call renderer gives has room for [reserved] columns after its content. */
@@ -582,12 +585,12 @@ export class ToolExecutionComponent extends Container {
 		if (!this.rendersSemanticSections()) return undefined;
 		// A failed or cancelled call keeps room for its outcome cue: a first line that does not fit with it gets a summary,
 		// and its complete text follows in the body.
-		const reserved = this.reservedCueWidth(width);
-		if (!this.hasRendererDefinition()) return this.contentText.summaryRow(width - reserved);
+		if (!this.hasRendererDefinition()) return this.contentText.summaryRow(width - this.reservedCueWidth(width));
 		const call = this.callPartComponent;
 		if (!call) return undefined;
 		const self = this.getRenderShell() === "self";
 		const callWidth = self ? width : Math.max(0, width - 2);
+		const reserved = this.reservedCueWidth(callWidth);
 		let summary: string | undefined;
 		if (call instanceof SectionedToolCallHeader || this.locatesOwnRows(width)) {
 			// The header row of the renderer keeps its place when it has room for the cue; otherwise the title summarizes

@@ -1566,11 +1566,57 @@ describe("Tool Call and Tool Group outcomes", () => {
 				]);
 			});
 
-			it("keeps every row of a failed call within a width narrower than its cue", () => {
-				const component = textCall("call-narrow", "stock header");
+			// The compact cue needs two columns after one column of content. The padded stock shell uses two more columns, so
+			// it shows a cue from a width of five columns; a self-rendered call and the generic text show it from three.
+			it.each([3, 4, 5, 6, 7, 8, 9, 10, 12])(
+				"keeps a failed and a cancelled call identifiable within every row at width %i",
+				(narrow) => {
+					const shells: (ToolDefinition | undefined)[] = [
+						undefined,
+						{ ...definition(), renderCall: () => new Text("stock header", 0, 0) } as ToolDefinition,
+						...(narrow >= 5
+							? [
+									{
+										...definition(),
+										renderShell: "default",
+										renderCall: () => new Text("stock header", 0, 0),
+										getRenderCallHeaderRow: undefined,
+										getRenderCallBodyRow: undefined,
+									} as ToolDefinition,
+								]
+							: []),
+					];
+					const cues = shells.flatMap((shell) => {
+						const failed = call("call-narrow", shell);
+						failed.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
+						const cancelled = call("call-narrow", shell);
+						cancelled.markCancelled("Operation aborted");
+						return [failed, cancelled].map((component) => {
+							const rows = component.render(narrow);
+							const header = stripAnsi(headerRow(rows));
+							return {
+								widths: rows.every((row) => visibleWidth(row) <= narrow),
+								cue: /Failed|✗|Cancelled|⊘/.test(header),
+							};
+						});
+					});
+
+					expect(cues.every((cue) => cue.widths && cue.cue)).toBe(true);
+				},
+			);
+
+			// At one column the stock Box itself renders two columns, with or without a cue.
+			it.each([2, 3, 4])("keeps every row of a failed call in a padded stock shell within width %i", (narrow) => {
+				const component = call("call-tiny", {
+					...definition(),
+					renderShell: "default",
+					renderCall: () => new Text("stock header", 0, 0),
+					getRenderCallHeaderRow: undefined,
+					getRenderCallBodyRow: undefined,
+				} as ToolDefinition);
 				component.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
 
-				expect(component.render(5).every((row) => visibleWidth(row) <= 5)).toBe(true);
+				expect(component.render(narrow).every((row) => visibleWidth(row) <= narrow)).toBe(true);
 			});
 
 			it.each([30, 12])("keeps the failed count of a group with a long combined label at width %i", (groupWidth) => {
