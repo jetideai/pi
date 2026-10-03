@@ -12,6 +12,7 @@ import type { ToolRenderers } from "../src/modes/interactive/components/tool-exe
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { UncommittedToolResults } from "../src/modes/interactive/uncommitted-tool-results.ts";
 
 function assistantMessage(text: string): AssistantMessage {
 	return {
@@ -44,13 +45,14 @@ describe("InteractiveMode message boundaries", () => {
 			ui: { requestRender: vi.fn() },
 			chatContainer,
 			pendingTools: new Map(),
+			uncommittedToolResults: new UncommittedToolResults(),
 			hideThinkingBlock: false,
 			hiddenThinkingLabel: "Thinking...",
 			outputPad: 1,
 			streamingComponent: undefined,
 			streamingMessage: undefined,
 			settingsManager: { getShowCacheMissNotices: () => false },
-			session: { retryAttempt: 0 },
+			session: { retryAttempt: 0, state: { pendingToolCalls: new Set<string>() } },
 			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 			getMarkdownTransformers: () => [],
 			getMessageRenderBoundaryDecoratorsV1: () => [
@@ -102,9 +104,10 @@ describe("InteractiveMode message boundaries", () => {
 		const chatContainer = new Container();
 		const mode = {
 			pendingTools: new Map(),
+			uncommittedToolResults: new UncommittedToolResults(),
 			settingsManager: { getShowCacheMissNotices: () => false },
 			sessionManager,
-			session: { modelRuntime: undefined, retryAttempt: 0 },
+			session: { modelRuntime: undefined, retryAttempt: 0, state: { pendingToolCalls: new Set<string>() } },
 			footer: { invalidate: vi.fn() },
 			ui: { requestRender: vi.fn() },
 			chatContainer,
@@ -188,13 +191,14 @@ describe("InteractiveMode message boundaries", () => {
 		const chatContainer = new Container();
 		const mode = {
 			pendingTools: new Map(),
+			uncommittedToolResults: new UncommittedToolResults(),
 			settingsManager: {
 				getShowCacheMissNotices: () => false,
 				getShowImages: () => false,
 				getImageWidthCells: () => 80,
 			},
 			sessionManager: { getSessionId: () => "session-a", getCwd: () => process.cwd() },
-			session: { modelRuntime: undefined, retryAttempt: 0 },
+			session: { modelRuntime: undefined, retryAttempt: 0, state: { pendingToolCalls: new Set<string>() } },
 			footer: { invalidate: vi.fn() },
 			ui: { requestRender: vi.fn() },
 			chatContainer,
@@ -275,6 +279,7 @@ describe("InteractiveMode message boundaries", () => {
 			ui: { requestRender: vi.fn() },
 			chatContainer,
 			pendingTools: new Map(),
+			uncommittedToolResults: new UncommittedToolResults(),
 			hideThinkingBlock: false,
 			hiddenThinkingLabel: "Thinking...",
 			outputPad: 1,
@@ -285,7 +290,7 @@ describe("InteractiveMode message boundaries", () => {
 			semanticStreamingContainer: undefined,
 			messageRenderMembers: undefined,
 			semanticStreamingBaseMemberCount: 0,
-			session: { retryAttempt: 0 },
+			session: { retryAttempt: 0, state: { pendingToolCalls: new Set<string>() } },
 			sessionManager: { getSessionId: () => "session-a", getCwd: () => process.cwd() },
 			settingsManager: {
 				getShowImages: () => false,

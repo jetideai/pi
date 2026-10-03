@@ -11,6 +11,7 @@ import { ToolExecutionComponent } from "../src/modes/interactive/components/tool
 import { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { UncommittedToolResults } from "../src/modes/interactive/uncommitted-tool-results.ts";
 import {
 	createSyntheticLongTranscript,
 	SYNTHETIC_ENTRY_COUNT,
@@ -37,6 +38,7 @@ function restoreComponentTree(semantic: boolean): Container {
 		ui: { requestRender() {} } as TUI,
 		chatContainer: new Container(),
 		pendingTools: new Map(),
+		uncommittedToolResults: new UncommittedToolResults(),
 		messageRenderMembers: [],
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "benchmark-test-scope",
@@ -51,6 +53,7 @@ function restoreComponentTree(semantic: boolean): Container {
 		sessionManager,
 		session: {
 			retryAttempt: 0,
+			state: { pendingToolCalls: new Set<string>() },
 			modelRuntime: undefined,
 			getToolDefinition: () => undefined,
 			extensionRunner: {},

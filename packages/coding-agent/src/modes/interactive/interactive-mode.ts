@@ -228,6 +228,7 @@ import {
 	type TranscriptWindowTarget,
 } from "./transcript-window.ts";
 import { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
+import { toolCallOutcome, UncommittedToolResults } from "./uncommitted-tool-results.ts";
 
 export { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
 
@@ -630,6 +631,8 @@ export class InteractiveMode {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
+	/** The results that the execution events carry before the history commits them; components start from them. */
+	private readonly uncommittedToolResults = new UncommittedToolResults();
 	private semanticStreamingContainer: Container | undefined;
 	private semanticStreamingBaseMemberCount = 0;
 	private messageRenderMembers: MessageRenderProjectionMemberV1[] = [];
@@ -2402,8 +2405,16 @@ export class InteractiveMode {
 			this.sessionManager.getCwd(),
 		);
 		component.setExpanded(this.toolOutputExpanded);
+		this.seedToolExecution(component, content.id);
 		this.pendingTools.set(content.id, component);
 		return component;
+	}
+
+	/** Give a new component of a call the execution state that the session and the uncommitted results have now. */
+	private seedToolExecution(component: ToolExecutionComponent, toolCallId: string): void {
+		if (this.session.state.pendingToolCalls.has(toolCallId)) component.markExecutionStarted();
+		const uncommitted = this.uncommittedToolResults.get(toolCallId);
+		if (uncommitted) component.updateResult(uncommitted.result, uncommitted.partial);
 	}
 
 	/**
@@ -4155,6 +4166,8 @@ export class InteractiveMode {
 				break;
 
 			case "message_end":
+				// The agent session persisted the message before this event: the history has the result now.
+				if (event.message.role === "toolResult") this.uncommittedToolResults.commit(event.message.toolCallId);
 				if (event.message.role === "user") break;
 				if (this.semanticStreamingContainer && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
@@ -4180,7 +4193,7 @@ export class InteractiveMode {
 						event.message,
 						false,
 					);
-					if (event.message.stopReason === "aborted" || event.message.stopReason === "error") {
+					if (toolCallOutcome(event.message, undefined) === "cancelled") {
 						const errorMessage =
 							event.message.errorMessage ||
 							(event.message.stopReason === "aborted" ? "Operation aborted" : "Error");
@@ -4282,6 +4295,7 @@ export class InteractiveMode {
 			}
 
 			case "tool_execution_update": {
+				this.uncommittedToolResults.update(event.toolCallId, event.partialResult);
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
 					component.updateResult({ ...event.partialResult, isError: false }, true);
@@ -4291,6 +4305,7 @@ export class InteractiveMode {
 			}
 
 			case "tool_execution_end": {
+				this.uncommittedToolResults.end(event.toolCallId, event.result, event.isError);
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
 					component.updateResult({ ...event.result, isError: event.isError });
@@ -4305,6 +4320,7 @@ export class InteractiveMode {
 					this.ui.terminal.setProgress(false);
 				}
 				this.clearStatusIndicator("working");
+				this.uncommittedToolResults.endRun();
 				if (this.streamingComponent) {
 					this.chatContainer.removeChild(this.streamingComponent);
 					this.streamingComponent = undefined;
@@ -4755,7 +4771,8 @@ export class InteractiveMode {
 						if (content.type !== "toolCall") continue;
 						const component = this.pendingTools.get(content.id);
 						if (!component) continue;
-						if (message.stopReason === "aborted" || message.stopReason === "error") {
+						// The cancelled call keeps the stock error view until its own cue is decided.
+						if (toolCallOutcome(message, undefined) === "cancelled") {
 							const errorMessage =
 								message.errorMessage || (message.stopReason === "aborted" ? "Operation aborted" : "Error");
 							component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
@@ -4796,7 +4813,7 @@ export class InteractiveMode {
 							component.setExpanded(this.toolOutputExpanded);
 							(semanticParent ?? this.chatContainer).addChild(component);
 
-							if (message.stopReason === "aborted" || message.stopReason === "error") {
+							if (toolCallOutcome(message, undefined) === "cancelled") {
 								let errorMessage: string;
 								if (message.stopReason === "aborted") {
 									const retryAttempt = this.session.retryAttempt;
@@ -4809,6 +4826,7 @@ export class InteractiveMode {
 								}
 								component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
 							} else {
+								this.seedToolExecution(component, content.id);
 								renderedPendingTools.set(content.id, component);
 							}
 						}

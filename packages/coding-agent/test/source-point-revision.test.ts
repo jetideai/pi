@@ -16,6 +16,7 @@ import { ToolExecutionComponent } from "../src/modes/interactive/components/tool
 import { ToolGroupMemberComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { UncommittedToolResults } from "../src/modes/interactive/uncommitted-tool-results.ts";
 import { createSyntheticLongTranscript } from "./helpers/synthetic-long-transcript.ts";
 
 class RecordingTerminal extends VirtualTerminal implements Terminal {
@@ -120,6 +121,7 @@ function harness(options: { bashTools?: boolean; singleTools?: boolean; toolOutp
 		ui: tui,
 		chatContainer: new Container(),
 		pendingTools: new Map(),
+		uncommittedToolResults: new UncommittedToolResults(),
 		messageRenderMembers: [],
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "revision-scope",
@@ -135,7 +137,13 @@ function harness(options: { bashTools?: boolean; singleTools?: boolean; toolOutp
 		streamingMessage: undefined,
 		semanticStreamingContainer: undefined,
 		sessionManager,
-		session: { retryAttempt: 0, modelRuntime: undefined, getToolDefinition: () => undefined, extensionRunner: {} },
+		session: {
+			retryAttempt: 0,
+			modelRuntime: undefined,
+			getToolDefinition: () => undefined,
+			extensionRunner: {},
+			state: { pendingToolCalls: new Set<string>() },
+		},
 		settingsManager: {
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,

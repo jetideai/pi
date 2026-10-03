@@ -21,6 +21,7 @@ import type { CustomMessage } from "../src/core/messages.ts";
 import { SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE, SessionManager } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { UncommittedToolResults } from "../src/modes/interactive/uncommitted-tool-results.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
@@ -83,6 +84,7 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 		ui: { requestRender: vi.fn() } as unknown as TUI,
 		chatContainer,
 		pendingTools: new Map(),
+		uncommittedToolResults: new UncommittedToolResults(),
 		messageRenderMembers: [],
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "scope-a",
@@ -95,7 +97,12 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 		streamingMessage: undefined,
 		semanticStreamingContainer: undefined,
 		sessionManager,
-		session: { retryAttempt: 0, modelRuntime: undefined, extensionRunner },
+		session: {
+			retryAttempt: 0,
+			modelRuntime: undefined,
+			extensionRunner,
+			state: { pendingToolCalls: new Set<string>() },
+		},
 		settingsManager: {
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
@@ -1204,5 +1211,118 @@ describe("live Tool Group composition across assistant responses", () => {
 		const settled = chatContainer.render(100);
 
 		expect([count(active, markers.begin), count(settled, markers.begin)]).toEqual([0, 1]);
+	});
+});
+
+describe("Tool Call execution results across a rebuild", () => {
+	beforeAll(() => initTheme("dark"));
+
+	/** A live run of one call: the response ends, then the call executes; the harness plays the agent state. */
+	async function executingCall() {
+		const sessionManager = SessionManager.inMemory();
+		const harness = modeHarness(sessionManager);
+		const { mode, chatContainer } = harness;
+		// A tool without a definition in the stock presentation renders the text of its partial and final results.
+		Object.assign(mode, {
+			getToolExecutionPresentationSelectorsV1: () => [],
+			getRegisteredToolDefinition: () => undefined,
+			settingsManager: { ...mode.settingsManager, getShowTerminalProgress: () => false },
+			clearStatusIndicator: vi.fn(),
+		});
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		const userId = sessionManager.appendMessage(user);
+		await handleEvent.call(mode, { type: "message_start", message: user, entryId: userId });
+		const message = assistant([toolCall("call-a")], "toolUse");
+		const entryId = sessionManager.appendMessage(message);
+		await handleEvent.call(mode, { type: "message_start", message: assistant([], "pending"), entryId });
+		await handleEvent.call(mode, { type: "message_end", message, entryId });
+		mode.session.state.pendingToolCalls.add("call-a");
+		await handleEvent.call(mode, {
+			type: "tool_execution_start",
+			toolCallId: "call-a",
+			toolName: "process",
+			args: {},
+		});
+		const update = (text: string) =>
+			handleEvent.call(mode, {
+				type: "tool_execution_update",
+				toolCallId: "call-a",
+				toolName: "process",
+				args: {},
+				partialResult: { content: [{ type: "text", text }] },
+			});
+		const end = async (text: string, isError: boolean) => {
+			mode.session.state.pendingToolCalls.delete("call-a");
+			await handleEvent.call(mode, {
+				type: "tool_execution_end",
+				toolCallId: "call-a",
+				toolName: "process",
+				result: { content: [{ type: "text", text }] },
+				isError,
+			});
+		};
+		/** The agent session persists the result before the event reaches the interactive mode. */
+		const commit = async (text: string, isError: boolean) => {
+			const result: ToolResultMessage = { ...savedToolResult("call-a", "process", text), isError };
+			const resultId = sessionManager.appendMessage(result);
+			await handleEvent.call(mode, { type: "message_start", message: result, entryId: resultId });
+			await handleEvent.call(mode, { type: "message_end", message: result, entryId: resultId });
+		};
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		/** Rebuild the chat from the history, as a window change does, and give its text. */
+		const rebuild = () => {
+			chatContainer.clear();
+			renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+			return stripAnsi(chatContainer.render(100).join("\n"));
+		};
+		const text = () => stripAnsi(chatContainer.render(100).join("\n"));
+		return { mode, handleEvent, update, end, commit, rebuild, text };
+	}
+
+	it("rebuilds an active call with its latest partial output and keeps later updates", async () => {
+		const run = await executingCall();
+		await run.update("partial one");
+
+		const rebuilt = run.rebuild();
+		await run.update("partial two");
+
+		expect([rebuilt.includes("partial one"), run.text().includes("partial two")]).toEqual([true, true]);
+	});
+
+	it("rebuilds an ended call with its final result before the history commits it", async () => {
+		const run = await executingCall();
+		await run.update("partial one");
+		await run.end("final result", false);
+
+		expect(run.rebuild()).toContain("final result");
+	});
+
+	it("does not bring back the partial output of a call that never ended after the end of the run", async () => {
+		const run = await executingCall();
+		await run.update("partial one");
+		run.mode.session.state.pendingToolCalls.delete("call-a");
+		await run.handleEvent.call(run.mode, { type: "agent_end", messages: [], willRetry: false });
+
+		expect(run.rebuild()).not.toContain("partial one");
+	});
+
+	it("gives an off-window call its committed error after the end of the run", async () => {
+		const run = await executingCall();
+		await run.update("partial one");
+		// The window no longer shows the call: no component receives its end.
+		run.mode.chatContainer.clear();
+		run.mode.pendingTools.clear();
+		await run.end("tool failed", true);
+		await run.commit("tool failed", true);
+		const afterCommit = run.mode.uncommittedToolResults.get("call-a");
+		await run.handleEvent.call(run.mode, { type: "agent_end", messages: [], willRetry: false });
+
+		expect([afterCommit, run.rebuild().includes("tool failed")]).toEqual([undefined, true]);
 	});
 });
