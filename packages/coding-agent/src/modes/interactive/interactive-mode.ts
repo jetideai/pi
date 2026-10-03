@@ -310,6 +310,16 @@ interface LiveToolRun {
 	entries: { item: ToolGroupRunItem; member?: MessageRenderProjectionMemberV1 }[];
 	/** The mounted Tool Groups of the run; undefined while an older loaded window keeps the run out of view. */
 	groups: Map<string, ToolGroupComponent> | undefined;
+	/** The response that streams now; the history gets it, and its calls, only at its end. */
+	streamingEntryId?: string;
+}
+
+/**
+ * A response while it streams, without its calls. A call joins its group once, at the commit of its response, when
+ * every entry that the history places before the response is known; until then only the working indicator shows.
+ */
+function withoutToolCalls(message: AssistantMessage): AssistantMessage {
+	return { ...message, content: message.content.filter((content) => content.type !== "toolCall") };
 }
 type RenderSessionItem =
 	| AgentMessage
@@ -2407,7 +2417,7 @@ export class InteractiveMode {
 		if (!run) return;
 		const item: ToolGroupRunItem = { type: visible ? "boundary" : "transparent" };
 		const streaming = run.entries.findIndex(
-			(entry) => entry.item.type === "response" && entry.item.message === this.streamingMessage,
+			(entry) => entry.item.type === "response" && entry.item.entryId === run.streamingEntryId,
 		);
 		if (streaming >= 0) run.entries.splice(streaming, 0, { item });
 		else run.entries.push({ item });
@@ -2461,11 +2471,11 @@ export class InteractiveMode {
 			.find((entryId) => entryId !== undefined);
 		const base = firstEntryId ? this.messageRenderMembers.findIndex((member) => member.entryId === firstEntryId) : -1;
 		run.baseMemberCount = base >= 0 ? base : this.messageRenderMembers.length;
-		const streaming = this.streamingMessage;
-		const responses = run.entries.flatMap((entry, at) => (entry.item.type === "response" ? [at] : []));
-		const index = responses.at(-1) ?? -1;
+		const index = run.entries.findIndex(
+			(entry) => entry.item.type === "response" && entry.item.entryId === run.streamingEntryId,
+		);
 		const item = run.entries[index]?.item;
-		if (!streaming || item?.type !== "response" || item.message !== streaming) {
+		if (item?.type !== "response") {
 			this.publishLiveRun(true);
 			return;
 		}
@@ -2474,7 +2484,7 @@ export class InteractiveMode {
 			this.chatContainer.addChild(container);
 			this.semanticStreamingContainer = container;
 			const compositions = this.publishLiveRun(true);
-			this.renderSemanticAssistantResponse(container, item.entryId, streaming, true, compositions[index], groups);
+			this.renderSemanticAssistantResponse(container, item.entryId, item.message, true, compositions[index], groups);
 		} else {
 			this.publishLiveRun(true);
 			if (this.streamingComponent) this.chatContainer.addChild(this.streamingComponent);
@@ -4236,7 +4246,12 @@ export class InteractiveMode {
 					this.streamingMessage = event.message;
 					if (!this.liveRun) this.startLiveRun();
 					const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
-					const index = this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					this.liveRun!.streamingEntryId = event.entryId;
+					const index = this.setLiveRunItem({
+						type: "response",
+						entryId: event.entryId,
+						message: withoutToolCalls(event.message),
+					});
 					const compositions = this.publishLiveRun(true);
 					if (!this.liveRunMounted()) {
 						// An older loaded window stays in view; the history shows the response when the tail loads.
@@ -4276,12 +4291,13 @@ export class InteractiveMode {
 			case "message_update":
 				if (this.semanticStreamingContainer && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					const index = this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					const draft = withoutToolCalls(event.message);
+					const index = this.setLiveRunItem({ type: "response", entryId: event.entryId, message: draft });
 					const compositions = this.publishLiveRun(true);
 					this.renderSemanticAssistantResponse(
 						this.semanticStreamingContainer,
 						event.entryId,
-						event.message,
+						draft,
 						true,
 						compositions[index],
 						this.liveRun!.groups,
@@ -4290,7 +4306,11 @@ export class InteractiveMode {
 				} else if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
-					this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					this.setLiveRunItem({
+						type: "response",
+						entryId: event.entryId,
+						message: withoutToolCalls(event.message),
+					});
 					this.publishLiveRun(true);
 
 					for (const content of this.streamingMessage.content) {
@@ -4328,7 +4348,11 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant" && this.liveRun) {
 					this.streamingMessage = event.message;
-					this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					this.setLiveRunItem({
+						type: "response",
+						entryId: event.entryId,
+						message: withoutToolCalls(event.message),
+					});
 					this.publishLiveRun(true);
 				}
 				break;
@@ -4337,6 +4361,8 @@ export class InteractiveMode {
 				// The agent session persisted the message before this event: the history has the result now.
 				if (event.message.role === "toolResult") this.uncommittedToolResults.commit(event.message.toolCallId);
 				if (event.message.role === "user") break;
+				// The history has the response now: its calls join their groups once, in the final boundary order.
+				if (event.message.role === "assistant" && this.liveRun) this.liveRun.streamingEntryId = undefined;
 				if (this.semanticStreamingContainer && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					// The end of a response does not end its run: a later tool-only response can join the open group.

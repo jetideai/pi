@@ -21,7 +21,7 @@ import type { CustomMessage } from "../src/core/messages.ts";
 import { SEMANTIC_TURN_SETTLEMENT_CUSTOM_TYPE, SessionManager } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { UncommittedToolResults } from "../src/modes/interactive/uncommitted-tool-results.ts";
+import { toolCallOutcome, UncommittedToolResults } from "../src/modes/interactive/uncommitted-tool-results.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
@@ -1465,7 +1465,7 @@ describe("live Tool Group runs across responses", () => {
 		await run.start();
 		await run.stream([toolCall("call-a")]);
 		await run.execute("call-a");
-		await run.stream([{ type: "text", text: "Профиль сохранён." }, toolCall("call-b")], false);
+		await run.stream([{ type: "text", text: "Профиль сохранён." }, toolCall("call-b")]);
 		const groups = run.projections.at(-1)!.members.filter((member) => member.role === "tool-group");
 
 		expect(groups.map((group) => [group.entryId, closedOf(group)])).toEqual([
@@ -1532,6 +1532,115 @@ describe("live Tool Group runs across responses", () => {
 				.members.filter((member) => member.role === "tool")
 				.map(groupOf),
 		).toEqual(["tool-group:call-a", "tool-group:call-b"]);
+	});
+
+	it("joins a call once at its response commit after a visible entry that arrived while its arguments streamed", async () => {
+		const run = liveAgentRun(true);
+		const extensionRunner = { getEntryRenderer: () => () => new Text("[progress]", 0, 0) };
+		Object.assign(run.mode.session, { extensionRunner });
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		const content: AssistantMessage["content"] = [thinking("plan b"), toolCall("call-b")];
+		const message = assistant(content, "toolUse");
+		// The agent session reserves the entry ID of a response that starts before its persistence.
+		const entryId = run.sessionManager.reserveEntryId();
+		const published = run.projections.length;
+		await run.emit({ type: "message_start", message: assistant([], "pending"), entryId });
+		await run.emit({ type: "message_update", message: assistant(content, "pending"), entryId });
+		const progress = run.sessionManager.appendCustomEntry("progress", { text: "[progress]" });
+		await run.emit({ type: "entry_appended", entry: run.sessionManager.getEntry(progress) });
+		// The agent session persists the response at its end, after the entry, before the event reaches the mode.
+		run.sessionManager.appendMessage(message, entryId);
+		await run.emit({ type: "message_end", message, entryId });
+		await run.execute("call-b");
+		await run.end();
+		const text = stripAnsi(run.chatContainer.render(100).join("\n"));
+		const final = run.projections.at(-1)!.members;
+		const calls = (members: readonly Member[]) => members.filter((member) => member.role === "tool").map(groupOf);
+
+		expect({
+			modes: [...new Set(run.projections.slice(published).map((projection) => projection.mode))],
+			live: calls(final),
+			restored: calls(restoredMembers(run.sessionManager, true, extensionRunner)),
+			shownCalls: text.split("process").length - 1,
+			progressBeforeB: text.indexOf("[progress]") < text.lastIndexOf("process"),
+		}).toEqual({
+			modes: ["append"],
+			live: ["tool-group:call-a", "tool-group:call-b"],
+			restored: ["tool-group:call-a", "tool-group:call-b"],
+			shownCalls: 2,
+			progressBeforeB: true,
+		});
+	});
+
+	it("shows no draft call while its arguments stream and keeps the visible prose of the response", async () => {
+		const run = liveAgentRun(true);
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		await run.stream([{ type: "text", text: "Checking the profile." }, toolCall("call-b")], false);
+		const text = stripAnsi(run.chatContainer.render(100).join("\n"));
+		const members = run.projections.at(-1)!.members;
+
+		expect({
+			prose: text.includes("Checking the profile."),
+			shownCalls: text.split("process").length - 1,
+			draft: members.filter((member) => member.entryId === "call-b" || member.entryId === "tool-group:call-b"),
+		}).toEqual({ prose: true, shownCalls: 1, draft: [] });
+	});
+
+	it("appends a committed call to the open group of a singleton without a change to the published members", async () => {
+		const run = liveAgentRun(true);
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		const before = run.projections.at(-1)!.members;
+		const published = run.projections.length;
+		await run.stream([thinking("plan b"), toolCall("call-b")]);
+		const after = run.projections.at(-1)!.members;
+
+		expect({
+			modes: [...new Set(run.projections.slice(published).map((projection) => projection.mode))],
+			prefix: identity(after.slice(0, before.length)),
+			joined: after
+				.filter((member) => member.entryId === "call-b")
+				.map((member) => [groupOf(member), orderOf(member)]),
+		}).toEqual({ modes: ["append"], prefix: identity(before), joined: [["tool-group:call-a", 1]] });
+	});
+
+	it("does not show a draft call after a rebuild while its arguments stream", async () => {
+		const run = liveAgentRun(true);
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		await run.stream([thinking("plan b"), toolCall("call-b")], false);
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof run.mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		run.chatContainer.clear();
+		renderSessionEntries.call(run.mode, run.sessionManager.buildTranscriptEntries());
+		const text = stripAnsi(run.chatContainer.render(100).join("\n"));
+
+		expect({
+			shownCalls: text.split("process").length - 1,
+			draft: run.projections.at(-1)!.members.filter((member) => member.entryId === "call-b"),
+		}).toEqual({ shownCalls: 1, draft: [] });
+	});
+
+	it("gives a call of an aborted response a cancelled outcome and no uncommitted failure result", async () => {
+		const run = liveAgentRun(true);
+		await run.start();
+		const message = assistant([toolCall("call-a")], "aborted");
+		const entryId = run.sessionManager.appendMessage(message);
+		await run.emit({ type: "message_start", message: assistant([], "pending"), entryId });
+		await run.emit({ type: "message_end", message, entryId });
+
+		expect([toolCallOutcome(message, undefined), run.mode.uncommittedToolResults.get("call-a")]).toEqual([
+			"cancelled",
+			undefined,
+		]);
 	});
 
 	it("keeps a live-only thinking dropped notice in its visible order, which a restore without it merges", async () => {
