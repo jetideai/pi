@@ -821,7 +821,7 @@ describe("InteractiveMode transcript window", () => {
 		it("opens one turn with two compactions at its last cut", async () => {
 			const { latest, journal, text } = await openWindowedSession(oneTurnWithTwoCompactions, declared);
 
-			expect(loadedEntries(latest())).toEqual([journal.third, "t4", journal.final]);
+			expect(loadedEntries(latest())).toEqual([journal.third, "tool-group:t4", "t4", journal.final]);
 			expect(latest()).toMatchObject({ liveTail: true });
 			expect(text()).toContain("path-t4");
 			expect(text()).toContain("Final answer");

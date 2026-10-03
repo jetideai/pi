@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
@@ -68,17 +69,52 @@ describe("assistant response composition", () => {
 		]);
 	});
 
-	it("keeps singleton, group, and child identities distinct and stable", () => {
-		const singleton = composeAssistantResponse("assistant-a", assistant([tool("tool-1")]), true);
-		const grouped = composeAssistantResponse("assistant-a", assistant([tool("tool-1"), tool("tool-2")]), true);
+	it("gives a streamed call its one-call group, which its second call joins as an append", () => {
+		const one = composeAssistantResponse("assistant-a", assistant([tool("tool-1")]), true);
+		const two = composeAssistantResponse("assistant-a", assistant([tool("tool-1"), tool("tool-2")]), true);
 
-		expect(singleton.members.slice(1)).toEqual([
-			{ entryId: "tool-1", blockId: "tool-1", role: "tool", ownerEntryId: "assistant-a" },
+		expect(one.members.slice(1)).toEqual([
+			{
+				entryId: "tool-group:tool-1",
+				blockId: "tool-group:tool-1",
+				role: "tool-group",
+				groupId: "tool-group:tool-1",
+				groupClosed: false,
+			},
+			{
+				entryId: "tool-1",
+				blockId: "tool-1",
+				role: "tool",
+				ownerEntryId: "assistant-a",
+				groupId: "tool-group:tool-1",
+				groupOrder: 0,
+			},
 		]);
-		expect(grouped.members[1]?.entryId).toBe("tool-group:tool-1");
-		expect(grouped.members[2]?.entryId).toBe("tool-1");
-		expect(grouped.members[2]?.blockId).toBe("tool-1");
-		expect(grouped.members[1]?.entryId).not.toBe(grouped.members[2]?.entryId);
+		// Each member keeps its identity and its group membership; the second call only appends.
+		expect(two.members.slice(0, one.members.length)).toEqual(one.members);
+		expect(two.members.at(-1)).toMatchObject({ entryId: "tool-2", groupId: "tool-group:tool-1", groupOrder: 1 });
+	});
+
+	it("changes only the closed fact of a group when its response settles", () => {
+		const message = assistant([tool("tool-1"), tool("tool-2")]);
+		const open = composeAssistantResponse("assistant-a", message, true).members;
+		const closed = composeAssistantResponse("assistant-a", message, false).members;
+		const group = {
+			entryId: "tool-group:tool-1",
+			blockId: "tool-group:tool-1",
+			role: "tool-group",
+			groupId: "tool-group:tool-1",
+		};
+
+		expect(closed).toHaveLength(open.length);
+		expect(
+			closed.flatMap((member, index) => (isDeepStrictEqual(member, open[index]) ? [] : [[open[index], member]])),
+		).toEqual([
+			[
+				{ ...group, groupClosed: false },
+				{ ...group, groupClosed: true },
+			],
+		]);
 	});
 
 	it("preserves visual and Tool Call order for live and restored composition", () => {
@@ -186,8 +222,8 @@ describe("transcript Tool Group runs", () => {
 		],
 	] as const)("stops a run at %s", (_name, items) => {
 		expect(callGroups(items as readonly ToolGroupRunItem[])).toEqual([
-			["tool-a", undefined, undefined],
-			["tool-b", undefined, undefined],
+			["tool-a", "tool-group:tool-a", 0],
+			["tool-b", "tool-group:tool-b", 0],
 		]);
 	});
 
@@ -201,13 +237,46 @@ describe("transcript Tool Group runs", () => {
 		expect(callGroups(items, false)).toEqual([
 			["tool-a", "tool-group:tool-a", 0],
 			["tool-b", "tool-group:tool-a", 1],
-			["tool-c", undefined, undefined],
+			["tool-c", "tool-group:tool-c", 0],
 		]);
 	});
 
-	it("gives a run of one call no group", () => {
+	it("gives a run of one call its own one-call group", () => {
 		expect(callGroups([response("assistant-a", [tool("tool-a")]), transparent])).toEqual([
-			["tool-a", undefined, undefined],
+			["tool-a", "tool-group:tool-a", 0],
 		]);
+	});
+
+	it("gives every call exactly one group, published before its first call", () => {
+		const members = composeTranscriptResponses(
+			[
+				response("assistant-a", [tool("tool-a")]),
+				{ type: "boundary" },
+				response("assistant-b", [tool("tool-b"), { type: "text", text: "prose" }, tool("tool-c")]),
+				response("assistant-c", [tool("tool-d")]),
+			],
+			false,
+			true,
+		).flatMap((composition) => composition?.members ?? []);
+		const groups = members.filter((member) => member.role === "tool-group").map((member) => member.groupId);
+
+		expect(groups).toEqual(["tool-group:tool-a", "tool-group:tool-b", "tool-group:tool-c"]);
+		for (const call of members.filter((member) => member.role === "tool")) {
+			const groupIndex = members.findIndex(
+				(member) => member.role === "tool-group" && member.groupId === call.groupId,
+			);
+			expect(groupIndex).toBeGreaterThanOrEqual(0);
+			expect(groupIndex).toBeLessThan(members.indexOf(call));
+		}
+	});
+
+	it("appends a call that joins a restored run without a change to the earlier members", () => {
+		const one = [response("assistant-a", [thinking("a"), tool("tool-a")])];
+		const two = [...one, transparent, response("assistant-b", [thinking("b"), tool("tool-b")])];
+		const members = (items: readonly ToolGroupRunItem[]) =>
+			composeTranscriptResponses(items, false, true).flatMap((composition) => composition?.members ?? []);
+
+		expect(members(two).slice(0, members(one).length)).toEqual(members(one));
+		expect(members(two).at(-1)).toMatchObject({ entryId: "tool-b", groupId: "tool-group:tool-a", groupOrder: 1 });
 	});
 });

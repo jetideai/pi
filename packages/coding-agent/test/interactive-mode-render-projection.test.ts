@@ -950,7 +950,7 @@ describe("restored Tool Group composition and separators", () => {
 	});
 
 	it.each([
-		["a displayed custom entry stops", true, [undefined, undefined]],
+		["a displayed custom entry stops", true, ["tool-group:call-a", "tool-group:call-b"]],
 		["a custom entry that renders nothing does not stop", false, ["tool-group:call-a", "tool-group:call-a"]],
 	] as const)("%s a restored run of tool-only responses", (_name, displayed, groups) => {
 		const sessionManager = SessionManager.inMemory();
@@ -1008,7 +1008,7 @@ describe("restored Tool Group composition and separators", () => {
 				.at(-1)!
 				.members.filter((member) => member.role === "tool")
 				.map((member) => ("groupId" in member ? member.groupId : undefined)),
-		).toEqual([undefined, undefined]);
+		).toEqual(["tool-group:call-a", "tool-group:call-b"]);
 	});
 
 	it("keeps visible thinking between tool-only responses as a group boundary", () => {
@@ -1021,8 +1021,8 @@ describe("restored Tool Group composition and separators", () => {
 		);
 
 		expect(members.filter((member) => member.role === "tool").map((member) => member.groupId)).toEqual([
-			undefined,
-			undefined,
+			"tool-group:call-a",
+			"tool-group:call-b",
 		]);
 	});
 
@@ -1033,8 +1033,8 @@ describe("restored Tool Group composition and separators", () => {
 		);
 
 		expect(members.filter((member) => member.role === "tool").map((member) => member.groupId)).toEqual([
-			undefined,
-			undefined,
+			"tool-group:call-a",
+			"tool-group:call-b",
 		]);
 	});
 
@@ -1135,7 +1135,10 @@ describe("live Tool Group composition across assistant responses", () => {
 		);
 		const tools = projections.at(-1)!.members.filter((member) => member.role === "tool");
 
-		expect(tools.map((member) => ("groupId" in member ? member.groupId : undefined))).toEqual([undefined, undefined]);
+		expect(tools.map((member) => ("groupId" in member ? member.groupId : undefined))).toEqual([
+			"tool-group:call-a",
+			"tool-group:call-b",
+		]);
 	});
 
 	it("renders the partial output of an active call without a range and adds the range when the call ends", async () => {

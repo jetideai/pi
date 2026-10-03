@@ -944,6 +944,22 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(group.render(80)).toEqual(child.render(80));
 	});
+
+	it("gives a closed one-call group the rows of its running call, with no group range or member separator", () => {
+		const child = tool("tool-only");
+		child.markExecutionStarted();
+		child.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:tool-only",
+			closed: true,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [() => () => controls],
+		});
+		group.addTool(child, { toolName: "custom_tool", toolCallId: "tool-only" });
+
+		expect(group.render(80)).toEqual(child.render(80));
+	});
 });
 
 /** A completed call of a tool without a definition, with a result. */

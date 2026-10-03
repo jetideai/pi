@@ -91,9 +91,17 @@ export class ToolGroupComponent extends Container {
 
 	/** Each member keeps its own Tool Call range and source points inside the range of the group. */
 	addTool(component: ToolExecutionComponent, member: ToolGroupMemberV1): void {
-		this.addChild(this.semanticDecoratorsV2.length > 0 ? new ToolGroupMemberComponent(component) : component);
 		this.members.push(member);
 		this.memberComponents.push(component);
+		this.clear();
+		for (const memberComponent of this.memberComponents) {
+			this.addChild(this.framed ? new ToolGroupMemberComponent(memberComponent) : memberComponent);
+		}
+	}
+
+	/** A closed group of two or more calls shows its header and its range; a group of one call shows only its call. */
+	private get framed(): boolean {
+		return this.closed && this.members.length >= 2 && this.semanticDecoratorsV2.length > 0;
 	}
 
 	/** Expand or collapse the output of every member Tool Call. */
@@ -115,7 +123,7 @@ export class ToolGroupComponent extends Container {
 					) ?? 1)
 				: 1;
 		const body = super.render(width);
-		if (!this.closed || this.members.length < 2 || this.semanticDecoratorsV2.length === 0) return body;
+		if (!this.framed) return body;
 		const header = truncateToWidth(
 			`${" ".repeat(this.outputPad)}${theme.fg("muted", `$ ${toolGroupLabel(this.members)}`)}`,
 			width,
@@ -132,9 +140,7 @@ export class ToolGroupComponent extends Container {
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-		if (!this.closed || this.members.length < 2 || this.semanticDecoratorsV2.length === 0) {
-			return super.handleMouse(event);
-		}
+		if (!this.framed) return super.handleMouse(event);
 		if (event.y < 2) return undefined;
 		return super.handleMouse({ ...event, y: event.y - 2, height: event.height - 2 });
 	}

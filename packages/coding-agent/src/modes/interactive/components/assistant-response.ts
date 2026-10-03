@@ -25,11 +25,12 @@ export type ToolGroupRunItem = (
 };
 
 /**
- * Compose the assistant responses of one transcript segment. A Tool Group is the maximal run of two or more Tool Calls
- * with no visible assistant atom, boundary item or cut between them. Hidden settled thinking, empty text and
- * transparent items do not stop a run. The group ID comes from the first call, so it stays the same while the run
- * grows. Each call keeps the response that owns it; the group has no owner. Returns one composition for each response
- * item and undefined for the other items.
+ * Compose the assistant responses of one transcript segment. A Tool Group is the maximal nonempty run of Tool Calls
+ * with no visible assistant atom, boundary item or cut between them, so each call is in exactly one group. Hidden
+ * settled thinking, empty text and transparent items do not stop a run. The group ID comes from the first call, and the
+ * group member comes before that call, so a call that joins the run is an append. Each call keeps the response that
+ * owns it; the group has no owner. Only a group with two or more calls shows a group header and Fold. Returns one
+ * composition for each response item and undefined for the other items.
  */
 export function composeTranscriptResponses(
 	items: readonly ToolGroupRunItem[],
@@ -61,9 +62,8 @@ export function composeTranscriptResponses(
 		}
 	}
 	for (const toolAtoms of runs) {
-		const calls = toolAtoms.flatMap((atom) => atom.calls);
-		if (calls.length < 2) continue;
-		for (const atom of toolAtoms) atom.groupId = `tool-group:${calls[0]!.id}`;
+		const groupId = `tool-group:${toolAtoms[0]!.calls[0]!.id}`;
+		for (const atom of toolAtoms) atom.groupId = groupId;
 	}
 
 	const nextOrder = new Map<string, number>();
@@ -76,11 +76,7 @@ export function composeTranscriptResponses(
 		for (const atom of atoms) {
 			if (atom.type !== "tools") continue;
 			for (const call of atom.calls) {
-				const groupId = atom.groupId;
-				if (!groupId) {
-					members.push({ entryId: call.id, blockId: call.id, role: "tool", ownerEntryId: item.entryId });
-					continue;
-				}
+				const groupId = atom.groupId!;
 				const groupOrder = nextOrder.get(groupId) ?? 0;
 				if (groupOrder === 0) {
 					members.push({

@@ -133,8 +133,9 @@ describe("long-transcript benchmark evidence", () => {
 		});
 		expect(observe(restoreComponentTree(true))).toEqual({
 			toolExecutionComponents: SYNTHETIC_TOOL_CALL_COUNT,
-			toolGroupComponents: SYNTHETIC_GROUP_COUNT,
-			directToolExecutionComponents: SYNTHETIC_SINGLETON_COUNT,
+			// Each call is in one Tool Group; a group of one call shows only its call.
+			toolGroupComponents: SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT,
+			directToolExecutionComponents: 0,
 		});
 	});
 });

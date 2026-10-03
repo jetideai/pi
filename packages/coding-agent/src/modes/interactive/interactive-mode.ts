@@ -2431,14 +2431,11 @@ export class InteractiveMode {
 				continue;
 			}
 			const components = atom.calls.map((call) => this.createSemanticToolComponent(call, entryId));
-			if (!atom.groupId) {
-				for (const component of components) container.addChild(component);
-				continue;
-			}
-			let group = groups.get(atom.groupId);
+			const groupId = atom.groupId!;
+			let group = groups.get(groupId);
 			if (!group) {
 				group = new ToolGroupComponent({
-					groupId: atom.groupId,
+					groupId,
 					closed: !streaming,
 					outputPad: this.outputPad,
 					producerSessionId: this.sessionManager.getSessionId(),
@@ -2446,7 +2443,7 @@ export class InteractiveMode {
 					semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
 					sourcePointRevisions: this.sourcePointRevisions,
 				});
-				groups.set(atom.groupId, group);
+				groups.set(groupId, group);
 				container.addChild(group);
 			}
 			for (const [index, component] of components.entries()) {
