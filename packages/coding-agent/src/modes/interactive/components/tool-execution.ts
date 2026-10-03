@@ -12,6 +12,7 @@ import {
 	type TUI,
 	type TuiMouseEvent,
 	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundaryDecoratorV2,
@@ -95,6 +96,8 @@ export class ToolExecutionComponent extends Container {
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private isPartial = true;
+	/** The call never ran: its response was aborted or failed before execution. */
+	private cancelled = false;
 	private toolDefinition?: ToolRenderers;
 	private ui: TUI;
 	private cwd: string;
@@ -351,7 +354,58 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): string[] {
 		if (this.hideComponent) return [];
-		return this.decorateSemanticSections(this.renderStock(width), width);
+		return this.decorateSemanticSections(this.withOutcomeCue(this.renderStock(width), width), width);
+	}
+
+	/** The outcome of the call: active until its result settles; a call that never ran is cancelled, not failed. */
+	get outcome(): "active" | "success" | "failed" | "cancelled" {
+		if (this.cancelled) return "cancelled";
+		if (this.isPartial) return "active";
+		return this.result?.isError ? "failed" : "success";
+	}
+
+	/**
+	 * The header row of the stock rows that the last render gave, without another render: the first content row, or the
+	 * header row that the call renderer locates in its rendered component. A summary row is the header row.
+	 */
+	private headerRowIndex(): number {
+		const offset = this.hasRendererDefinition() && this.getRenderShell() === "self" ? 1 : this.contentStartRow();
+		const component = this.callRendererComponent;
+		const locator = this.getCallHeaderRowLocator();
+		if (component && locator && !this.callSummary) {
+			try {
+				const row = locator(component);
+				if (row !== undefined && row >= 0) return offset + row;
+			} catch {}
+		}
+		return offset;
+	}
+
+	/** The call never ran, because its response was aborted or failed: [reason] is the detail of its body. */
+	markCancelled(reason: string): void {
+		this.cancelled = true;
+		this.result = { content: [{ type: "text", text: reason }], isError: false };
+		this.isPartial = false;
+		this.updateDisplay();
+	}
+
+	/**
+	 * The theme cue of a failed or cancelled call at the end of its header row, which a collapsed Fold shows. It does
+	 * not depend on the colors of a renderer, so a self-rendered call shows it too.
+	 */
+	private withOutcomeCue(lines: string[], width: number): string[] {
+		const outcome = this.outcome;
+		if (outcome !== "failed" && outcome !== "cancelled") return lines;
+		const header = this.headerRowIndex();
+		const line = lines[header];
+		if (line === undefined) return lines;
+		const cue = outcome === "failed" ? theme.fg("error", " Failed") : theme.fg("warning", " Cancelled");
+		// Trailing padding is layout, not content: the cue follows the content of the row.
+		const content = line.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
+		const room = Math.max(0, width - visibleWidth(cue));
+		const cued = [...lines];
+		cued[header] = `${visibleWidth(content) <= room ? content : truncateToWidth(content, room, "…")}${cue}`;
+		return cued;
 	}
 
 	private decorateSemanticSections(lines: string[], width: number): string[] {
@@ -605,11 +659,12 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
-		const bgFn = this.isPartial
-			? (text: string) => theme.bg("toolPendingBg", text)
-			: this.result?.isError
-				? (text: string) => theme.bg("toolErrorBg", text)
-				: (text: string) => theme.bg("toolSuccessBg", text);
+		const bgFn =
+			this.isPartial || this.cancelled
+				? (text: string) => theme.bg("toolPendingBg", text)
+				: this.result?.isError
+					? (text: string) => theme.bg("toolErrorBg", text)
+					: (text: string) => theme.bg("toolSuccessBg", text);
 
 		let hasContent = false;
 		this.hideComponent = false;

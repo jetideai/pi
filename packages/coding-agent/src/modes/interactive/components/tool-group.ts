@@ -114,8 +114,12 @@ export class ToolGroupComponent extends Container {
 				: 1;
 		const body = super.render(width);
 		if (!this.framed) return body;
+		// The failed calls of the group, from the outcome of each call; a cancelled call is no failure.
+		const failed = this.memberComponents.filter((member) => member.outcome === "failed").length;
 		const header = truncateToWidth(
-			`${" ".repeat(this.outputPad)}${theme.fg("muted", `$ ${toolGroupLabel(this.members)}`)}`,
+			`${" ".repeat(this.outputPad)}${theme.fg("muted", `$ ${toolGroupLabel(this.members)}`)}${
+				failed > 0 ? theme.fg("error", ` · ${failed} failed`) : ""
+			}`,
 			width,
 			"…",
 		);

@@ -4381,7 +4381,7 @@ export class InteractiveMode {
 							event.message.errorMessage ||
 							(event.message.stopReason === "aborted" ? "Operation aborted" : "Error");
 						for (const component of this.pendingTools.values()) {
-							component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
+							component.markCancelled(errorMessage);
 						}
 						this.pendingTools.clear();
 					} else {
@@ -4414,10 +4414,7 @@ export class InteractiveMode {
 							errorMessage = this.streamingMessage.errorMessage || "Error";
 						}
 						for (const [, component] of this.pendingTools.entries()) {
-							component.updateResult({
-								content: [{ type: "text", text: errorMessage }],
-								isError: true,
-							});
+							component.markCancelled(errorMessage);
 						}
 						this.pendingTools.clear();
 						this.maybeSuggestBugReport(this.streamingMessage);
@@ -4967,11 +4964,11 @@ export class InteractiveMode {
 						if (content.type !== "toolCall") continue;
 						const component = this.pendingTools.get(content.id);
 						if (!component) continue;
-						// The cancelled call keeps the stock error view until its own cue is decided.
+						// A call of an aborted or failed response never ran: it is cancelled, not failed.
 						if (toolCallOutcome(message, undefined) === "cancelled") {
 							const errorMessage =
 								message.errorMessage || (message.stopReason === "aborted" ? "Operation aborted" : "Error");
-							component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
+							component.markCancelled(errorMessage);
 							this.pendingTools.delete(content.id);
 						} else {
 							renderedPendingTools.set(content.id, component);
@@ -5020,7 +5017,7 @@ export class InteractiveMode {
 								} else {
 									errorMessage = message.errorMessage || "Error";
 								}
-								component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
+								component.markCancelled(errorMessage);
 							} else {
 								this.seedToolExecution(component, content.id);
 								renderedPendingTools.set(content.id, component);

@@ -1820,3 +1820,87 @@ describe("restored cache miss boundaries", () => {
 		expect(runItems.map((item) => item.cutBefore)).toEqual(cuts);
 	});
 });
+
+describe("Tool Call outcomes in the transcript", () => {
+	beforeAll(() => initTheme("dark"));
+
+	const foldingHarness = (sessionManager: SessionManager) => {
+		const harness = modeHarness(sessionManager);
+		Object.assign(harness.mode, {
+			getMessageRenderBoundarySelectorsV3: () => [() => () => foldControls],
+			getRegisteredToolDefinition: () => undefined,
+			hideThinkingBlock: true,
+		});
+		return harness;
+	};
+	const failedResult = (id: string) => ({ ...savedToolResult(id, "process", `${id} failed`), isError: true });
+
+	it("restores a failed and a cancelled call with their cues and counts only the failed call in the group", () => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage(user);
+		sessionManager.appendMessage(assistant([toolCall("call-a")], "toolUse"));
+		sessionManager.appendMessage(failedResult("call-a"));
+		sessionManager.appendMessage(assistant([toolCall("call-b")], "toolUse"));
+		sessionManager.appendMessage(savedToolResult("call-b", "process", "call-b done"));
+		sessionManager.appendMessage(assistant([toolCall("call-c")], "aborted"));
+		const { mode, chatContainer } = foldingHarness(sessionManager);
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+		const text = stripAnsi(chatContainer.render(100).join("\n"));
+
+		expect({
+			group: text.includes("1 failed"),
+			failed: text.split("Failed").length - 1,
+			cancelled: text.split("Cancelled").length - 1,
+		}).toEqual({ group: true, failed: 1, cancelled: 1 });
+	});
+
+	it("counts a live failure once when its end repeats, and marks a call of an aborted response cancelled", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const { mode, chatContainer } = foldingHarness(sessionManager);
+		Object.assign(mode, {
+			settingsManager: { ...mode.settingsManager, getShowTerminalProgress: () => false },
+			clearStatusIndicator: vi.fn(),
+		});
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		const emit = (event: unknown) => handleEvent.call(mode, event as AgentSessionEvent);
+		await emit({ type: "agent_start" });
+		const userId = sessionManager.appendMessage(user);
+		await emit({ type: "message_start", message: user, entryId: userId });
+		const first = assistant([toolCall("call-a")], "toolUse");
+		const firstId = sessionManager.appendMessage(first);
+		await emit({ type: "message_start", message: assistant([], "pending"), entryId: firstId });
+		await emit({ type: "message_end", message: first, entryId: firstId });
+		const end = {
+			type: "tool_execution_end",
+			toolCallId: "call-a",
+			toolName: "process",
+			result: { content: [{ type: "text", text: "call-a failed" }] },
+			isError: true,
+		};
+		await emit({ type: "tool_execution_start", toolCallId: "call-a", toolName: "process", args: {} });
+		await emit(end);
+		await emit(end);
+		const result = failedResult("call-a");
+		const resultId = sessionManager.appendMessage(result);
+		await emit({ type: "message_start", message: result, entryId: resultId });
+		await emit({ type: "message_end", message: result, entryId: resultId });
+		const aborted = assistant([toolCall("call-b")], "aborted");
+		const abortedId = sessionManager.appendMessage(aborted);
+		await emit({ type: "message_start", message: assistant([], "pending"), entryId: abortedId });
+		await emit({ type: "message_end", message: aborted, entryId: abortedId });
+		await emit({ type: "agent_end", messages: [], willRetry: false });
+		const text = stripAnsi(chatContainer.render(100).join("\n"));
+
+		expect({
+			group: [text.includes("1 failed"), text.includes("2 failed")],
+			cancelled: text.split("Cancelled").length - 1,
+		}).toEqual({ group: [true, false], cancelled: 1 });
+	});
+});

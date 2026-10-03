@@ -30,7 +30,7 @@ import {
 import type { ToolRenderers } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const controls = { begin: "\x1b]777;begin\x07", body: "\x1b]777;body\x07", end: "\x1b]777;end\x07" };
@@ -1457,4 +1457,93 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 			"process",
 		]);
 	});
+});
+
+describe("Tool Call and Tool Group outcomes", () => {
+	/** The opening sequence of a theme background, from the current theme. */
+	const background = (token: "toolErrorBg" | "toolPendingBg") => theme.bg(token, "\0").split("\0")[0]!;
+	/** The row that the range of the call begins on: the row that a collapsed Fold shows. */
+	const headerRow = (rows: string[]) => rows.find((row) => row.includes(controls.begin)) ?? "";
+	const call = (id: string, toolDefinition?: ToolDefinition) =>
+		new ToolExecutionComponent(
+			"process",
+			id,
+			{ action: "list" },
+			{
+				ownerEntryId: "assistant-a",
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => controls],
+				toolExecutionPresentationSelectorsV1: [settledCanonicalOnly],
+			},
+			toolDefinition,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+
+	for (const themeName of ["dark", "light"] as const) {
+		describe(`in the ${themeName} theme`, () => {
+			beforeAll(() => initTheme(themeName));
+
+			it.each([
+				["a tool without a definition", undefined],
+				["a self-rendered tool", definition()],
+			] as const)(
+				"shows the failure of a call of %s on its collapsed header row with the theme error cue",
+				(_name, toolDefinition) => {
+					const component = call("call-failed", toolDefinition);
+					component.updateResult({ content: [{ type: "text", text: "no such file" }], isError: true });
+					const header = headerRow(component.render(80));
+					const errorText = theme.fg("error", "\0").split("\0")[0]!;
+
+					expect({
+						cue: stripAnsi(header).includes("Failed") && header.includes(errorText),
+						// A stock shell also keeps its error background; a self-rendered call owns its own colors.
+						background: header.includes(background("toolErrorBg")),
+						outcome: component.outcome,
+					}).toEqual({ cue: true, background: toolDefinition === undefined, outcome: "failed" });
+				},
+			);
+
+			it("marks a call cancelled before execution with a Cancelled cue and no error background", () => {
+				const component = call("call-cancelled");
+				component.markCancelled("Operation aborted");
+				const rows = component.render(80);
+
+				expect({
+					cue: stripAnsi(headerRow(rows)).includes("Cancelled"),
+					error: rows.some((row) => row.includes(background("toolErrorBg"))),
+					outcome: component.outcome,
+					reason: stripAnsi(rows.join("\n")).includes("Operation aborted"),
+				}).toEqual({ cue: true, error: false, outcome: "cancelled", reason: true });
+			});
+
+			it("counts the failed calls of a group once in its header, without cancelled calls", () => {
+				const group = new ToolGroupComponent({
+					groupId: "tool-group:call-a",
+					closed: false,
+					producerSessionId: "session-a",
+					renderScopeId: "scope-a",
+					semanticSelectorsV3: [() => () => controls],
+				});
+				const failed = call("call-a");
+				failed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true });
+				const cancelled = call("call-b");
+				cancelled.markCancelled("Operation aborted");
+				group.addTool(failed, { toolName: "bash", toolCallId: "call-a" });
+				group.addTool(cancelled, { toolName: "bash", toolCallId: "call-b" });
+				const header = () => stripAnsi(headerRow(group.render(80)));
+				const first = header();
+				const later = call("call-c");
+				later.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
+				group.addTool(later, { toolName: "bash", toolCallId: "call-c" });
+
+				expect([first.includes("1 failed"), header().includes("1 failed"), header().includes("2 failed")]).toEqual([
+					true,
+					true,
+					false,
+				]);
+			});
+		});
+	}
 });
