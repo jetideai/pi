@@ -88,6 +88,8 @@ import type {
 	MarkdownTransformer,
 	MessageRenderBoundaryDecoratorV1,
 	MessageRenderBoundarySelectorV3,
+	MessageRenderExecutionObserverV1,
+	MessageRenderExecutionStateV1,
 	MessageRenderFinalizedEntryV1,
 	MessageRenderProjectionMemberV1,
 	MessageRenderProjectionObserverV1,
@@ -671,6 +673,9 @@ export class InteractiveMode {
 	private messageRenderSettlements: readonly Readonly<SemanticTurnSettlementV1>[] = [];
 	private publishedMessageRenderProjection: Readonly<MessageRenderProjectionV1> | undefined;
 	private messageRenderScopeId = crypto.randomUUID();
+	private messageRenderExecutionState: Readonly<MessageRenderExecutionStateV1> | undefined;
+	/** The observers that have the current execution state. */
+	private messageRenderExecutionStateObservers = new Set<MessageRenderExecutionObserverV1>();
 	private readonly sourcePointRevisions = new SourcePointRevisions();
 	private readonly replayTransactionProvider: ReplayTransactionProvider = {
 		capture: () => this.session.extensionRunner?.getReplayTransactionProviderV1?.()?.capture(),
@@ -2538,6 +2543,42 @@ export class InteractiveMode {
 
 	private getMessageRenderProjectionObserversV1(): MessageRenderProjectionObserverV1[] {
 		return this.session.extensionRunner?.getMessageRenderProjectionObserversV1?.() ?? [];
+	}
+
+	private getMessageRenderExecutionObserversV1(): MessageRenderExecutionObserverV1[] {
+		return this.session.extensionRunner?.getMessageRenderExecutionObserversV1?.() ?? [];
+	}
+
+	/**
+	 * Publish the Tool Calls that the agent state executes now. A changed session or set of calls takes the next
+	 * revision. An observer that does not have the current state gets it at its revision.
+	 */
+	private publishMessageRenderExecutionStateV1(runEnded = false): void {
+		const producerSessionId = this.sessionManager.getSessionId();
+		const runningBlockIds = runEnded ? [] : [...this.session.state.pendingToolCalls];
+		let state = this.messageRenderExecutionState;
+		if (
+			state?.producerSessionId !== producerSessionId ||
+			state.runningBlockIds.length !== runningBlockIds.length ||
+			runningBlockIds.some((blockId) => !state?.runningBlockIds.includes(blockId))
+		) {
+			state = Object.freeze({
+				producerSessionId,
+				revision: (state?.revision ?? 0) + 1,
+				runningBlockIds: Object.freeze(runningBlockIds),
+			});
+			this.messageRenderExecutionState = state;
+			this.messageRenderExecutionStateObservers = new Set();
+		}
+		for (const observer of this.getMessageRenderExecutionObserversV1()) {
+			if (this.messageRenderExecutionStateObservers.has(observer)) continue;
+			this.messageRenderExecutionStateObservers.add(observer);
+			try {
+				observer(state);
+			} catch {
+				// An observer cannot interrupt stock transcript rendering or later observers.
+			}
+		}
 	}
 
 	private createSemanticToolComponent(content: AssistantToolCall, ownerEntryId: string): ToolExecutionComponent {
@@ -4465,6 +4506,7 @@ export class InteractiveMode {
 					this.pendingTools.set(event.toolCallId, component);
 				}
 				component?.markExecutionStarted();
+				this.publishMessageRenderExecutionStateV1();
 				this.ui.requestRender();
 				break;
 			}
@@ -4481,6 +4523,7 @@ export class InteractiveMode {
 
 			case "tool_execution_end": {
 				this.uncommittedToolResults.end(event.toolCallId, event.result, event.isError);
+				this.publishMessageRenderExecutionStateV1();
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
 					component.updateResult({ ...event.result, isError: event.isError });
@@ -4496,6 +4539,8 @@ export class InteractiveMode {
 				}
 				this.clearStatusIndicator("working");
 				this.uncommittedToolResults.endRun();
+				// The agent clears its executing calls only after this event, but no call of the run executes now.
+				this.publishMessageRenderExecutionStateV1(true);
 				// The run ended: its open group takes no more calls and closes.
 				if (this.liveRun) {
 					this.publishLiveRun(false);
@@ -5308,6 +5353,7 @@ export class InteractiveMode {
 		const transcript = this.selectTranscript(this.acceptsTranscriptWindows() ? { tail: true } : undefined);
 		this.addUserMessagesToHistory(transcript.items);
 		this.renderTranscript(transcript, { updateFooter: true, inferMissingTurns: true });
+		this.publishMessageRenderExecutionStateV1();
 		this.renderProjectTrustWarningIfNeeded();
 
 		// Show compaction info if session was compacted

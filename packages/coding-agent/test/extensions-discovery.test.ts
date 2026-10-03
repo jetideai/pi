@@ -140,6 +140,20 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0]?.messageRenderProjectionObserverV1).toBeTypeOf("function");
 	});
 
+	it("loads execution observers", async () => {
+		fs.writeFileSync(
+			path.join(extensionsDir, "execution.ts"),
+			`export default function(pi) {
+	pi.registerMessageRenderExecutionObserverV1(() => {});
+}`,
+		);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+
+		expect(result.errors).toEqual([]);
+		expect(result.extensions[0]?.messageRenderExecutionObserverV1).toBeTypeOf("function");
+	});
+
 	it("discovers direct .js files in extensions/", async () => {
 		fs.writeFileSync(path.join(extensionsDir, "foo.js"), extensionCode);
 

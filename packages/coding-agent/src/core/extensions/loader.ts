@@ -28,6 +28,7 @@ import type {
 	MarkdownTransformer,
 	MessageRenderBoundaryDecoratorV1,
 	MessageRenderBoundarySelectorV3,
+	MessageRenderExecutionObserverV1,
 	MessageRenderer,
 	MessageRenderProjectionObserverRegistrationV1,
 	MessageRenderProjectionObserverV1,
@@ -384,6 +385,11 @@ function createExtensionAPI(
 			assertActive();
 			extension.messageRenderProjectionObserverV1 = observer;
 			extension.messageRenderProjectionTranscriptWindowsV1 = registration?.transcriptWindows === true;
+		},
+
+		registerMessageRenderExecutionObserverV1(observer: MessageRenderExecutionObserverV1): void {
+			assertActive();
+			extension.messageRenderExecutionObserverV1 = observer;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {

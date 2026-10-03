@@ -1620,6 +1620,20 @@ export interface MessageRenderProjectionV1 {
 
 export type MessageRenderProjectionObserverV1 = (projection: Readonly<MessageRenderProjectionV1>) => void;
 
+/**
+ * Experimental: the Tool Calls that execute now in the agent state of one producer session. A call that is ready or
+ * queued, or that only has argument text, does not execute. Each state is complete: it replaces the previous state.
+ */
+export interface MessageRenderExecutionStateV1 {
+	producerSessionId: string;
+	/** Increases each time the producer session or its executing calls change. */
+	revision: number;
+	/** The projection blockIds of the executing calls. Empty when no call executes. */
+	runningBlockIds: readonly string[];
+}
+
+export type MessageRenderExecutionObserverV1 = (state: Readonly<MessageRenderExecutionStateV1>) => void;
+
 export interface EntryRenderOptions {
 	expanded: boolean;
 }
@@ -1812,6 +1826,9 @@ export interface ExtensionAPI {
 		observer: MessageRenderProjectionObserverV1,
 		registration?: MessageRenderProjectionObserverRegistrationV1,
 	): void;
+
+	/** Observe which Tool Calls execute now. A new observer first gets the current state. */
+	registerMessageRenderExecutionObserverV1(observer: MessageRenderExecutionObserverV1): void;
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
@@ -2255,6 +2272,7 @@ export interface Extension {
 	toolExecutionPresentationSelectorV1?: ToolExecutionPresentationSelectorV1;
 	messageRenderProjectionObserverV1?: MessageRenderProjectionObserverV1;
 	messageRenderProjectionTranscriptWindowsV1?: boolean;
+	messageRenderExecutionObserverV1?: MessageRenderExecutionObserverV1;
 	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

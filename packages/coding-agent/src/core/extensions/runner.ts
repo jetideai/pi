@@ -62,6 +62,7 @@ import type {
 	MessageEndEventResult,
 	MessageRenderBoundaryDecoratorV1,
 	MessageRenderBoundarySelectorV3,
+	MessageRenderExecutionObserverV1,
 	MessageRenderer,
 	MessageRenderProjectionObserverV1,
 	MessageRenderSourcePointDecoratorV1,
@@ -817,6 +818,12 @@ export class ExtensionRunner {
 	getMessageRenderProjectionObserversV1(): MessageRenderProjectionObserverV1[] {
 		return this.extensions.flatMap((extension) =>
 			extension.messageRenderProjectionObserverV1 ? [extension.messageRenderProjectionObserverV1] : [],
+		);
+	}
+
+	getMessageRenderExecutionObserversV1(): MessageRenderExecutionObserverV1[] {
+		return this.extensions.flatMap((extension) =>
+			extension.messageRenderExecutionObserverV1 ? [extension.messageRenderExecutionObserverV1] : [],
 		);
 	}
 

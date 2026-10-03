@@ -14,6 +14,8 @@ import type {
 	MessageRenderBoundariesV1,
 	MessageRenderBoundaryCandidateV3,
 	MessageRenderBoundaryContextV1,
+	MessageRenderExecutionObserverV1,
+	MessageRenderExecutionStateV1,
 	MessageRenderProjectionV1,
 	ToolDefinition,
 } from "../src/core/extensions/types.ts";
@@ -1902,5 +1904,127 @@ describe("Tool Call outcomes in the transcript", () => {
 			group: [text.includes("1 failed"), text.includes("2 failed")],
 			cancelled: text.split("Cancelled").length - 1,
 		}).toEqual({ group: [true, false], cancelled: 1 });
+	});
+});
+
+describe("Tool Call execution state", () => {
+	beforeAll(() => initTheme("dark"));
+
+	function executionHarness(sessionManager: SessionManager) {
+		const { mode } = modeHarness(sessionManager);
+		const states: Readonly<MessageRenderExecutionStateV1>[] = [];
+		const observers: MessageRenderExecutionObserverV1[] = [(state) => states.push(state)];
+		Object.assign(mode, { getMessageRenderExecutionObserversV1: () => observers });
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		const emit = (event: unknown) => handleEvent.call(mode, event as AgentSessionEvent);
+		return { mode, states, observers, emit, pending: mode.session.state.pendingToolCalls };
+	}
+
+	async function startTwoCalls(sessionManager: SessionManager, emit: (event: unknown) => Promise<void>) {
+		await emit({ type: "agent_start" });
+		const message = assistant([toolCall("call-a"), toolCall("call-b")], "toolUse");
+		const entryId = sessionManager.appendMessage(message);
+		await emit({ type: "message_start", message: assistant([], "pending"), entryId });
+		await emit({ type: "message_update", message: assistant([toolCall("call-a")], "pending"), entryId });
+		await emit({ type: "message_end", message, entryId });
+	}
+
+	it("publishes the calls that execute now from the agent state, without ready calls, drafts or partial output", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const { states, emit, pending } = executionHarness(sessionManager);
+		await startTwoCalls(sessionManager, emit);
+		const ready = states.length;
+		pending.add("call-a");
+		await emit({ type: "tool_execution_start", toolCallId: "call-a", toolName: "process", args: {} });
+		pending.add("call-b");
+		await emit({ type: "tool_execution_start", toolCallId: "call-b", toolName: "process", args: {} });
+		await emit({
+			type: "tool_execution_update",
+			toolCallId: "call-a",
+			toolName: "process",
+			args: {},
+			partialResult: { content: [{ type: "text", text: "a partial" }] },
+		});
+		pending.delete("call-a");
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "call-a",
+			toolName: "process",
+			result: { content: [] },
+			isError: false,
+		});
+
+		expect({ ready, states: states.map(({ revision, runningBlockIds }) => ({ revision, runningBlockIds })) }).toEqual(
+			{
+				ready: 0,
+				states: [
+					{ revision: 1, runningBlockIds: ["call-a"] },
+					{ revision: 2, runningBlockIds: ["call-a", "call-b"] },
+					{ revision: 3, runningBlockIds: ["call-b"] },
+				],
+			},
+		);
+	});
+
+	it("publishes no change again when the agent state is ahead of the event that the view handles", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const { states, emit, pending } = executionHarness(sessionManager);
+		await startTwoCalls(sessionManager, emit);
+		pending.add("call-a");
+		pending.add("call-b");
+		await emit({ type: "tool_execution_start", toolCallId: "call-a", toolName: "process", args: {} });
+		await emit({ type: "tool_execution_start", toolCallId: "call-b", toolName: "process", args: {} });
+
+		expect(states.map((state) => state.runningBlockIds)).toEqual([["call-a", "call-b"]]);
+	});
+
+	it("publishes an empty state at the end of a run while the agent still has the executing calls", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const { states, emit, pending } = executionHarness(sessionManager);
+		await startTwoCalls(sessionManager, emit);
+		pending.add("call-a");
+		await emit({ type: "tool_execution_start", toolCallId: "call-a", toolName: "process", args: {} });
+		await emit({ type: "agent_end", messages: [], willRetry: false });
+
+		expect(states.at(-1)).toEqual({
+			producerSessionId: sessionManager.getSessionId(),
+			revision: 2,
+			runningBlockIds: [],
+		});
+	});
+
+	it("gives an observer that registers later the current state at its revision", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const { mode, states, observers, emit, pending } = executionHarness(sessionManager);
+		await startTwoCalls(sessionManager, emit);
+		pending.add("call-a");
+		await emit({ type: "tool_execution_start", toolCallId: "call-a", toolName: "process", args: {} });
+		const later: Readonly<MessageRenderExecutionStateV1>[] = [];
+		observers.push((state) => later.push(state));
+		Reflect.get(InteractiveMode.prototype, "publishMessageRenderExecutionStateV1").call(mode);
+
+		expect({ first: states, later }).toEqual({ first: [states[0]], later: [states[0]] });
+	});
+
+	it("replaces the state of the previous session when the same process shows another session", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const { mode, states, emit, pending } = executionHarness(sessionManager);
+		await startTwoCalls(sessionManager, emit);
+		pending.add("call-a");
+		await emit({ type: "tool_execution_start", toolCallId: "call-a", toolName: "process", args: {} });
+		const next = SessionManager.inMemory();
+		Object.assign(mode, {
+			sessionManager: next,
+			session: { ...mode.session, state: { pendingToolCalls: new Set() } },
+			addUserMessagesToHistory: vi.fn(),
+			renderProjectTrustWarningIfNeeded: vi.fn(),
+			updateFooter: vi.fn(),
+		});
+		Reflect.get(InteractiveMode.prototype, "renderInitialMessages").call(mode);
+
+		expect(states.at(-1)).toEqual({ producerSessionId: next.getSessionId(), revision: 2, runningBlockIds: [] });
 	});
 });
