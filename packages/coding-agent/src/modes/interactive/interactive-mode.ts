@@ -155,6 +155,7 @@ import { createChatViewport } from "./chat-viewport.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import {
+	type AssistantResponseComposition,
 	type AssistantToolCall,
 	composeAssistantResponse,
 	composeTranscriptResponses,
@@ -298,6 +299,18 @@ type CompactionCostNotice = {
 };
 
 type RenderMessageItem = { message: AgentMessage; entryId: string };
+
+/**
+ * The live agent run as the one Tool Group rule sees it: its items in event order, with the latest message of each
+ * response. It holds references to the messages of the run, not a copy of the transcript.
+ */
+interface LiveToolRun {
+	/** The number of published members before the run. */
+	baseMemberCount: number;
+	entries: { item: ToolGroupRunItem; member?: MessageRenderProjectionMemberV1 }[];
+	/** The mounted Tool Groups of the run; undefined while an older loaded window keeps the run out of view. */
+	groups: Map<string, ToolGroupComponent> | undefined;
+}
 type RenderSessionItem =
 	| AgentMessage
 	| RenderMessageItem
@@ -634,7 +647,7 @@ export class InteractiveMode {
 	/** The results that the execution events carry before the history commits them; components start from them. */
 	private readonly uncommittedToolResults = new UncommittedToolResults();
 	private semanticStreamingContainer: Container | undefined;
-	private semanticStreamingBaseMemberCount = 0;
+	private liveRun: LiveToolRun | undefined;
 	private messageRenderMembers: MessageRenderProjectionMemberV1[] = [];
 	/** The first and last canonical member of the loaded transcript window, and the source that it belongs to. */
 	private loadedTranscript:
@@ -2334,7 +2347,112 @@ export class InteractiveMode {
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.semanticStreamingContainer = undefined;
-		this.semanticStreamingBaseMemberCount = 0;
+	}
+
+	/** The live tail is in view: no window is loaded, or the loaded window is the tail of the current source. */
+	private liveViewAtTail(): boolean {
+		const loaded = this.loadedTranscript;
+		return loaded === undefined || loaded.sessionId !== this.sessionManager.getSessionId() || loaded.liveTail;
+	}
+
+	/** Live views of the run belong in the chat: there is no run, or the run is in view. */
+	private liveRunMounted(): boolean {
+		return this.liveRun === undefined || this.liveRun.groups !== undefined;
+	}
+
+	private startLiveRun(): void {
+		this.liveRun = {
+			baseMemberCount: this.messageRenderMembers.length,
+			entries: [],
+			groups: this.liveViewAtTail() ? new Map() : undefined,
+		};
+	}
+
+	/** Add an item to the live run, or give the latest message to its response. Returns the index of the item. */
+	private setLiveRunItem(item: ToolGroupRunItem, member?: MessageRenderProjectionMemberV1): number {
+		const run = this.liveRun!;
+		const index =
+			item.type === "response"
+				? run.entries.findIndex((entry) => entry.item.type === "response" && entry.item.entryId === item.entryId)
+				: -1;
+		if (index >= 0) {
+			run.entries[index]!.item = item;
+			return index;
+		}
+		run.entries.push(member ? { item, member } : { item });
+		return run.entries.length - 1;
+	}
+
+	/**
+	 * Compose the live run with the one transcript rule. While the run is in view, publish its members after the members
+	 * before the run, and close each mounted group whose run ended. A group of the open run stays open across responses.
+	 */
+	private publishLiveRun(
+		open: boolean,
+		finalized?: MessageRenderFinalizedEntryV1,
+	): (AssistantResponseComposition | undefined)[] {
+		const run = this.liveRun!;
+		const compositions = composeTranscriptResponses(
+			run.entries.map((entry) => entry.item),
+			open,
+			this.hideThinkingBlock,
+		);
+		if (!run.groups) return compositions;
+		const runMembers = run.entries.flatMap((entry, index) =>
+			entry.member ? [entry.member] : (compositions[index]?.members ?? []),
+		);
+		this.messageRenderMembers = [...this.messageRenderMembers.slice(0, run.baseMemberCount), ...runMembers];
+		if (this.getMessageRenderProjectionObserversV1().length > 0) {
+			this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", finalized);
+		}
+		for (const member of runMembers) {
+			if (member.role === "tool-group" && member.groupClosed) run.groups.get(member.groupId)?.close();
+		}
+		return compositions;
+	}
+
+	/**
+	 * A rebuild during a run: the groups of the run in the rebuilt chat take its later calls, and the streaming response
+	 * shows again at the end. A rebuild that does not show the live tail keeps the run out of view.
+	 */
+	private remountLiveRun(groups: Map<string, ToolGroupComponent>, atTail: boolean): void {
+		const run = this.liveRun;
+		if (!run) return;
+		if (!atTail) {
+			run.groups = undefined;
+			return;
+		}
+		run.groups = groups;
+		const firstEntryId = run.entries
+			.map((entry) => (entry.item.type === "response" ? entry.item.entryId : entry.member?.entryId))
+			.find((entryId) => entryId !== undefined);
+		const base = firstEntryId ? this.messageRenderMembers.findIndex((member) => member.entryId === firstEntryId) : -1;
+		run.baseMemberCount = base >= 0 ? base : this.messageRenderMembers.length;
+		const streaming = this.streamingMessage;
+		const responses = run.entries.flatMap((entry, at) => (entry.item.type === "response" ? [at] : []));
+		const index = responses.at(-1) ?? -1;
+		const item = run.entries[index]?.item;
+		if (!streaming || item?.type !== "response" || item.message !== streaming) {
+			this.publishLiveRun(true);
+			return;
+		}
+		if (this.semanticStreamingContainer) {
+			const container = new SemanticAssistantResponse();
+			this.chatContainer.addChild(container);
+			this.semanticStreamingContainer = container;
+			const compositions = this.publishLiveRun(true);
+			this.renderSemanticAssistantResponse(container, item.entryId, streaming, true, compositions[index], groups);
+		} else {
+			this.publishLiveRun(true);
+			if (this.streamingComponent) this.chatContainer.addChild(this.streamingComponent);
+		}
+	}
+
+	/** A message of the user continues the live tail: an older loaded window gives way to the tail first. */
+	private showLiveTailForUserInput(): void {
+		if (this.liveViewAtTail()) return;
+		this.chatContainer.clear();
+		this.renderTranscript(this.selectTranscript({ tail: true }), { inferMissingTurns: true });
 	}
 
 	private startFreshMessageRenderScope(): void {
@@ -2430,6 +2548,8 @@ export class InteractiveMode {
 		composition = composeAssistantResponse(entryId, message, streaming, this.hideThinkingBlock),
 		groups = new Map<string, ToolGroupComponent>(),
 	): MessageRenderProjectionMemberV1[] {
+		// A response that renders again hosts the groups that it hosted before; later calls of the run join them there.
+		const hosted = new Set(container.children.filter((child) => child instanceof ToolGroupComponent));
 		container.clear();
 		let visualIndex = 0;
 		for (const atom of composition.atoms) {
@@ -2456,10 +2576,14 @@ export class InteractiveMode {
 			const components = atom.calls.map((call) => this.createSemanticToolComponent(call, entryId));
 			const groupId = atom.groupId!;
 			let group = groups.get(groupId);
+			if (group && hosted.delete(group)) container.addChild(group);
 			if (!group) {
+				const groupMember = composition.members.find(
+					(member) => member.role === "tool-group" && member.groupId === groupId,
+				);
 				group = new ToolGroupComponent({
 					groupId,
-					closed: !streaming,
+					closed: groupMember && "groupClosed" in groupMember ? groupMember.groupClosed === true : !streaming,
 					outputPad: this.outputPad,
 					producerSessionId: this.sessionManager.getSessionId(),
 					renderScopeId: this.messageRenderScopeId,
@@ -3888,6 +4012,7 @@ export class InteractiveMode {
 			if (this.session.isStreaming) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
+				this.showLiveTailForUserInput();
 				await this.session.prompt(text, { streamingBehavior: "steer" });
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
@@ -3897,6 +4022,7 @@ export class InteractiveMode {
 			// Normal message submission
 			// First, move any pending bash components to chat
 			this.flushPendingBashComponents();
+			this.showLiveTailForUserInput();
 
 			if (this.onInputCallback) {
 				this.onInputCallback(text);
@@ -3936,6 +4062,7 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.pendingTools.clear();
+				this.startLiveRun();
 				// Restore main escape handler if retry handler is still active
 				// (retry success event fires later, but we need main handler now)
 				if (this.retryEscapeHandler) {
@@ -3965,7 +4092,9 @@ export class InteractiveMode {
 
 			case "entry_appended":
 				if (this.entriesRenderedByBoundaryCompaction.delete(event.entry.id)) break;
-				if (event.entry.type === "custom") {
+				if (event.entry.type !== "compaction" && !this.liveViewAtTail()) {
+					// An older loaded window stays in view; the history shows the entry when the tail loads.
+				} else if (event.entry.type === "custom") {
 					this.addCustomEntryToChat(event.entry);
 					this.ui.requestRender();
 				} else if (event.entry.type === "usage" && event.entry.kind === "cache_warm") {
@@ -3985,6 +4114,9 @@ export class InteractiveMode {
 				} else if (event.entry.type === "compaction") {
 					const entries = this.sessionManager.buildContextEntries();
 					if (entries[0]?.id !== event.entry.id) break;
+					// A compaction cuts every run, so a live run continues as a new run after the cut.
+					const runActive = this.liveRun !== undefined;
+					this.liveRun = undefined;
 					this.chatContainer.clear();
 					const branch = this.sessionManager.getBranch();
 					const compactionIndex = branch.findIndex((entry) => entry.id === event.entry.id);
@@ -4014,6 +4146,7 @@ export class InteractiveMode {
 						this.renderSessionEntries(retainedEntries.filter((entry) => entriesAfterCompaction.has(entry.id)));
 					}
 					for (const entryId of entriesAfterCompaction) this.entriesRenderedByBoundaryCompaction.add(entryId);
+					if (runActive) this.startLiveRun();
 					this.footer.invalidate();
 					this.ui.requestRender();
 				}
@@ -4032,39 +4165,37 @@ export class InteractiveMode {
 
 			case "message_start":
 				if (event.message.role === "custom") {
-					this.addMessageToChat(event.message);
-					this.ui.requestRender();
-				} else if (event.message.role === "user") {
-					if (this.getMessageRenderProjectionObserversV1().length > 0) {
-						this.messageRenderMembers.push({ entryId: event.entryId, blockId: event.entryId, role: "user" });
-						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
-							entryId: event.entryId,
-							message: event.message,
-						});
+					if (this.liveRun) {
+						this.setLiveRunItem(event.message.display ? { type: "boundary" } : { type: "transparent" });
 					}
-					this.addMessageToChat(event.message, { entryId: event.entryId });
+					if (this.liveRunMounted()) {
+						this.addMessageToChat(event.message);
+						this.ui.requestRender();
+					}
+				} else if (event.message.role === "user") {
+					const member = { entryId: event.entryId, blockId: event.entryId, role: "user" as const };
+					const finalized = { entryId: event.entryId, message: event.message };
+					if (this.liveRun) {
+						this.setLiveRunItem({ type: "boundary" }, member);
+						this.publishLiveRun(true, finalized);
+					} else if (this.getMessageRenderProjectionObserversV1().length > 0) {
+						this.messageRenderMembers.push(member);
+						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", finalized);
+					}
+					if (this.liveRunMounted()) this.addMessageToChat(event.message, { entryId: event.entryId });
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
+				} else if (event.message.role === "toolResult") {
+					if (this.liveRun) this.setLiveRunItem({ type: "transparent" });
 				} else if (event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					this.messageRenderMembers ??= [];
-					this.semanticStreamingBaseMemberCount = this.messageRenderMembers.length;
-					const hasProjectionObservers = this.getMessageRenderProjectionObserversV1().length > 0;
+					if (!this.liveRun) this.startLiveRun();
 					const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
-					if (hasProjectionObservers) {
-						const composition = composeAssistantResponse(
-							event.entryId,
-							event.message,
-							true,
-							this.hideThinkingBlock,
-						);
-						this.messageRenderMembers = [
-							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
-							...composition.members,
-						];
-						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
-					}
-					if (semanticSelectors.length > 0) {
+					const index = this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					const compositions = this.publishLiveRun(true);
+					if (!this.liveRunMounted()) {
+						// An older loaded window stays in view; the history shows the response when the tail loads.
+					} else if (semanticSelectors.length > 0) {
 						this.semanticStreamingContainer = new SemanticAssistantResponse();
 						this.chatContainer.addChild(this.semanticStreamingContainer);
 						this.renderSemanticAssistantResponse(
@@ -4072,6 +4203,8 @@ export class InteractiveMode {
 							event.entryId,
 							event.message,
 							true,
+							compositions[index],
+							this.liveRun!.groups,
 						);
 					} else {
 						this.streamingComponent = new AssistantMessageComponent(
@@ -4098,36 +4231,22 @@ export class InteractiveMode {
 			case "message_update":
 				if (this.semanticStreamingContainer && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					const members = this.renderSemanticAssistantResponse(
+					const index = this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					const compositions = this.publishLiveRun(true);
+					this.renderSemanticAssistantResponse(
 						this.semanticStreamingContainer,
 						event.entryId,
 						event.message,
 						true,
+						compositions[index],
+						this.liveRun!.groups,
 					);
-					if (this.getMessageRenderProjectionObserversV1().length > 0) {
-						this.messageRenderMembers = [
-							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
-							...members,
-						];
-						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
-					}
 					this.ui.requestRender();
 				} else if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
-					if (this.getMessageRenderProjectionObserversV1().length > 0) {
-						const composition = composeAssistantResponse(
-							event.entryId,
-							event.message,
-							true,
-							this.hideThinkingBlock,
-						);
-						this.messageRenderMembers = [
-							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
-							...composition.members,
-						];
-						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append");
-					}
+					this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					this.publishLiveRun(true);
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
@@ -4162,6 +4281,10 @@ export class InteractiveMode {
 						}
 					}
 					this.ui.requestRender();
+				} else if (event.message.role === "assistant" && this.liveRun) {
+					this.streamingMessage = event.message;
+					this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					this.publishLiveRun(true);
 				}
 				break;
 
@@ -4171,27 +4294,16 @@ export class InteractiveMode {
 				if (event.message.role === "user") break;
 				if (this.semanticStreamingContainer && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					const composition = composeAssistantResponse(
-						event.entryId,
-						event.message,
-						false,
-						this.hideThinkingBlock,
-					);
-					if (this.getMessageRenderProjectionObserversV1().length > 0) {
-						this.messageRenderMembers = [
-							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
-							...composition.members,
-						];
-						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
-							entryId: event.entryId,
-							message: event.message,
-						});
-					}
+					// The end of a response does not end its run: a later tool-only response can join the open group.
+					const index = this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					const compositions = this.publishLiveRun(true, { entryId: event.entryId, message: event.message });
 					this.renderSemanticAssistantResponse(
 						this.semanticStreamingContainer,
 						event.entryId,
 						event.message,
 						false,
+						compositions[index],
+						this.liveRun!.groups,
 					);
 					if (toolCallOutcome(event.message, undefined) === "cancelled") {
 						const errorMessage =
@@ -4211,22 +4323,8 @@ export class InteractiveMode {
 					this.footer.invalidate();
 				} else if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					if (this.getMessageRenderProjectionObserversV1().length > 0) {
-						const composition = composeAssistantResponse(
-							event.entryId,
-							event.message,
-							false,
-							this.hideThinkingBlock,
-						);
-						this.messageRenderMembers = [
-							...this.messageRenderMembers.slice(0, this.semanticStreamingBaseMemberCount),
-							...composition.members,
-						];
-						this.publishMessageRenderProjectionV1(this.messageRenderMembers, "append", {
-							entryId: event.entryId,
-							message: event.message,
-						});
-					}
+					this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					this.publishLiveRun(true, { entryId: event.entryId, message: event.message });
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
 						const retryAttempt = this.session.retryAttempt;
@@ -4261,6 +4359,10 @@ export class InteractiveMode {
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 					this.footer.invalidate();
+				} else if (event.message.role === "assistant" && this.liveRun) {
+					this.setLiveRunItem({ type: "response", entryId: event.entryId, message: event.message });
+					this.publishLiveRun(true);
+					this.streamingMessage = undefined;
 				}
 				this.ui.requestRender();
 				break;
@@ -4271,7 +4373,8 @@ export class InteractiveMode {
 
 			case "tool_execution_start": {
 				let component = this.pendingTools.get(event.toolCallId);
-				if (!component) {
+				// A call of a run that an older loaded window keeps out of view gets no view at the end of that window.
+				if (!component && this.liveRunMounted()) {
 					component = new ToolExecutionComponent(
 						event.toolName,
 						event.toolCallId,
@@ -4289,7 +4392,7 @@ export class InteractiveMode {
 					this.chatContainer.addChild(component);
 					this.pendingTools.set(event.toolCallId, component);
 				}
-				component.markExecutionStarted();
+				component?.markExecutionStarted();
 				this.ui.requestRender();
 				break;
 			}
@@ -4321,6 +4424,11 @@ export class InteractiveMode {
 				}
 				this.clearStatusIndicator("working");
 				this.uncommittedToolResults.endRun();
+				// The run ended: its open group takes no more calls and closes.
+				if (this.liveRun) {
+					this.publishLiveRun(false);
+					this.liveRun = undefined;
+				}
 				if (this.streamingComponent) {
 					this.chatContainer.removeChild(this.streamingComponent);
 					this.streamingComponent = undefined;
@@ -4377,6 +4485,8 @@ export class InteractiveMode {
 					this.releaseActiveAgentRunRendering();
 					this.releaseSettledMessageRendering();
 					this.startFreshMessageRenderScope();
+					const runActive = this.liveRun !== undefined;
+					this.liveRun = undefined;
 					this.ui.markReplayCause("compact");
 					this.chatContainer.clear();
 					if (this.acceptsTranscriptWindows()) {
@@ -4401,6 +4511,7 @@ export class InteractiveMode {
 							usage: event.result.usage,
 						});
 					}
+					if (runActive) this.startLiveRun();
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
 					if (event.reason === "manual") {
@@ -4699,10 +4810,12 @@ export class InteractiveMode {
 		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
 			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
 			: new Map<AssistantMessage, CacheMiss>();
-		// One composition of the whole transcript gives the members and the rendered Tool Groups.
+		// One composition of the whole transcript gives the members and the rendered Tool Groups. During a run, the run at
+		// the live tail stays open, as the live composition keeps it.
+		const atTail = !window || window.liveTail;
 		const compositions = composeTranscriptResponses(
 			this.toolGroupRunItems(items, cacheMisses, window, sections),
-			false,
+			this.liveRun !== undefined && atTail,
 			this.hideThinkingBlock,
 		);
 		const projectionObservers = this.getMessageRenderProjectionObserversV1();
@@ -4853,6 +4966,7 @@ export class InteractiveMode {
 		for (const [toolCallId, component] of renderedPendingTools) {
 			this.pendingTools.set(toolCallId, component);
 		}
+		this.remountLiveRun(groups, atTail);
 		this.ui.requestRender();
 	}
 
@@ -5401,6 +5515,7 @@ export class InteractiveMode {
 		if (this.session.isStreaming) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
+			this.showLiveTailForUserInput();
 			await this.session.prompt(text, { streamingBehavior: "followUp" });
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();

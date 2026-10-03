@@ -29,16 +29,19 @@ export type ToolGroupRunItem = (
  * with no visible assistant atom, boundary item or cut between them, so each call is in exactly one group. Hidden
  * settled thinking, empty text and transparent items do not stop a run. The group ID comes from the first call, and the
  * group member comes before that call, so a call that joins the run is an append. Each call keeps the response that
- * owns it; the group has no owner. Only a group with two or more calls shows a group header and Fold. Returns one
+ * owns it; the group has no owner. Only a group with two or more calls shows a group header and Fold.
+ *
+ * A group is closed when visible content, a boundary or a cut ends its run. While [tailOpen], the run at the end of the
+ * items can still take calls, so its group stays open; the end of a response does not close it. Returns one
  * composition for each response item and undefined for the other items.
  */
 export function composeTranscriptResponses(
 	items: readonly ToolGroupRunItem[],
-	streaming = false,
+	tailOpen = false,
 	hideThinkingBlock = false,
 ): (AssistantResponseComposition | undefined)[] {
 	const atomsByItem = items.map((item) =>
-		item.type === "response" ? responseAtoms(item.message, streaming, hideThinkingBlock) : undefined,
+		item.type === "response" ? responseAtoms(item.message, hideThinkingBlock) : undefined,
 	);
 	const runs: Extract<AssistantResponseAtom, { type: "tools" }>[][] = [];
 	let run: Extract<AssistantResponseAtom, { type: "tools" }>[] | undefined;
@@ -61,6 +64,7 @@ export function composeTranscriptResponses(
 			run.push(atom);
 		}
 	}
+	const openGroupId = tailOpen && run ? `tool-group:${run[0]!.calls[0]!.id}` : undefined;
 	for (const toolAtoms of runs) {
 		const groupId = `tool-group:${toolAtoms[0]!.calls[0]!.id}`;
 		for (const atom of toolAtoms) atom.groupId = groupId;
@@ -84,7 +88,7 @@ export function composeTranscriptResponses(
 						blockId: groupId,
 						role: "tool-group",
 						groupId,
-						groupClosed: !streaming,
+						groupClosed: groupId !== openGroupId,
 					});
 				}
 				members.push({
@@ -106,21 +110,18 @@ export function composeTranscriptResponses(
 export function composeAssistantResponse(
 	entryId: string,
 	message: AssistantMessage,
-	streaming = false,
+	tailOpen = false,
 	hideThinkingBlock = false,
 ): AssistantResponseComposition {
-	return composeTranscriptResponses([{ type: "response", entryId, message }], streaming, hideThinkingBlock)[0]!;
+	return composeTranscriptResponses([{ type: "response", entryId, message }], tailOpen, hideThinkingBlock)[0]!;
 }
 
-function responseAtoms(
-	message: AssistantMessage,
-	streaming: boolean,
-	hideThinkingBlock: boolean,
-): AssistantResponseAtom[] {
+/** Hidden thinking gives no atom, also while it streams: it is never visible content between calls. */
+function responseAtoms(message: AssistantMessage, hideThinkingBlock: boolean): AssistantResponseAtom[] {
 	const atoms: AssistantResponseAtom[] = [];
 	for (const content of message.content) {
 		if (content.type === "text" && !content.text.trim()) continue;
-		if (content.type === "thinking" && (!content.thinking.trim() || (hideThinkingBlock && !streaming))) continue;
+		if (content.type === "thinking" && (!content.thinking.trim() || hideThinkingBlock)) continue;
 		if (content.type === "toolCall") {
 			const previous = atoms.at(-1);
 			if (previous?.type === "tools") previous.calls.push(content);

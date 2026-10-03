@@ -88,7 +88,6 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 		messageRenderMembers: [],
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "scope-a",
-		semanticStreamingBaseMemberCount: 0,
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		outputPad: 1,
@@ -107,7 +106,9 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
 			getShowCacheMissNotices: () => false,
+			getShowTerminalProgress: () => false,
 		},
+		clearStatusIndicator: vi.fn(),
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 		getMarkdownTransformers: () => [],
 		getMessageRenderBoundaryDecoratorsV1: () => [messageDecorator],
@@ -170,6 +171,7 @@ describe("InteractiveMode response projection", () => {
 			entryId: assistantId,
 		});
 		await handleEvent.call(mode, { type: "message_end", message: finalAssistant, entryId: assistantId });
+		await handleEvent.call(mode, { type: "agent_end", messages: [], willRetry: false });
 		expect(projections.at(-1)?.members[0]).not.toHaveProperty("completedTurn");
 		sessionManager.appendSemanticTurnSettlements(null);
 		await handleEvent.call(mode, { type: "agent_settled" });
@@ -816,6 +818,7 @@ export default function (pi) {
 			result: toolResultB,
 			isError: false,
 		});
+		await handleEvent.call(liveMode, { type: "agent_end", messages: [], willRetry: false });
 		sessionManager.appendSemanticTurnSettlements(null);
 		await handleEvent.call(liveMode, { type: "agent_settled" });
 
@@ -1148,7 +1151,7 @@ describe("live Tool Group composition across assistant responses", () => {
 		]);
 	});
 
-	it("publishes the closure of a streamed Tool Group at message_end as an append", async () => {
+	it("keeps a streamed Tool Group open at message_end and closes it at the end of the run as an append", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const userId = sessionManager.appendMessage(user);
 		const { mode, projections } = foldingHarness(sessionManager);
@@ -1156,6 +1159,7 @@ describe("live Tool Group composition across assistant responses", () => {
 			this: typeof mode,
 			event: AgentSessionEvent,
 		) => Promise<void>;
+		await handleEvent.call(mode, { type: "agent_start" });
 		await handleEvent.call(mode, { type: "message_start", message: user, entryId: userId });
 		const calls = [toolCall("call-a")];
 		const message = assistant(calls, "toolUse");
@@ -1168,11 +1172,15 @@ describe("live Tool Group composition across assistant responses", () => {
 		} as AgentSessionEvent);
 		const open = projections.length;
 		await handleEvent.call(mode, { type: "message_end", message, entryId });
+		await handleEvent.call(mode, { type: "agent_end", messages: [], willRetry: false });
+		const groupClosed = projections
+			.slice(open)
+			.map((projection) => projection.members.find((member) => member.role === "tool-group"))
+			.map((group) => (group && "groupClosed" in group ? group.groupClosed : undefined));
 
-		expect(projections.slice(open).map((projection) => projection.mode)).toEqual(["append"]);
-		expect(projections.at(-1)!.members.find((member) => member.role === "tool-group")).toMatchObject({
-			groupId: "tool-group:call-a",
-			groupClosed: true,
+		expect({ modes: projections.slice(open).map((projection) => projection.mode), groupClosed }).toEqual({
+			modes: ["append", "append"],
+			groupClosed: [false, true],
 		});
 	});
 
@@ -1324,5 +1332,233 @@ describe("Tool Call execution results across a rebuild", () => {
 		await run.handleEvent.call(run.mode, { type: "agent_end", messages: [], willRetry: false });
 
 		expect([afterCommit, run.rebuild().includes("tool failed")]).toEqual([undefined, true]);
+	});
+});
+
+describe("live Tool Group runs across responses", () => {
+	beforeAll(() => initTheme("dark"));
+
+	/** The harness with valid zero-column fold controls for every Tool Call and Tool Group. */
+	const foldingHarness = (sessionManager: SessionManager) => {
+		const harness = modeHarness(sessionManager);
+		Object.assign(harness.mode, { getMessageRenderBoundarySelectorsV3: () => [() => () => foldControls] });
+		return harness;
+	};
+
+	type Member = Readonly<MessageRenderProjectionV1>["members"][number];
+	const groupOf = (member: Member) => ("groupId" in member ? member.groupId : undefined);
+	const closedOf = (member: Member) => ("groupClosed" in member ? member.groupClosed : undefined);
+	const orderOf = (member: Member) => ("groupOrder" in member ? member.groupOrder : undefined);
+	const ownerOf = (member: Member) => ("ownerEntryId" in member ? member.ownerEntryId : undefined);
+	const identity = (members: readonly Member[]) =>
+		members.map((member) => [
+			member.entryId,
+			member.role,
+			groupOf(member),
+			orderOf(member),
+			ownerOf(member),
+			closedOf(member),
+		]);
+
+	/** One agent run on the production event path: each response streams, ends, and its calls execute and commit. */
+	function liveAgentRun(hideThinkingBlock: boolean) {
+		const sessionManager = SessionManager.inMemory();
+		const harness = foldingHarness(sessionManager);
+		const { mode } = harness;
+		Object.assign(mode, { hideThinkingBlock, getRegisteredToolDefinition: () => undefined });
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		const emit = (event: unknown) => handleEvent.call(mode, event as AgentSessionEvent);
+		const ids: string[] = [];
+		return {
+			...harness,
+			sessionManager,
+			emit,
+			async start() {
+				await emit({ type: "agent_start" });
+				const userId = sessionManager.appendMessage(user);
+				await emit({ type: "message_start", message: user, entryId: userId });
+			},
+			/** A response streams its content; with [end] it ends and is persisted. */
+			async stream(content: AssistantMessage["content"], end = true) {
+				const message = assistant(content, "toolUse");
+				const entryId = end ? sessionManager.appendMessage(message) : `streaming-${ids.length}`;
+				ids.push(entryId);
+				await emit({ type: "message_start", message: assistant([], "pending"), entryId });
+				await emit({ type: "message_update", message: assistant(content, "pending"), entryId });
+				if (end) await emit({ type: "message_end", message, entryId });
+				return { message, entryId };
+			},
+			async execute(id: string) {
+				await emit({ type: "tool_execution_start", toolCallId: id, toolName: "process", args: {} });
+				await emit({
+					type: "tool_execution_update",
+					toolCallId: id,
+					toolName: "process",
+					args: {},
+					partialResult: { content: [{ type: "text", text: `${id} partial` }] },
+				});
+				const result = savedToolResult(id, "process", `${id} done`);
+				await emit({ type: "tool_execution_end", toolCallId: id, toolName: "process", result, isError: false });
+				const resultId = sessionManager.appendMessage(result);
+				await emit({ type: "message_start", message: result, entryId: resultId });
+				await emit({ type: "message_end", message: result, entryId: resultId });
+			},
+			end: () => emit({ type: "agent_end", messages: [], willRetry: false }),
+		};
+	}
+
+	/** The members that a restore of the same history publishes. */
+	function restoredMembers(sessionManager: SessionManager, hideThinkingBlock: boolean) {
+		const { mode, projections } = foldingHarness(sessionManager);
+		Object.assign(mode, { hideThinkingBlock, getRegisteredToolDefinition: () => undefined });
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		renderSessionEntries.call(mode, sessionManager.buildTranscriptEntries());
+		return projections.at(-1)!.members;
+	}
+
+	it("grows one open group across tool-only responses with hidden thinking and closes it once at the end of the run", async () => {
+		const run = liveAgentRun(true);
+		await run.start();
+		const first = run.projections.length;
+		await run.stream([thinking("plan a"), toolCall("call-a")]);
+		await run.execute("call-a");
+		await run.stream([thinking("plan b"), toolCall("call-b")]);
+		await run.execute("call-b");
+		await run.end();
+		const published = run.projections.slice(first);
+		const groupStates = published.flatMap((projection) =>
+			projection.members.filter((member) => member.role === "tool-group").map(closedOf),
+		);
+		const final = published.at(-1)!.members;
+
+		expect({
+			modes: [...new Set(published.map((projection) => projection.mode))],
+			groupStates: [...new Set(groupStates)],
+			lastGroupState: groupStates.at(-1),
+			calls: final
+				.filter((member) => member.role === "tool")
+				.map((member) => [member.entryId, groupOf(member), orderOf(member)]),
+			owners: new Set(final.filter((member) => member.role === "tool").map(ownerOf)).size,
+		}).toEqual({
+			modes: ["append"],
+			groupStates: [false, true],
+			lastGroupState: true,
+			calls: [
+				["call-a", "tool-group:call-a", 0],
+				["call-b", "tool-group:call-a", 1],
+			],
+			owners: 2,
+		});
+		expect(identity(final)).toEqual(identity(restoredMembers(run.sessionManager, true)));
+	});
+
+	it("ends a run at intermediate assistant prose, which is not thinking", async () => {
+		const run = liveAgentRun(true);
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		await run.stream([{ type: "text", text: "Профиль сохранён." }, toolCall("call-b")], false);
+		const groups = run.projections.at(-1)!.members.filter((member) => member.role === "tool-group");
+
+		expect(groups.map((group) => [group.entryId, closedOf(group)])).toEqual([
+			["tool-group:call-a", true],
+			["tool-group:call-b", false],
+		]);
+	});
+
+	it.each([
+		["hidden thinking continues the run", true, ["tool-group:call-a", "tool-group:call-a"]],
+		["visible thinking ends the run", false, ["tool-group:call-a", "tool-group:call-b"]],
+	] as const)("%s", async (_name, hideThinkingBlock, groups) => {
+		const run = liveAgentRun(hideThinkingBlock);
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		await run.stream([thinking("checking b"), toolCall("call-b")]);
+
+		expect(
+			run.projections
+				.at(-1)!
+				.members.filter((member) => member.role === "tool")
+				.map(groupOf),
+		).toEqual(groups);
+	});
+
+	it("shows no placeholder for hidden thinking while it streams", async () => {
+		const run = liveAgentRun(true);
+		await run.start();
+		await run.stream([thinking("secret plan")], false);
+		const text = stripAnsi(run.chatContainer.render(100).join("\n"));
+
+		expect([text.includes("Thinking..."), text.includes("secret plan")]).toEqual([false, false]);
+	});
+
+	it("mounts the streaming response again after a rebuild and keeps its call in the open group", async () => {
+		const run = liveAgentRun(true);
+		await run.start();
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		const streamed = await run.stream([toolCall("call-b")], false);
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof run.mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		run.chatContainer.clear();
+		renderSessionEntries.call(run.mode, run.sessionManager.buildTranscriptEntries());
+		const rebuilt = run.projections.length;
+		const message = assistant([toolCall("call-b")], "toolUse");
+		await run.emit({ type: "message_end", message, entryId: streamed.entryId });
+		const text = stripAnsi(run.chatContainer.render(100).join("\n"));
+
+		expect({
+			modes: run.projections.slice(rebuilt).map((projection) => projection.mode),
+			callB: run.projections
+				.at(-1)!
+				.members.filter((member) => member.entryId === "call-b")
+				.map((member) => [groupOf(member), orderOf(member)]),
+			shownCalls: text.split("process").length - 1,
+		}).toEqual({ modes: ["append"], callB: [["tool-group:call-a", 1]], shownCalls: 2 });
+	});
+
+	it("keeps an older loaded window unchanged while an unsolicited run works, and shows the run from history later", async () => {
+		const run = liveAgentRun(true);
+		Object.assign(run.mode, {
+			loadedTranscript: {
+				sessionId: run.sessionManager.getSessionId(),
+				leafId: null,
+				from: "older",
+				to: "older",
+				liveTail: false,
+			},
+		});
+		const children = run.chatContainer.children.length;
+		await run.start();
+		const published = run.projections.length;
+		await run.stream([toolCall("call-a")]);
+		await run.execute("call-a");
+		await run.end();
+		const kept = {
+			children: run.chatContainer.children.length,
+			published: run.projections.length - published,
+			pending: run.mode.pendingTools.size,
+		};
+		Object.assign(run.mode, { loadedTranscript: undefined });
+		run.chatContainer.clear();
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof run.mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		renderSessionEntries.call(run.mode, run.sessionManager.buildTranscriptEntries());
+
+		expect({ kept, later: stripAnsi(run.chatContainer.render(100).join("\n")).includes("call-a done") }).toEqual({
+			kept: { children, published: 0, pending: 0 },
+			later: true,
+		});
 	});
 });

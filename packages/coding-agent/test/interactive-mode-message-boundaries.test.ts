@@ -51,6 +51,7 @@ describe("InteractiveMode message boundaries", () => {
 			outputPad: 1,
 			streamingComponent: undefined,
 			streamingMessage: undefined,
+			messageRenderMembers: [],
 			settingsManager: { getShowCacheMissNotices: () => false },
 			session: { retryAttempt: 0, state: { pendingToolCalls: new Set<string>() } },
 			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
@@ -288,8 +289,7 @@ describe("InteractiveMode message boundaries", () => {
 			streamingComponent: undefined,
 			streamingMessage: undefined,
 			semanticStreamingContainer: undefined,
-			messageRenderMembers: undefined,
-			semanticStreamingBaseMemberCount: 0,
+			messageRenderMembers: [],
 			session: { retryAttempt: 0, state: { pendingToolCalls: new Set<string>() } },
 			sessionManager: { getSessionId: () => "session-a", getCwd: () => process.cwd() },
 			settingsManager: {

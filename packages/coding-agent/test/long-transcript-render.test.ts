@@ -144,7 +144,6 @@ function createHarness(ui: TUI, sessionManager: SessionManager) {
 		messageRenderMembers: [],
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "synthetic-render-scope",
-		semanticStreamingBaseMemberCount: 0,
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		outputPad: 1,

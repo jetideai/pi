@@ -534,6 +534,21 @@ describe("InteractiveMode transcript window", () => {
 		expect(text()).toContain("trailing-notice");
 	});
 
+	it("loads the live tail before a message that the user submits from an older section", async () => {
+		const { mode, window, latest, text } = await createWindowedMode();
+		window(1);
+		Reflect.get(InteractiveMode.prototype, "setupEditorSubmitHandler").call(mode);
+		const editor = (mode as unknown as { defaultEditor: { onSubmit: (text: string) => Promise<void> } })
+			.defaultEditor;
+
+		await editor.onSubmit("Question new");
+
+		expect({ liveTail: latest().liveTail, tail: text().includes("trailing-notice") }).toEqual({
+			liveTail: true,
+			tail: true,
+		});
+	});
+
 	it("returns to A with the same projection and chat content after B", async () => {
 		const { mode, window, latest, text } = await createWindowedMode();
 		window(1);

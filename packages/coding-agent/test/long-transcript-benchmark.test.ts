@@ -42,7 +42,6 @@ function restoreComponentTree(semantic: boolean): Container {
 		messageRenderMembers: [],
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "benchmark-test-scope",
-		semanticStreamingBaseMemberCount: 0,
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		outputPad: 1,

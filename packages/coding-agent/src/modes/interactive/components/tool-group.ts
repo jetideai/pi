@@ -58,9 +58,10 @@ export class ToolGroupMemberComponent implements Component {
 export class ToolGroupComponent extends Container {
 	private readonly groupId: string;
 	private readonly ownerEntryId?: string;
-	private readonly closed: boolean;
+	private readonly options: ToolGroupOptions;
+	private closed = false;
 	private outputPad: number;
-	private readonly semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[];
+	private semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[] = [];
 	private readonly members: ToolGroupMemberV1[] = [];
 	private readonly memberComponents: ToolExecutionComponent[] = [];
 	private readonly sourcePointRevisions?: SourcePointRevisions;
@@ -70,10 +71,18 @@ export class ToolGroupComponent extends Container {
 		this.sourcePointRevisions = options.sourcePointRevisions;
 		this.groupId = options.groupId;
 		this.ownerEntryId = options.ownerEntryId;
-		this.closed = options.closed ?? false;
+		this.options = options;
 		this.outputPad = options.outputPad ?? 1;
+		if (options.closed) this.close();
+	}
+
+	/** The run of the group ended: no call joins it any more, so it gets its group boundaries. */
+	close(): void {
+		if (this.closed) return;
+		this.closed = true;
+		const options = this.options;
 		this.semanticDecoratorsV2 =
-			this.closed && options.producerSessionId && options.renderScopeId
+			options.producerSessionId && options.renderScopeId
 				? selectMessageRenderBoundaryDecoratorsV3(
 						{
 							producerSessionId: options.producerSessionId,
@@ -87,12 +96,26 @@ export class ToolGroupComponent extends Container {
 						options.semanticSelectorsV3 ?? [],
 					)
 				: [];
+		this.mountMembers();
 	}
 
-	/** Each member keeps its own Tool Call range and source points inside the range of the group. */
+	/**
+	 * Each member keeps its own Tool Call range and source points inside the range of the group. A response that renders
+	 * again adds its calls again; a call that is a member already keeps its place.
+	 */
 	addTool(component: ToolExecutionComponent, member: ToolGroupMemberV1): void {
-		this.members.push(member);
-		this.memberComponents.push(component);
+		const index = this.members.findIndex((existing) => existing.toolCallId === member.toolCallId);
+		if (index >= 0) {
+			if (this.memberComponents[index] === component) return;
+			this.memberComponents[index] = component;
+		} else {
+			this.members.push(member);
+			this.memberComponents.push(component);
+		}
+		this.mountMembers();
+	}
+
+	private mountMembers(): void {
 		this.clear();
 		for (const memberComponent of this.memberComponents) {
 			this.addChild(this.framed ? new ToolGroupMemberComponent(memberComponent) : memberComponent);

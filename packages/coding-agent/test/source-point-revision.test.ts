@@ -126,7 +126,6 @@ function harness(options: { bashTools?: boolean; singleTools?: boolean; toolOutp
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "revision-scope",
 		sourcePointRevisions: new SourcePointRevisions(),
-		semanticStreamingBaseMemberCount: 0,
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		outputPad: 1,

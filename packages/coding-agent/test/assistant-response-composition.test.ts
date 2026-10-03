@@ -130,8 +130,13 @@ describe("assistant response composition", () => {
 
 		expect(live.atoms.map((atom) => atom.type)).toEqual(["visual", "tools", "visual", "tools"]);
 		expect(live.members.map((member) => member.entryId)).toEqual(restored.members.map((member) => member.entryId));
-		expect(live.members.find((member) => member.role === "tool-group")?.groupClosed).toBe(false);
-		expect(restored.members.find((member) => member.role === "tool-group")?.groupClosed).toBe(true);
+		const closed = (members: typeof live.members) =>
+			members.filter((member) => member.role === "tool-group").map((member) => member.groupClosed);
+		// The visible text after the first group ends its run; only the run at the open tail stays open.
+		expect([closed(live.members), closed(restored.members)]).toEqual([
+			[true, false],
+			[true, true],
+		]);
 	});
 });
 
@@ -239,6 +244,36 @@ describe("transcript Tool Group runs", () => {
 			["tool-b", "tool-group:tool-a", 1],
 			["tool-c", "tool-group:tool-c", 0],
 		]);
+	});
+
+	it("keeps the last run open while the transcript tail is open, and closes a run that visible content ended", () => {
+		const members = composeTranscriptResponses(
+			[
+				response("assistant-a", [tool("tool-a")]),
+				response("assistant-b", [{ type: "text", text: "Профиль сохранён" }, tool("tool-b")]),
+				response("assistant-c", [thinking("hidden"), tool("tool-c")]),
+			],
+			true,
+			true,
+		)
+			.flatMap((composition) => composition?.members ?? [])
+			.filter((member) => member.role === "tool-group");
+
+		expect(members.map((member) => [member.groupId, "groupClosed" in member && member.groupClosed])).toEqual([
+			["tool-group:tool-a", true],
+			["tool-group:tool-b", false],
+		]);
+	});
+
+	it("gives hidden thinking no atom while its response streams", () => {
+		const composition = composeAssistantResponse(
+			"assistant-a",
+			assistant([thinking("still thinking"), tool("tool-a")], "toolUse"),
+			true,
+			true,
+		);
+
+		expect(composition.atoms.map((atom) => atom.type)).toEqual(["tools"]);
 	});
 
 	it("gives a run of one call its own one-call group", () => {
