@@ -34,6 +34,10 @@ import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const controls = { begin: "\x1b]777;begin\x07", body: "\x1b]777;body\x07", end: "\x1b]777;end\x07" };
+const summaryBegin = "\x1b]777;begin-summary\x07";
+/** The controls, with a distinct begin when the render gives the begin row as a one-row summary of the header. */
+const summaryAware: MessageRenderBoundarySelectorV3 = () => (context) =>
+	context.summaryRow === undefined ? controls : { ...controls, begin: summaryBegin };
 /** The presentation that an extension selects for a call without the exact header seam. */
 const settledCanonicalOnly: ToolExecutionPresentationSelectorV1 = () => ({
 	liveToolCall: "stock",
@@ -186,7 +190,7 @@ const numbered = (prefix: string, count: number) =>
 function savedCall(
 	renderers: ToolRenderers | undefined,
 	points: MessageRenderSourcePointV1[] = [],
-	selectors: MessageRenderBoundarySelectorV3[] = [() => () => controls],
+	selectors: MessageRenderBoundarySelectorV3[] = [summaryAware],
 ) {
 	const component = new ToolExecutionComponent(
 		"process",
@@ -223,7 +227,8 @@ function recording(contexts: MessageRenderBoundaryContextV1[]): MessageRenderBou
 }
 
 /** The rows of each boundary control and the rows without controls. */
-function boundaryRows(rows: string[]) {
+function boundaryRows(rendered: string[]) {
+	const rows = rendered.map((row) => row.replaceAll(summaryBegin, controls.begin));
 	const at = (control: string) => rows.flatMap((row, index) => (row.includes(control) ? [index] : []));
 	const count = (control: string) => rows.reduce((total, row) => total + row.split(control).length - 1, 0);
 	return {
@@ -948,6 +953,29 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		for (const plain of [outside, atBegin, absent]) expect(plain).toEqual(["a", `${controls.begin}b${controls.end}`]);
 	});
 
+	it("gives a summary row only at the begin row before a body that starts on the next row", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const decorators = [
+			(context: Readonly<MessageRenderBoundaryContextV1>) => {
+				contexts.push(context);
+				return controls;
+			},
+		];
+		const lines = () => ["a", "b", "c", "d"];
+
+		decorateMessageRenderV2(lines(), 2, 80, "tool", 0, { entryId: "t", beginRow: 1, summaryRow: 1, decorators });
+		decorateMessageRenderV2(lines(), 3, 80, "tool", 0, { entryId: "t", beginRow: 1, summaryRow: 1, decorators });
+		decorateMessageRenderV2(lines(), 2, 80, "tool", 0, { entryId: "t", beginRow: 1, summaryRow: 0, decorators });
+		decorateMessageRenderV2(lines(), undefined, 80, "tool", 0, {
+			entryId: "t",
+			beginRow: 1,
+			summaryRow: 1,
+			decorators,
+		});
+
+		expect(contexts.map((context) => context.summaryRow)).toEqual([1, undefined, undefined, undefined]);
+	});
+
 	it("keeps the located rows of a renderer that has row locators while the call is ready and when it settles", () => {
 		const ready = boundaryRows(tool("tool-located").render(80));
 		const component = tool("tool-located");
@@ -1045,7 +1073,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 });
 
 /** A completed call of a tool without a definition, with a result. */
-function unknownCall(id: string, selectors: MessageRenderBoundarySelectorV3[] = [() => () => controls]) {
+function unknownCall(id: string, selectors: MessageRenderBoundarySelectorV3[] = [summaryAware]) {
 	const component = new ToolExecutionComponent(
 		"process",
 		id,
@@ -1074,7 +1102,7 @@ function foldedBuiltIn(name: string, renderers: ToolRenderers, args: object, out
 			ownerEntryId: "assistant-a",
 			producerSessionId: "session-a",
 			renderScopeId: "scope-a",
-			semanticSelectorsV3: [() => () => controls],
+			semanticSelectorsV3: [summaryAware],
 			toolExecutionPresentationSelectorsV1: [admitCompact],
 		},
 		renderers,
@@ -1093,20 +1121,28 @@ const readCall = () =>
 		"line 1\nline 2",
 	);
 
-/** The rows that native shows when each Fold that [collapsed] selects hides its body through its end row. */
+/**
+ * The rows that native shows when each Fold that [collapsed] selects hides its body through its end row. An open Fold
+ * whose begin row is a summary of its header hides that summary row.
+ */
 function foldedRows(rows: string[], collapsed: (depth: number) => boolean): string[] {
-	const open: { body?: number; depth: number }[] = [];
+	const open: { body?: number; depth: number; summary?: number }[] = [];
 	const hidden = new Set<number>();
 	rows.forEach((row, index) => {
-		const controlsInRow = [...row.matchAll(/\x1b\]777;(begin|body|end)\x07/g)].map((match) => match[1]);
+		const controlsInRow = [...row.matchAll(/\x1b\]777;(begin-summary|begin|body|end)\x07/g)].map((match) => match[1]);
 		for (const control of controlsInRow) {
 			if (control === "begin") open.push({ depth: open.length });
+			else if (control === "begin-summary") open.push({ depth: open.length, summary: index });
 			else if (control === "body") {
 				const fold = [...open].reverse().find((candidate) => candidate.body === undefined);
 				if (fold) fold.body = index;
 			} else {
 				const fold = open.pop();
-				if (fold?.body === undefined || !collapsed(fold.depth)) continue;
+				if (fold?.body === undefined) continue;
+				if (!collapsed(fold.depth)) {
+					if (fold.summary !== undefined) hidden.add(fold.summary);
+					continue;
+				}
 				for (let hiddenRow = fold.body; hiddenRow <= index; hiddenRow++) hidden.add(hiddenRow);
 			}
 		}
@@ -1236,6 +1272,137 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(foldedRows(component.render(60), () => false).join("")).toContain("Long.kt");
 	});
 
+	it("opens a built-in edit with a long path to its complete header on the first row without the summary", () => {
+		const path = `../jetbrains-terminal_worktrees/semantic-resize-r0/src/uiTest/kotlin/${"segment/".repeat(4)}Long.kt`;
+		const component = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path, edits: [{ oldText: "a", newText: "b" }] },
+			"ok",
+		);
+		const open = foldedRows(component.render(60), () => false);
+
+		expect(open[1]).toMatch(/^edit \.\.\/jetbrains-terminal_worktrees\//);
+		expect(open.filter((row) => row === "edit" || row.endsWith("…"))).toEqual([]);
+		expect(open.join("").split("Long.kt")).toHaveLength(2);
+		expect(foldedRows(component.render(60), () => true)).toEqual(["", expect.stringMatching(/^edit .*…$/)]);
+	});
+
+	it("opens a call without a definition and a long first line to its complete call without the summary", () => {
+		const component = new ToolExecutionComponent(
+			"a_tool_name_that_wraps_at_a_narrow_width",
+			"call-long-name",
+			{ action: "list" },
+			{
+				ownerEntryId: "assistant-a",
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [summaryAware],
+			},
+			undefined,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "long name output" }], isError: false });
+		const open = foldedRows(component.render(24), () => false);
+
+		expect(open.filter((row) => row.endsWith("…"))).toEqual([]);
+		expect(open.join("").split("a_tool_name_that_wraps")).toHaveLength(2);
+	});
+
+	it("keeps the owner title of an opaque call renderer as its header in the open Fold", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const component = savedCall(
+			{
+				renderShell: "self",
+				renderCall: () => ({ render: () => ["opaque call row"], invalidate() {} }),
+				renderResult: () => new Text("opaque result", 0, 0),
+			},
+			[],
+			recording(contexts),
+		);
+		component.render(80);
+
+		expect(contexts.map((context) => context.summaryRow)).toEqual([undefined]);
+	});
+
+	it("gives the decorator the summary row of a Text call part whose first line does not fit", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const component = savedCall(
+			{ renderCall: () => new Text(`process ${"argument ".repeat(8)}`, 0, 0) },
+			[],
+			recording(contexts),
+		);
+		component.render(40);
+
+		expect(contexts.map((context) => context.summaryRow)).toEqual([1]);
+	});
+
+	it("gives the decorator the summary row only when the begin row summarizes the next header row", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const fits = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path: "a.ts", edits: [{ oldText: "a", newText: "b" }] },
+			"ok",
+		);
+		const long = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path: `src/${"segment/".repeat(12)}Long.kt`, edits: [{ oldText: "a", newText: "b" }] },
+			"ok",
+		);
+		for (const component of [fits, long]) {
+			(component as unknown as { semanticDecoratorsV2: unknown[] }).semanticDecoratorsV2 = [
+				(context: MessageRenderBoundaryContextV1) => {
+					contexts.push(context);
+					return controls;
+				},
+			];
+			component.render(60);
+		}
+
+		expect(contexts.map((context) => [context.summaryRow, context.bodyRow])).toEqual([
+			[undefined, 2],
+			[1, 2],
+		]);
+	});
+
+	it("summarizes a failed built-in edit with a long path in one row with its cue and opens it to one header", () => {
+		const component = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path: `src/${"segment/".repeat(12)}Long.kt`, edits: [{ oldText: "a", newText: "b" }] },
+			"no",
+		);
+		component.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
+		const rows = component.render(60);
+		const open = foldedRows(rows, () => false);
+
+		expect(foldedRows(rows, () => true)).toEqual(["", expect.stringMatching(/^edit src\/.*… Failed$/)]);
+		expect([open.filter((row) => row.startsWith("edit")).length, open.join("").split("Long.kt").length]).toEqual([
+			1, 2,
+		]);
+	});
+
+	it("summarizes a failed built-in edit whose header fits only without its cue", () => {
+		const path = "src/a.ts";
+		const width = visibleWidth(`edit ${path}`) + 2;
+		const component = foldedBuiltIn(
+			"edit",
+			editRenderersFor(),
+			{ path, edits: [{ oldText: "a", newText: "b" }] },
+			"no",
+		);
+		component.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
+		const rows = component.render(width);
+
+		expect([
+			foldedRows(rows, () => true),
+			foldedRows(rows, () => false).filter((row) => row.startsWith("edit")),
+		]).toEqual([["", expect.stringMatching(/…/)], [`edit ${path}`]]);
+	});
+
 	it("shows a collapsed built-in edit whose header fits as its one header row without a repeated header", () => {
 		const component = foldedBuiltIn(
 			"edit",
@@ -1258,7 +1425,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 			"ok",
 		);
 		const summary = (width: number) => {
-			const rows = component.render(width);
+			const rows = component.render(width).map((row) => row.replaceAll(summaryBegin, controls.begin));
 			const begin = boundaryRows(rows).begin[0]!;
 			return { row: rows[begin]!, body: boundaryRows(rows).body[0], begin, collapsed: foldedRows(rows, () => true) };
 		};

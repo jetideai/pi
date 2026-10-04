@@ -1457,6 +1457,11 @@ export interface MessageRenderBoundaryContextV1 {
 	 * places a body boundary. Without it the block has no foldable body in this render.
 	 */
 	readonly bodyRow?: number;
+	/**
+	 * The begin row when it is a one-row summary of a known canonical header that starts at [bodyRow], the next row.
+	 * The summary shows while the body is folded; the open body shows the header itself.
+	 */
+	readonly summaryRow?: number;
 }
 
 /** Zero-column terminal controls to place around one built-in message render. */

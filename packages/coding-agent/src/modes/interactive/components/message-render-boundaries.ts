@@ -160,6 +160,8 @@ export function decorateMessageRenderV2(
 		entryId: string;
 		ownerEntryId?: string;
 		beginRow?: number;
+		/** The begin row when it is a one-row summary of the header that starts at the body row. */
+		summaryRow?: number;
 		decorators: readonly MessageRenderBoundaryDecoratorV2[];
 		sourcePointRevision?: number;
 	},
@@ -181,6 +183,7 @@ export function decorateMessageRenderV2(
 		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
 		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
 		...(foldableBodyRow !== undefined ? { bodyRow: foldableBodyRow } : {}),
+		...(options.summaryRow === beginRow && foldableBodyRow === beginRow + 1 ? { summaryRow: beginRow } : {}),
 	});
 	const begins: string[] = [];
 	const bodies: string[] = [];

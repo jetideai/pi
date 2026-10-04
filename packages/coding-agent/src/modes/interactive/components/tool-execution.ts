@@ -47,7 +47,12 @@ export interface ToolRenderers {
 	) => Component;
 }
 
-import { getTextOutput as getRenderedTextOutput, SectionedToolCallHeader } from "../../../core/tools/render-utils.ts";
+import {
+	getTextOutput as getRenderedTextOutput,
+	SectionedToolCallHeader,
+	sectionedHeaderOf,
+	sectionedHeaderSummarized,
+} from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -354,6 +359,11 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): string[] {
 		if (this.hideComponent) return [];
+		// The owned call text fills the first row of its first line in sections, as a sectioned header does.
+		this.contentText.setFillFirstLine(this.rendersSemanticSections());
+		// A sectioned header keeps room for the outcome cue on its summary row, so the cue never needs a title summary.
+		const header = this.callPartComponent && sectionedHeaderOf(this.callPartComponent);
+		header?.setReservedWidth(this.rendersSemanticSections() ? this.reservedCueWidth(this.callWidth(width)) : 0);
 		return this.decorateSemanticSections(this.withOutcomeCue(this.renderStock(width), width), width);
 	}
 
@@ -443,14 +453,21 @@ export class ToolExecutionComponent extends Container {
 	private decorateSemanticSections(lines: string[], width: number): string[] {
 		if (!this.rendersSemanticSections()) return lines;
 		// A summary row is the header: the located rows of the renderer are then body rows.
-		const rows =
-			(this.callSummary ? undefined : this.locatedSemanticRows(width)) ?? this.wholeCallSemanticRows(width);
+		const located = this.callSummary ? undefined : this.locatedSemanticRows(width);
+		const rows = located ?? this.wholeCallSemanticRows(width);
 		if (!rows || rows.header >= lines.length) return lines;
+		// The header row is a summary only when a known canonical header follows it: a sectioned header that
+		// summarized, or the owned call text or a Text call part. The title summary of an opaque part is its header.
+		const call = this.callPartComponent;
+		const summarizes =
+			(call !== undefined && sectionedHeaderSummarized(call)) ||
+			(!located && this.callSummary && (!this.hasRendererDefinition() || call instanceof Text));
 		// Without a body row the call is a plain range: the decorator context then has no foldable body.
 		return decorateMessageRenderV2(lines, rows.body, width, "tool", 0, {
 			entryId: this.toolCallId,
 			...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
 			beginRow: rows.header,
+			...(summarizes ? { summaryRow: rows.header } : {}),
 			decorators: this.semanticDecoratorsV2,
 			sourcePointRevision: this.sourcePointRevision,
 		});
@@ -588,11 +605,13 @@ export class ToolExecutionComponent extends Container {
 		if (!this.hasRendererDefinition()) return this.contentText.summaryRow(width - this.reservedCueWidth(width));
 		const call = this.callPartComponent;
 		if (!call) return undefined;
+		// A sectioned header gives its own summary row, with room for the cue.
+		if (sectionedHeaderOf(call)) return undefined;
 		const self = this.getRenderShell() === "self";
-		const callWidth = self ? width : Math.max(0, width - 2);
+		const callWidth = this.callWidth(width);
 		const reserved = this.reservedCueWidth(callWidth);
 		let summary: string | undefined;
-		if (call instanceof SectionedToolCallHeader || this.locatesOwnRows(width)) {
+		if (this.locatesOwnRows(width)) {
 			// The header row of the renderer keeps its place when it has room for the cue; otherwise the title summarizes
 			// it, and all rows of the call follow in the body.
 			if (reserved === 0 || this.ownHeaderRowHasRoom(callWidth, reserved)) return undefined;
@@ -609,6 +628,11 @@ export class ToolExecutionComponent extends Container {
 		const shell = new Box(1, 0, this.shellBgFn);
 		shell.addChild({ render: () => [summary], invalidate: () => {} });
 		return shell.render(width)[0];
+	}
+
+	/** The width of the call part: the padded shell takes one column on each side. */
+	private callWidth(width: number): number {
+		return this.getRenderShell() === "self" ? width : Math.max(0, width - 2);
 	}
 
 	private summaryRows(width: number): number {
