@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import type { Container } from "@earendil-works/pi-tui";
+import { type Container, Text } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import {
@@ -200,6 +200,9 @@ interface WindowedMode {
 	chatContainer: Container;
 	pendingTools: Map<string, unknown>;
 	documentContainer: Container;
+	headerContainer: Container;
+	loadedResourcesContainer: Container;
+	resourceDiagnosticsContainer: Container;
 	renderer: {
 		addChild(component: Container): void;
 		renderNow(): void;
@@ -532,6 +535,104 @@ describe("InteractiveMode transcript window", () => {
 		expect(latest().liveTail).toBe(true);
 		expect(loadedTurns(latest())).toEqual([8]);
 		expect(text()).toContain("trailing-notice");
+	});
+
+	describe("history continuation", () => {
+		const EARLIER = "Earlier messages are not loaded — scroll up to load";
+		const LATER = "Later messages are not loaded — scroll down to load";
+
+		/** The rows of the mounted document with fixture markers in the startup chrome and the resource warnings. */
+		async function documentWithChrome() {
+			const session = await createWindowedMode();
+			session.mode.headerContainer.addChild(new Text("FIXTURE-BANNER", 0, 0));
+			session.mode.loadedResourcesContainer.addChild(new Text("FIXTURE-RESOURCES", 0, 0));
+			session.mode.resourceDiagnosticsContainer.addChild(new Text("FIXTURE-WARNING", 0, 0));
+			const rows = (width = 120) =>
+				session.mode.documentContainer
+					.render(width)
+					.map((row) => stripAnsi(row).trim())
+					.filter((row) => row.length > 0);
+			return { ...session, rows };
+		}
+
+		it("puts an earlier-messages indicator, and no startup banner or resource list, above a later window", async () => {
+			const { window, rows } = await documentWithChrome();
+
+			window(5);
+
+			const shown = rows();
+			expect(shown.slice(0, 2)).toEqual(["FIXTURE-WARNING", EARLIER]);
+			expect(shown).not.toContain("FIXTURE-BANNER");
+			expect(shown).not.toContain("FIXTURE-RESOURCES");
+		});
+
+		it("keeps the startup banner and the resource list without an indicator above the first section", async () => {
+			const { window, rows } = await documentWithChrome();
+
+			window(1);
+
+			const shown = rows();
+			const order = ["FIXTURE-BANNER", "FIXTURE-RESOURCES", "FIXTURE-WARNING"].map((row) => shown.indexOf(row));
+			expect({
+				order: order.every((index, at) => index >= 0 && (at === 0 || index > order[at - 1]!)),
+				earlier: shown.includes(EARLIER),
+			}).toEqual({
+				order: true,
+				earlier: false,
+			});
+		});
+
+		it("ends a window before the live tail with a later-messages indicator and the live tail without one", async () => {
+			const { window, rows } = await documentWithChrome();
+
+			window(5);
+			const older = rows();
+			window(8);
+			const tail = rows();
+
+			expect({
+				olderEnd: older.at(-1),
+				tailLater: tail.includes(LATER),
+				tailNotice: tail.some((row) => row.includes("trailing-notice")),
+			}).toEqual({ olderEnd: LATER, tailLater: false, tailNotice: true });
+		});
+
+		it("keeps the notice at the start of a section whole after the earlier-messages indicator", async () => {
+			const { window, rows, text } = await documentWithChrome();
+
+			window(5);
+			const chat = text()
+				.split("\n")
+				.map((row) => row.trim())
+				.filter((row) => row.length > 0);
+
+			const shown = rows();
+			expect(shown.slice(2, 2 + chat.length)).toEqual(chat);
+		});
+
+		it("shows one indicator of each kind after repeated windows and a refused window", async () => {
+			const { window, requestWindow, rows } = await documentWithChrome();
+
+			window(5);
+			window(1);
+			window(5);
+			requestWindow({ entryId: "missing-entry", role: "user" });
+
+			const shown = rows();
+			expect([shown.filter((row) => row === EARLIER).length, shown.filter((row) => row === LATER).length]).toEqual([
+				1, 1,
+			]);
+		});
+
+		it("wraps both indicators at a narrow width and keeps their words", async () => {
+			const { window, rows } = await documentWithChrome();
+
+			window(5);
+			const narrow = rows(24).join(" ");
+
+			for (const word of [...EARLIER.split(" "), ...LATER.split(" ")]) expect(narrow).toContain(word);
+			expect(rows(24).every((row) => row.length <= 24)).toBe(true);
+		});
 	});
 
 	it("loads the live tail before a message that the user submits from an older section", async () => {

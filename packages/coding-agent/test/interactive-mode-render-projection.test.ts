@@ -2022,6 +2022,12 @@ describe("Tool Call execution state", () => {
 			addUserMessagesToHistory: vi.fn(),
 			renderProjectTrustWarningIfNeeded: vi.fn(),
 			updateFooter: vi.fn(),
+			documentContainer: new Container(),
+			headerContainer: new Container(),
+			loadedResourcesContainer: new Container(),
+			resourceDiagnosticsContainer: new Container(),
+			earlierHistoryContainer: new Container(),
+			laterHistoryContainer: new Container(),
 		});
 		Reflect.get(InteractiveMode.prototype, "renderInitialMessages").call(mode);
 

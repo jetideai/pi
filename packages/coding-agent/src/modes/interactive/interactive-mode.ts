@@ -603,12 +603,21 @@ export interface InteractiveModeOptions {
 	terminal?: Terminal;
 }
 
+const EARLIER_MESSAGES_NOT_LOADED = "Earlier messages are not loaded — scroll up to load";
+const LATER_MESSAGES_NOT_LOADED = "Later messages are not loaded — scroll down to load";
+
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private renderer: TuiMainScreen | TuiAltScreen;
 	private ui: TUI;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 	private loadedResourcesContainer: Container;
+	/** The resource warnings and errors: they show also when the startup chrome does not. */
+	private resourceDiagnosticsContainer: Container;
+	/** Says that earlier messages are not loaded, above a window that does not start at the first section. */
+	private earlierHistoryContainer: Container;
+	/** Says that later messages are not loaded, below a window that does not end at the live tail. */
+	private laterHistoryContainer: Container;
 	private chatContainer: Container;
 	private documentContainer: Container;
 	private transcriptScrollView: TuiLayouts.ScrollView | undefined;
@@ -819,11 +828,12 @@ export class InteractiveMode {
 		this.ui.setReplayTransactionProvider(this.replayTransactionProvider);
 		this.headerContainer = new Container();
 		this.loadedResourcesContainer = new Container();
+		this.resourceDiagnosticsContainer = new Container();
+		this.earlierHistoryContainer = new Container();
+		this.laterHistoryContainer = new Container();
 		this.chatContainer = new Container();
 		this.documentContainer = new Container();
-		this.documentContainer.addChild(this.headerContainer);
-		this.documentContainer.addChild(this.loadedResourcesContainer);
-		this.documentContainer.addChild(this.chatContainer);
+		this.layoutHistoryWindow(undefined);
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.widgetContainerAbove = new Container();
@@ -1934,6 +1944,7 @@ export class InteractiveMode {
 	}): void {
 		// Resource rendering is idempotent; chat clears no longer clear this separate container.
 		this.loadedResourcesContainer.clear();
+		this.resourceDiagnosticsContainer.clear();
 
 		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
 		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
@@ -2091,19 +2102,19 @@ export class InteractiveMode {
 			const skillDiagnostics = skillsResult.diagnostics;
 			if (skillDiagnostics.length > 0) {
 				const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
-				this.loadedResourcesContainer.addChild(
+				this.resourceDiagnosticsContainer.addChild(
 					new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0),
 				);
-				this.loadedResourcesContainer.addChild(new Spacer(1));
+				this.resourceDiagnosticsContainer.addChild(new Spacer(1));
 			}
 
 			const promptDiagnostics = promptsResult.diagnostics;
 			if (promptDiagnostics.length > 0) {
 				const warningLines = this.formatDiagnostics(promptDiagnostics, sourceInfos);
-				this.loadedResourcesContainer.addChild(
+				this.resourceDiagnosticsContainer.addChild(
 					new Text(`${theme.fg("warning", "[Prompt conflicts]")}\n${warningLines}`, 0, 0),
 				);
-				this.loadedResourcesContainer.addChild(new Spacer(1));
+				this.resourceDiagnosticsContainer.addChild(new Spacer(1));
 			}
 
 			const extensionDiagnostics: ResourceDiagnostic[] = [];
@@ -2123,19 +2134,19 @@ export class InteractiveMode {
 
 			if (extensionDiagnostics.length > 0) {
 				const warningLines = this.formatDiagnostics(extensionDiagnostics, sourceInfos);
-				this.loadedResourcesContainer.addChild(
+				this.resourceDiagnosticsContainer.addChild(
 					new Text(`${theme.fg("warning", "[Extension issues]")}\n${warningLines}`, 0, 0),
 				);
-				this.loadedResourcesContainer.addChild(new Spacer(1));
+				this.resourceDiagnosticsContainer.addChild(new Spacer(1));
 			}
 
 			const themeDiagnostics = themesResult.diagnostics;
 			if (themeDiagnostics.length > 0) {
 				const warningLines = this.formatDiagnostics(themeDiagnostics, sourceInfos);
-				this.loadedResourcesContainer.addChild(
+				this.resourceDiagnosticsContainer.addChild(
 					new Text(`${theme.fg("warning", "[Theme conflicts]")}\n${warningLines}`, 0, 0),
 				);
-				this.loadedResourcesContainer.addChild(new Spacer(1));
+				this.resourceDiagnosticsContainer.addChild(new Spacer(1));
 			}
 		}
 	}
@@ -2350,6 +2361,7 @@ export class InteractiveMode {
 
 	private renderCurrentSessionState(): void {
 		this.loadedResourcesContainer.clear();
+		this.resourceDiagnosticsContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
@@ -5192,6 +5204,7 @@ export class InteractiveMode {
 	): void {
 		const { items, window, sections } = transcript;
 		this.renderSessionItems(items, { ...options, sections, ...(window ? { window } : {}) });
+		this.layoutHistoryWindow(window);
 		const loadedIds = window
 			? items.slice(window.start, window.end).flatMap((item) => {
 					const { entryId } = transcriptWindowItem(item, 0);
@@ -5208,6 +5221,36 @@ export class InteractiveMode {
 						liveTail: window!.liveTail,
 					}
 				: undefined;
+	}
+
+	/**
+	 * The startup chrome and the continuation indicators of the selected window. The startup banner and the resource
+	 * list show only above the first section. An indicator says that earlier or later messages are not loaded; it is
+	 * not a loading state. The resource warnings always show.
+	 */
+	private layoutHistoryWindow(window: { readonly start: number; readonly liveTail: boolean } | undefined): void {
+		const earlier = window !== undefined && window.start > 0;
+		const later = window !== undefined && !window.liveTail;
+		this.documentContainer.clear();
+		for (const child of [
+			...(earlier ? [] : [this.headerContainer, this.loadedResourcesContainer]),
+			this.resourceDiagnosticsContainer,
+			this.earlierHistoryContainer,
+			this.chatContainer,
+			this.laterHistoryContainer,
+		]) {
+			this.documentContainer.addChild(child);
+		}
+		this.earlierHistoryContainer.clear();
+		if (earlier) {
+			this.earlierHistoryContainer.addChild(new Text(theme.fg("dim", EARLIER_MESSAGES_NOT_LOADED), 1, 0));
+			this.earlierHistoryContainer.addChild(new Spacer(1));
+		}
+		this.laterHistoryContainer.clear();
+		if (later) {
+			this.laterHistoryContainer.addChild(new Spacer(1));
+			this.laterHistoryContainer.addChild(new Text(theme.fg("dim", LATER_MESSAGES_NOT_LOADED), 1, 0));
+		}
 	}
 
 	/**

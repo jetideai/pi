@@ -51,6 +51,7 @@ type LoadedResourcesResult<T> = { [K in keyof T]: T[K] } & { diagnostics: [] };
 
 type LoadedResourcesContext = {
 	loadedResourcesContainer: Container;
+	resourceDiagnosticsContainer: Container;
 	chatContainer: Container;
 	options: { verbose?: boolean };
 	settingsManager: { getQuietStartup: () => boolean };
@@ -235,6 +236,7 @@ function getMessageText(event: MessageEvent): string {
 function createLoadedResourcesContext(): LoadedResourcesContext {
 	return {
 		loadedResourcesContainer: new Container(),
+		resourceDiagnosticsContainer: new Container(),
 		chatContainer: new Container(),
 		options: { verbose: true },
 		settingsManager: { getQuietStartup: () => false },

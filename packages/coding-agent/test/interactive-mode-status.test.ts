@@ -529,6 +529,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			options: { verbose: options.verbose ?? false },
 			toolOutputExpanded: options.toolOutputExpanded ?? false,
 			loadedResourcesContainer: new Container(),
+			resourceDiagnosticsContainer: new Container(),
 			chatContainer: new Container(),
 			settingsManager: {
 				getQuietStartup: () => options.quietStartup,
@@ -1244,8 +1245,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 			showDiagnosticsWhenQuiet: true,
 		});
 
-		const output = renderAll(fakeThis.loadedResourcesContainer);
-		expect(output).toContain("[Skill conflicts]");
-		expect(output).not.toContain("[Skills]");
+		// The warnings have their own container, which shows also above a window without the startup chrome.
+		expect(renderAll(fakeThis.resourceDiagnosticsContainer)).toContain("[Skill conflicts]");
+		expect(renderAll(fakeThis.loadedResourcesContainer)).not.toContain("[Skills]");
 	});
 });
