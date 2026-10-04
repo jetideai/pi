@@ -123,3 +123,15 @@ describe("Text first line fill", () => {
 		assert.deepEqual(text.render(10), ["edit eeeee", "eeeeeee   "]);
 	});
 });
+
+describe("Text first line suffix", () => {
+	it("wraps a suffix with the end of the first line and keeps it out of the summary row", () => {
+		const text = new Text("a first line\nsecond", 0, 0);
+		text.setFirstLineSuffix(" Failed");
+
+		assert.deepEqual(
+			[text.render(16).map((row) => row.trimEnd()), stripTerminalSequences(text.summaryRow(10) ?? "")],
+			[["a first line", "Failed", "second"], "a first l…"],
+		);
+	});
+});

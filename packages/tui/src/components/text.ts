@@ -18,6 +18,7 @@ export class Text implements Component {
 	private customBgFn?: (text: string) => string;
 	private decoratePreWrap?: PreWrapTextDecorator;
 	private fillFirstLine = false;
+	private firstLineSuffix = "";
 	private prepared?: PreparedTextWithAnsi;
 	private cached?: { width: number; maxLines: number | undefined; lines: string[]; totalLines: number };
 
@@ -58,6 +59,14 @@ export class Text implements Component {
 		this.cached = undefined;
 	}
 
+	/** Append [suffix] to the first line before wrapping; summaryRow and getText do not include it. */
+	setFirstLineSuffix(suffix: string): void {
+		if (this.firstLineSuffix === suffix) return;
+		this.firstLineSuffix = suffix;
+		this.prepared = undefined;
+		this.cached = undefined;
+	}
+
 	setCustomBgFn(customBgFn?: (text: string) => string): void {
 		this.customBgFn = customBgFn;
 		this.cached = undefined;
@@ -93,9 +102,11 @@ export class Text implements Component {
 			return this.cached;
 		}
 
-		this.prepared ??= new PreparedTextWithAnsi(
-			decoratePreWrapText(this.text.replace(/\t/g, "   ").split("\n"), this.decoratePreWrap).join("\n"),
-		);
+		if (!this.prepared) {
+			const lines = this.text.replace(/\t/g, "   ").split("\n");
+			lines[0] += this.firstLineSuffix;
+			this.prepared = new PreparedTextWithAnsi(decoratePreWrapText(lines, this.decoratePreWrap).join("\n"));
+		}
 
 		// Reduce margins when necessary so content and padding fit within the available width.
 		const paddingX = Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2)));
