@@ -429,9 +429,15 @@ export class ToolExecutionComponent extends Container {
 	 * cue. A sectioned header also keeps room for the cue on its summary row, so it never needs a title summary.
 	 */
 	private placeOutcomeCue(width: number): void {
-		const room = this.hasRendererDefinition() ? this.callWidth(width) : width;
-		const cue = this.rendersSemanticSections() ? this.reservedCue(room) : "";
 		const call = this.callPartComponent;
+		if (!this.rendersSemanticSections()) {
+			// Without sections there is no summary row, and no renderer location is asked.
+			if (call) sectionedHeaderOf(call)?.setOutcomeCue("");
+			this.contentText.setFirstLineSuffix("");
+			if (call instanceof Text) call.setFirstLineSuffix("");
+			return;
+		}
+		const cue = this.reservedCue(this.hasRendererDefinition() ? this.callWidth(width) : width);
 		if (call) sectionedHeaderOf(call)?.setOutcomeCue(cue);
 		this.summarizedText(width)?.setFirstLineSuffix(cue && this.callSummaryRow(width) !== undefined ? cue : "");
 	}
