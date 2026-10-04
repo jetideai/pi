@@ -1477,6 +1477,27 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 				});
 			}
 		}
+		for (const header of [headers[1]!, headers[3]!, headers[4]!]) {
+			it(`shows one cue in each Fold state of ${header.name} from wide to narrow to wide`, () => {
+				const component = header.create();
+				outcomes[0]!.settle(component);
+				const cues = (width: number) => {
+					const rows = component.render(width);
+					return [true, false].map(
+						(collapsed) =>
+							foldedRows(rows, () => collapsed)
+								.join("")
+								.split("Failed").length - 1,
+					);
+				};
+
+				expect([cues(120), cues(header.width), cues(120)]).toEqual([
+					[1, 1],
+					[1, 1],
+					[1, 1],
+				]);
+			});
+		}
 	});
 
 	it("shows a collapsed built-in edit whose header fits as its one header row without a repeated header", () => {
