@@ -39,6 +39,8 @@ type RenderSessionContextThis = {
 	uncommittedToolResults: UncommittedToolResults;
 	seedToolExecution: unknown;
 	remountLiveRun: unknown;
+	publishMessageRenderExecutionStateV1: unknown;
+	getMessageRenderExecutionObserversV1: () => unknown[];
 	chatContainer: Container;
 	footer: { invalidate(): void };
 	ui: TUI;
@@ -85,6 +87,11 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		uncommittedToolResults: new UncommittedToolResults(),
 		seedToolExecution: Reflect.get(InteractiveMode.prototype, "seedToolExecution"),
 		remountLiveRun: Reflect.get(InteractiveMode.prototype, "remountLiveRun"),
+		publishMessageRenderExecutionStateV1: Reflect.get(
+			InteractiveMode.prototype,
+			"publishMessageRenderExecutionStateV1",
+		),
+		getMessageRenderExecutionObserversV1: () => [],
 		chatContainer,
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() } as unknown as TUI,
