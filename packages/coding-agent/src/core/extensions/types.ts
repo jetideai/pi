@@ -1438,7 +1438,8 @@ export interface MessageRenderRangeV1 {
 	end: number;
 }
 
-export type MessageRenderRoleV1 = "user" | "assistant" | "tool-group" | "tool";
+/** "continuation" is presentation geometry: the row that says a transcript window continues; never history. */
+export type MessageRenderRoleV1 = "user" | "assistant" | "tool-group" | "tool" | "continuation";
 
 /** Facts from one completed built-in semantic object render. */
 export interface MessageRenderBoundaryContextV1 {
@@ -1489,7 +1490,8 @@ export interface MessageRenderBoundaryCandidateV3 {
 	renderScopeId: string;
 	entryId: string;
 	blockId: string;
-	role: "tool" | "tool-group";
+	/** "continuation" marks the continuation row of a transcript window; its blockId is "earlier" or "later". */
+	role: "tool" | "tool-group" | "continuation";
 	state: "expanded";
 	ownerEntryId?: string;
 }

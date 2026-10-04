@@ -176,6 +176,7 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
+import { type HistoryContinuationOptions, HistoryContinuationRow } from "./components/history-continuation.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
@@ -602,9 +603,6 @@ export interface InteractiveModeOptions {
 	/** Terminal implementation. Defaults to the current process terminal. */
 	terminal?: Terminal;
 }
-
-const EARLIER_MESSAGES_NOT_LOADED = "Earlier messages are not loaded — scroll up to load";
-const LATER_MESSAGES_NOT_LOADED = "Later messages are not loaded — scroll down to load";
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
@@ -5224,9 +5222,9 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * The startup chrome and the continuation indicators of the selected window. The startup banner and the resource
-	 * list show only above the first section. An indicator says that earlier or later messages are not loaded; it is
-	 * not a loading state. The resource warnings always show.
+	 * The startup chrome and the continuation rows of the selected window. The startup banner and the resource list
+	 * show only above the first section. A continuation row is a quiet rule with an arrow toward the messages that are
+	 * not loaded; it is not a loading state. The resource warnings always show.
 	 */
 	private layoutHistoryWindow(window: { readonly start: number; readonly liveTail: boolean } | undefined): void {
 		const earlier = window !== undefined && window.start > 0;
@@ -5243,14 +5241,24 @@ export class InteractiveMode {
 		}
 		this.earlierHistoryContainer.clear();
 		if (earlier) {
-			this.earlierHistoryContainer.addChild(new Text(theme.fg("dim", EARLIER_MESSAGES_NOT_LOADED), 1, 0));
+			this.earlierHistoryContainer.addChild(
+				new HistoryContinuationRow("earlier", this.historyContinuationOptions()),
+			);
 			this.earlierHistoryContainer.addChild(new Spacer(1));
 		}
 		this.laterHistoryContainer.clear();
 		if (later) {
 			this.laterHistoryContainer.addChild(new Spacer(1));
-			this.laterHistoryContainer.addChild(new Text(theme.fg("dim", LATER_MESSAGES_NOT_LOADED), 1, 0));
+			this.laterHistoryContainer.addChild(new HistoryContinuationRow("later", this.historyContinuationOptions()));
 		}
+	}
+
+	private historyContinuationOptions(): HistoryContinuationOptions {
+		return {
+			producerSessionId: this.sessionManager.getSessionId(),
+			renderScopeId: this.messageRenderScopeId,
+			semanticSelectorsV3: this.getMessageRenderBoundarySelectorsV3(),
+		};
 	}
 
 	/**

@@ -23,6 +23,7 @@ import type {
 import type { BashExecutionMessage } from "../src/core/messages.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { continuationRule } from "../src/modes/interactive/components/history-continuation.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { selectTranscriptWindow, type TranscriptWindowItem } from "../src/modes/interactive/transcript-window.ts";
@@ -538,8 +539,8 @@ describe("InteractiveMode transcript window", () => {
 	});
 
 	describe("history continuation", () => {
-		const EARLIER = "Earlier messages are not loaded — scroll up to load";
-		const LATER = "Later messages are not loaded — scroll down to load";
+		const EARLIER = continuationRule("earlier", 120);
+		const LATER = continuationRule("later", 120);
 
 		/** The rows of the mounted document with fixture markers in the startup chrome and the resource warnings. */
 		async function documentWithChrome(options: { transcriptWindows?: boolean } = {}) {
@@ -649,14 +650,16 @@ describe("InteractiveMode transcript window", () => {
 			});
 		});
 
-		it("wraps both indicators at a narrow width and keeps their words", async () => {
+		it("draws each continuation rule as one row of a narrow width", async () => {
 			const { window, rows } = await documentWithChrome();
 
 			window(5);
-			const narrow = rows(24).join(" ");
+			const narrow = rows(24);
 
-			for (const word of [...EARLIER.split(" "), ...LATER.split(" ")]) expect(narrow).toContain(word);
-			expect(rows(24).every((row) => row.length <= 24)).toBe(true);
+			expect([
+				narrow.filter((row) => row === continuationRule("earlier", 24)).length,
+				narrow.filter((row) => row === continuationRule("later", 24)).length,
+			]).toEqual([1, 1]);
 		});
 	});
 
