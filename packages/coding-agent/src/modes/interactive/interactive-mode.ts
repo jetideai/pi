@@ -2701,6 +2701,7 @@ export class InteractiveMode {
 		finalized?: MessageRenderFinalizedEntryV1,
 		inferMissingTurns: boolean = false,
 		liveTail?: boolean,
+		requested: boolean = false,
 	): void {
 		const observers = this.getMessageRenderProjectionObserversV1();
 		if (observers.length === 0) return;
@@ -2726,7 +2727,8 @@ export class InteractiveMode {
 				return entry?.type === "message" ? entry.message : undefined;
 			},
 		});
-		if (sameProjection(this.publishedMessageRenderProjection, projection) && !finalized) return;
+		// A requested window needs its own replay, so only an unrequested equal projection is not published again.
+		if (sameProjection(this.publishedMessageRenderProjection, projection) && !finalized && !requested) return;
 		this.publishedMessageRenderProjection = projection;
 		publishMessageRenderProjection(projection, observers);
 	}
@@ -4932,6 +4934,8 @@ export class InteractiveMode {
 		options: {
 			updateFooter?: boolean;
 			inferMissingTurns?: boolean;
+			/** An extension requested this window: it is a new replacement, also when its members are the same. */
+			requested?: boolean;
 			window?: { start: number; end: number; liveTail: boolean };
 			/** The compaction section of each item: it cuts Tool Group runs, and a window gives it to every member. */
 			sections?: readonly number[];
@@ -4982,6 +4986,7 @@ export class InteractiveMode {
 				undefined,
 				options.inferMissingTurns ?? false,
 				window?.liveTail,
+				options.requested ?? false,
 			);
 		}
 		const semanticSelectors = this.getMessageRenderBoundarySelectorsV3();
@@ -5179,7 +5184,7 @@ export class InteractiveMode {
 			);
 		if (!present(request) || (through && !present(through)) || !transcript.window) return { status: "missing" };
 		this.chatContainer.clear();
-		this.renderTranscript(transcript, { inferMissingTurns: true });
+		this.renderTranscript(transcript, { inferMissingTurns: true, requested: true });
 		return { status: "applied" };
 	}
 
@@ -5198,7 +5203,7 @@ export class InteractiveMode {
 	/** Render the selected transcript and remember the canonical identity of its loaded sections. */
 	private renderTranscript(
 		transcript: ReturnType<InteractiveMode["selectTranscript"]>,
-		options: { updateFooter?: boolean; inferMissingTurns?: boolean },
+		options: { updateFooter?: boolean; inferMissingTurns?: boolean; requested?: boolean },
 	): void {
 		const { items, window, sections } = transcript;
 		this.renderSessionItems(items, { ...options, sections, ...(window ? { window } : {}) });

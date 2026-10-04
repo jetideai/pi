@@ -788,6 +788,27 @@ describe("InteractiveMode transcript window", () => {
 		expect(replayed).toContain("Question 3");
 		expect(replayed).not.toContain("Question 4");
 	});
+	it("replays the same window again in a new capture generation when a request repeats it", async () => {
+		const { window, rawRender } = await createWindowedMode();
+		window(1);
+		rawRender();
+
+		expect(window(1)).toEqual({ status: "applied" });
+		const output = rawRender();
+
+		expect(output.indexOf("\x1b]777;begin-scope-3-")).toBe(0);
+		expect(output.endsWith("\x1b]777;end-scope-3\x07")).toBe(true);
+	});
+
+	it("publishes no projection for a rebuild that keeps the same window", async () => {
+		const { mode, window, projections } = await createWindowedMode({ transcriptWindows: true });
+		window(1);
+		const before = projections.length;
+
+		(mode as unknown as { rebuildChatFromMessages(): void }).rebuildChatFromMessages();
+
+		expect(projections).toHaveLength(before);
+	});
 	describe("with two compactions inside one turn", () => {
 		const markers = ["Question one", "path-t1", "path-t2", "path-t3", "path-t4", "Final answer"];
 		const counts = (text: string) => markers.map((marker) => text.split(marker).length - 1);
