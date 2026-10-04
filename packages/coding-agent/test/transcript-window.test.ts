@@ -542,8 +542,8 @@ describe("InteractiveMode transcript window", () => {
 		const LATER = "Later messages are not loaded — scroll down to load";
 
 		/** The rows of the mounted document with fixture markers in the startup chrome and the resource warnings. */
-		async function documentWithChrome() {
-			const session = await createWindowedMode();
+		async function documentWithChrome(options: { transcriptWindows?: boolean } = {}) {
+			const session = await createWindowedMode(options);
 			session.mode.headerContainer.addChild(new Text("FIXTURE-BANNER", 0, 0));
 			session.mode.loadedResourcesContainer.addChild(new Text("FIXTURE-RESOURCES", 0, 0));
 			session.mode.resourceDiagnosticsContainer.addChild(new Text("FIXTURE-WARNING", 0, 0));
@@ -622,6 +622,31 @@ describe("InteractiveMode transcript window", () => {
 			expect([shown.filter((row) => row === EARLIER).length, shown.filter((row) => row === LATER).length]).toEqual([
 				1, 1,
 			]);
+		});
+
+		it("sets the indicators from the current window through a reload and a new session", async () => {
+			const { mode, window, runtimeHost, rows } = await documentWithChrome({ transcriptWindows: true });
+			const facts = () => {
+				const shown = rows();
+				return {
+					earlier: shown.includes(EARLIER),
+					later: shown.includes(LATER),
+					warnings: mode.documentContainer.children.includes(mode.resourceDiagnosticsContainer),
+				};
+			};
+
+			window(5);
+			const older = facts();
+			await (mode as unknown as { handleReloadCommand(): Promise<void> }).handleReloadCommand();
+			const reloaded = facts();
+			await runtimeHost.newSession();
+			const fresh = facts();
+
+			expect({ older, reloaded, fresh }).toEqual({
+				older: { earlier: true, later: true, warnings: true },
+				reloaded: { earlier: true, later: true, warnings: true },
+				fresh: { earlier: false, later: false, warnings: true },
+			});
 		});
 
 		it("wraps both indicators at a narrow width and keeps their words", async () => {
