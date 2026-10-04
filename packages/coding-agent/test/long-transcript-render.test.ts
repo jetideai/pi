@@ -1,6 +1,6 @@
 import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import { Container, CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TuiMainScreen } from "../../tui/src/tui-main-screen.ts";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type {
@@ -14,6 +14,7 @@ import { ToolExecutionComponent } from "../src/modes/interactive/components/tool
 import { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { UncommittedToolResults } from "../src/modes/interactive/uncommitted-tool-results.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import {
 	createSyntheticLongTranscript,
@@ -24,6 +25,9 @@ import {
 	SYNTHETIC_TOOL_RESULT_COUNT,
 	SYNTHETIC_TURN_COUNT,
 } from "./helpers/synthetic-long-transcript.ts";
+
+/** Each call has its own range; only a group of two or more calls has a group range around them. */
+const SEMANTIC_RANGE_COUNT = SYNTHETIC_TOOL_CALL_COUNT + SYNTHETIC_GROUP_COUNT;
 
 const rendererFactoryCounts = vi.hoisted(() => ({ shell: 0 }));
 
@@ -115,11 +119,13 @@ function createHarness(ui: TUI, sessionManager: SessionManager) {
 	const v3Selector: MessageRenderBoundarySelectorV3 = () => {
 		counts.boundarySelections += 1;
 		const index = v3BoundaryIndex++;
-		return () => {
+		return (context) => {
 			counts.v3Decorations += 1;
 			renderedV3Indexes.push(index);
+			// A begin row that summarizes the header on the next row has its own control.
+			const begin = context.summaryRow === undefined ? "object-begin" : "object-summary";
 			return {
-				begin: `\x1b]777;object-begin-${index}\x07`,
+				begin: `\x1b]777;${begin}-${index}\x07`,
 				body: `\x1b]777;object-body-${index}\x07`,
 				end: `\x1b]777;object-end-${index}\x07`,
 			};
@@ -140,6 +146,7 @@ function createHarness(ui: TUI, sessionManager: SessionManager) {
 		ui,
 		chatContainer: new Container(),
 		pendingTools: new Map(),
+		uncommittedToolResults: new UncommittedToolResults(),
 		messageRenderMembers: [],
 		publishedMessageRenderProjection: undefined,
 		messageRenderScopeId: "synthetic-render-scope",
@@ -153,6 +160,7 @@ function createHarness(ui: TUI, sessionManager: SessionManager) {
 		sessionManager,
 		session: {
 			retryAttempt: 0,
+			state: { pendingToolCalls: new Set<string>() },
 			modelRuntime: undefined,
 			getToolDefinition: () => undefined,
 			extensionRunner: {},
@@ -181,6 +189,8 @@ function createHarness(ui: TUI, sessionManager: SessionManager) {
 
 describe("synthetic long-transcript rendering", () => {
 	beforeAll(() => initTheme("dark"));
+	// A jetIDEAI terminal defers a resize render for a semantic redraw request; these renders have no such request.
+	beforeEach(() => vi.stubEnv("JETIDEAI_SEMANTIC_LAYERS_ENABLED", undefined));
 
 	it("restores and width-renders the 1550-Tool-Call transcript with bounded work", async () => {
 		const fixture = createSyntheticLongTranscript();
@@ -214,14 +224,19 @@ describe("synthetic long-transcript rendering", () => {
 		expect(components.filter((component) => component instanceof ToolExecutionComponent)).toHaveLength(
 			SYNTHETIC_TOOL_CALL_COUNT,
 		);
+		// Each call is in one Tool Group; a group of one call shows only its call.
 		expect(components.filter((component) => component instanceof ToolGroupComponent)).toHaveLength(
-			SYNTHETIC_GROUP_COUNT,
+			SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT,
 		);
 		expect(projections).toHaveLength(1);
 		expect(projections[0]?.mode).toBe("replace");
-		expect(projections[0]?.members).toHaveLength(SYNTHETIC_GROUP_COUNT * 5 + SYNTHETIC_SINGLETON_COUNT * 3);
+		// A turn is its user and assistant members, its group member and its calls.
+		expect(projections[0]?.members).toHaveLength(SYNTHETIC_GROUP_COUNT * 5 + SYNTHETIC_SINGLETON_COUNT * 4);
 		expect(counts.presentationSelections).toBe(SYNTHETIC_TOOL_CALL_COUNT);
-		expect(counts.boundarySelections).toBe(SYNTHETIC_TOOL_CALL_COUNT + SYNTHETIC_GROUP_COUNT);
+		// Each call and each group selects its boundary once; a one-call group can take a later call of its run.
+		expect(counts.boundarySelections).toBe(
+			SYNTHETIC_TOOL_CALL_COUNT + SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT,
+		);
 		expect(rendererFactoryCounts.shell - factoriesBefore).toBe(2);
 
 		tui.renderNow();
@@ -250,16 +265,19 @@ describe("synthetic long-transcript rendering", () => {
 		await terminal.flush();
 
 		const resizeOutput = terminal.writes.join("");
-		const visibleOutput = stripAnsi(resizeOutput);
+		// Native folding shows a summary row or the canonical header that follows it, never both.
+		const summaryRow = /\x1b\]777;object-summary-\d+\x07/;
+		const rows = resizeOutput.split("\r\n");
+		const visibleOutput = stripAnsi(rows.filter((row) => !summaryRow.test(row)).join("\r\n"));
 		const wideState = tui.captureRenderState();
 		expect(wideState.previousLines.length).toBeLessThan(narrowRows);
 		expect(tui.fullRedraws - redrawsBeforeResize).toBe(1);
 		expect(toolRender).toHaveBeenCalledTimes(SYNTHETIC_TOOL_CALL_COUNT);
-		expect(groupRender).toHaveBeenCalledTimes(SYNTHETIC_GROUP_COUNT);
+		expect(groupRender).toHaveBeenCalledTimes(SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT);
 		expect(counts.presentationSelections).toBe(selectionsBeforeResize.presentation);
 		expect(counts.boundarySelections).toBe(selectionsBeforeResize.boundary);
 		expect(counts.v1Decorations).toBe(SYNTHETIC_TURN_COUNT * 2);
-		expect(counts.v3Decorations).toBe(SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT);
+		expect(counts.v3Decorations).toBe(SEMANTIC_RANGE_COUNT);
 		expect(projections).toHaveLength(projectionCountBeforeResize);
 		expect(rendererFactoryCounts.shell).toBe(factoriesBeforeResize);
 		expect(occurrences(resizeOutput, "\x1b[2J")).toBe(1);
@@ -267,13 +285,16 @@ describe("synthetic long-transcript rendering", () => {
 		expect(resizeOutput.startsWith("\x1b[?2026h")).toBe(true);
 		expect(occurrences(resizeOutput, "\x1b[?2026h")).toBe(1);
 		expect(occurrences(resizeOutput, "\x1b[?2026l")).toBe(1);
-		expect(resizeOutput.indexOf("\x1b[?2026l")).toBeLessThan(resizeOutput.lastIndexOf("\x1b["));
+		// The cursor moves to its final row before the synchronized output ends, so no frame shows a write position.
+		expect(resizeOutput.lastIndexOf("\x1b[")).toBe(resizeOutput.indexOf("\x1b[?2026l"));
 		expect(terminal.getCursorPosition()).toEqual(cursor.expectedPosition(118, 35));
 		expect(wideState.cursorRow).toBe(wideState.previousLines.length - 1);
 		expect(wideState.hardwareCursorRow).toBe(
 			wideState.previousLines.length - Math.ceil(cursor.text.length / 118) + Math.floor(cursor.cursorOffset / 118),
 		);
 
+		// The first line of each call is longer than the row, so each call has a summary row.
+		expect(rows.filter((row) => summaryRow.test(row))).toHaveLength(SYNTHETIC_TOOL_CALL_COUNT);
 		let previousMarkerIndex = -1;
 		for (const marker of fixture.orderedMarkers) {
 			expect(occurrences(visibleOutput, marker), marker).toBe(1);
@@ -286,9 +307,10 @@ describe("synthetic long-transcript rendering", () => {
 			expect(occurrences(resizeOutput, `\x1b]777;message-begin-${index}\x07`)).toBe(1);
 			expect(occurrences(resizeOutput, `\x1b]777;message-end-${index}\x07`)).toBe(1);
 		}
-		expect(new Set(renderedV3Indexes).size).toBe(SYNTHETIC_GROUP_COUNT + SYNTHETIC_SINGLETON_COUNT);
+		expect(new Set(renderedV3Indexes).size).toBe(SEMANTIC_RANGE_COUNT);
 		for (const index of renderedV3Indexes) {
-			expect(occurrences(resizeOutput, `\x1b]777;object-begin-${index}\x07`)).toBe(1);
+			const begins = [`\x1b]777;object-begin-${index}\x07`, `\x1b]777;object-summary-${index}\x07`];
+			expect(begins.reduce((total, begin) => total + occurrences(resizeOutput, begin), 0)).toBe(1);
 			expect(occurrences(resizeOutput, `\x1b]777;object-body-${index}\x07`)).toBe(1);
 			expect(occurrences(resizeOutput, `\x1b]777;object-end-${index}\x07`)).toBe(1);
 		}
