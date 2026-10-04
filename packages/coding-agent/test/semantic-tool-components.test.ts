@@ -1403,6 +1403,82 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		]).toEqual([["", expect.stringMatching(/…/)], [`edit ${path}`]]);
 	});
 
+	describe("keeps the outcome cue of a summarized header visible in both Fold states", () => {
+		const edit = (path: string) => () =>
+			foldedBuiltIn("edit", editRenderersFor(), { path, edits: [{ oldText: "a", newText: "b" }] }, "no");
+		const shaded = (text: string) => `\x1b[48;5;236m${text}\x1b[49m`;
+		const headers = [
+			{
+				name: "a long built-in edit",
+				width: 60,
+				label: "Long.kt",
+				create: edit(`src/${"segment/".repeat(12)}Long.kt`),
+			},
+			{ name: "a built-in edit that fits only without its cue", width: 15, label: "a.ts", create: edit("src/a.ts") },
+			{
+				name: "a narrow built-in edit with CJK",
+				width: 30,
+				label: "長い.kt",
+				create: edit(`src/${"文件夹/".repeat(6)}長い.kt`),
+			},
+			{
+				name: "a self-rendered Text call part with its own colors",
+				width: 40,
+				label: "argument-end",
+				create: () =>
+					savedCall({
+						renderShell: "self",
+						renderCall: () => new Text(`process ${"argument ".repeat(6)}argument-end`, 0, 0, shaded),
+					}),
+			},
+			{
+				name: "a call without a definition",
+				width: 24,
+				label: "wraps_at_a_narrow",
+				create: () =>
+					new ToolExecutionComponent(
+						"a_tool_name_that_wraps_at_a_narrow_width",
+						"call-long-name",
+						{ action: "list" },
+						{
+							ownerEntryId: "assistant-a",
+							producerSessionId: "session-a",
+							renderScopeId: "scope-a",
+							semanticSelectorsV3: [summaryAware],
+						},
+						undefined,
+						{ requestRender() {} } as unknown as TUI,
+						process.cwd(),
+					),
+			},
+		];
+		const outcomes = [
+			{
+				cue: "Failed",
+				settle: (component: ToolExecutionComponent) =>
+					component.updateResult({ content: [{ type: "text", text: "no" }], isError: true }),
+			},
+			{ cue: "Cancelled", settle: (component: ToolExecutionComponent) => component.markCancelled("aborted") },
+		];
+		for (const header of headers) {
+			for (const outcome of outcomes) {
+				it(`${outcome.cue}: ${header.name}`, () => {
+					const component = header.create();
+					outcome.settle(component);
+					const rows = component.render(header.width);
+					const open = foldedRows(rows, () => false).join("");
+
+					expect({
+						collapsed: foldedRows(rows, () => true)[1]?.endsWith(outcome.cue),
+						summaryHiddenWhenOpen: !open.includes("…"),
+						canonical: open.split(header.label).length - 1,
+						cue: open.split(outcome.cue).length - 1,
+					}).toEqual({ collapsed: true, summaryHiddenWhenOpen: true, canonical: 1, cue: 1 });
+				});
+			}
+		}
+	});
+
 	it("shows a collapsed built-in edit whose header fits as its one header row without a repeated header", () => {
 		const component = foldedBuiltIn(
 			"edit",

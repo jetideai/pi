@@ -29,7 +29,7 @@ export function shortenPath(path: unknown): string {
 export class SectionedToolCallHeader extends Text {
 	private canonicalText = "";
 	private sectioned = false;
-	private reservedWidth = 0;
+	private outcomeCue = "";
 	/** True when the last render gave a one-row summary of the first line before all canonical rows. */
 	summarized = false;
 
@@ -39,28 +39,26 @@ export class SectionedToolCallHeader extends Text {
 		this.setText(canonicalText);
 	}
 
-	/** Keeps [columns] free at the end of the summary row, for the outcome cue of the call. */
-	setReservedWidth(columns: number): void {
-		this.reservedWidth = columns;
+	/** The outcome cue of the call: the summary row keeps room for it, and the canonical rows of a summary show it. */
+	setOutcomeCue(cue: string): void {
+		this.outcomeCue = cue;
 	}
 
 	/**
 	 * A sectioned header is one summary row of its first line, with an ellipsis when that line does not fit the width.
-	 * The canonical rows follow it: all of them when the first line wraps or does not fit with the reserved columns, so
-	 * no text is lost.
+	 * The canonical rows follow it: all of them when the first line wraps or does not fit with the outcome cue, so no
+	 * text is lost. An open Fold hides the summary row, so the canonical first line then ends with the outcome cue.
 	 */
 	override render(width: number): string[] {
 		// The canonical first line fills its first row, so the tool label and the start of a long path share it.
 		this.setFillFirstLine(this.sectioned);
-		this.summarized = false;
-		if (!this.sectioned) return super.render(width);
-		const canonicalLines = super.render(width);
 		const firstLogicalLine = this.canonicalText.split("\n", 1)[0] ?? "";
-		const room = Math.max(0, width - this.reservedWidth);
-		if (visibleWidth(firstLogicalLine) <= room) {
-			return [truncateToWidth(firstLogicalLine, width, ""), ...canonicalLines.slice(1)];
-		}
-		this.summarized = true;
+		const room = Math.max(0, width - visibleWidth(this.outcomeCue));
+		this.summarized = this.sectioned && visibleWidth(firstLogicalLine) > room;
+		this.setFirstLineSuffix(this.summarized ? this.outcomeCue : "");
+		const canonicalLines = super.render(width);
+		if (!this.sectioned) return canonicalLines;
+		if (!this.summarized) return [truncateToWidth(firstLogicalLine, width, ""), ...canonicalLines.slice(1)];
 		return [truncateToWidth(firstLogicalLine, room, "…"), ...canonicalLines];
 	}
 }

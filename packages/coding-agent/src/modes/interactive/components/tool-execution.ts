@@ -361,9 +361,7 @@ export class ToolExecutionComponent extends Container {
 		if (this.hideComponent) return [];
 		// The owned call text fills the first row of its first line in sections, as a sectioned header does.
 		this.contentText.setFillFirstLine(this.rendersSemanticSections());
-		// A sectioned header keeps room for the outcome cue on its summary row, so the cue never needs a title summary.
-		const header = this.callPartComponent && sectionedHeaderOf(this.callPartComponent);
-		header?.setReservedWidth(this.rendersSemanticSections() ? this.reservedCueWidth(this.callWidth(width)) : 0);
+		this.placeOutcomeCue(width);
 		return this.decorateSemanticSections(this.withOutcomeCue(this.renderStock(width), width), width);
 	}
 
@@ -427,12 +425,36 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
+	 * An open Fold hides a summary row: the canonical header that follows it then ends its first line with the outcome
+	 * cue. A sectioned header also keeps room for the cue on its summary row, so it never needs a title summary.
+	 */
+	private placeOutcomeCue(width: number): void {
+		const room = this.hasRendererDefinition() ? this.callWidth(width) : width;
+		const cue = this.rendersSemanticSections() ? this.reservedCue(room) : "";
+		const call = this.callPartComponent;
+		if (call) sectionedHeaderOf(call)?.setOutcomeCue(cue);
+		this.summarizedText(width)?.setFirstLineSuffix(cue && this.callSummaryRow(width) !== undefined ? cue : "");
+	}
+
+	/** The Text whose first line a summary row summarizes: the owned call text, or a Text call part. */
+	private summarizedText(width: number): Text | undefined {
+		if (!this.hasRendererDefinition()) return this.contentText;
+		const call = this.callPartComponent;
+		if (!(call instanceof Text) || sectionedHeaderOf(call) || this.locatesOwnRows(width)) return undefined;
+		return call;
+	}
+
+	/**
 	 * The columns that a header row of [room] columns keeps free for the outcome cue: the full cue where it leaves room
 	 * for content, else the compact cue, else none.
 	 */
 	private reservedCueWidth(room: number): number {
-		const cue = this.outcomeCues().find((candidate) => visibleWidth(candidate) < room);
-		return cue ? visibleWidth(cue) : 0;
+		return visibleWidth(this.reservedCue(room));
+	}
+
+	/** The outcome cue that a header row of [room] columns keeps room for, or none. */
+	private reservedCue(room: number): string {
+		return this.outcomeCues().find((candidate) => visibleWidth(candidate) < room) ?? "";
 	}
 
 	/** True when the header row that the call renderer gives has room for [reserved] columns after its content. */
@@ -461,7 +483,7 @@ export class ToolExecutionComponent extends Container {
 		const call = this.callPartComponent;
 		const summarizes =
 			(call !== undefined && sectionedHeaderSummarized(call)) ||
-			(!located && this.callSummary && (!this.hasRendererDefinition() || call instanceof Text));
+			(this.callSummary && this.summarizedText(width) !== undefined);
 		// Without a body row the call is a plain range: the decorator context then has no foldable body.
 		return decorateMessageRenderV2(lines, rows.body, width, "tool", 0, {
 			entryId: this.toolCallId,
