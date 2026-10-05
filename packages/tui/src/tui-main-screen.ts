@@ -137,7 +137,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private previousKittyImageIds = new Set<number>();
 	/**
 	 * The image id and transmission generation of every image of the last full replay, when each image line of it was
-	 * a recognized Kitty image with one id. The terminal keeps the data of exactly these images.
+	 * a recognized Kitty image with one id. These are the candidates for reuse: the terminal is expected to store their
+	 * data, but it can evict them, so a reuse replay asks the terminal to reply when an image is missing.
 	 */
 	private reusableImages: Map<number, number> | undefined;
 	/** Whether the last full replay placed the reusable images again instead of transmitting them. */
@@ -239,7 +240,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		return images;
 	}
 
-	/** The terminal still stores the data of [images]: the same ids with the same payloads as the last full replay. */
+	/** [images] are the reuse candidates: the same ids with the same payloads as the last full replay. */
 	private canReuseImages(images: Map<number, number> | undefined): boolean {
 		const reusable = this.reusableImages;
 		if (!images || !reusable || images.size === 0 || images.size !== reusable.size) return false;
@@ -261,8 +262,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	}
 
 	/**
-	 * The terminal no longer stores an image that the last reuse replay placed. Reuse ends before the fresh replay is
-	 * requested, so further replies of the same replay request nothing.
+	 * The terminal replied that it does not store an image that the last reuse replay placed. Reuse ends before the
+	 * fresh replay is requested, so further replies of the same replay request nothing.
 	 */
 	protected override kittyGraphicsReplied(imageId: number | undefined, message: string): void {
 		if (!message.startsWith("ENOENT") || imageId === undefined) return;
@@ -411,6 +412,16 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			// A replay of the same images places them again and transmits no image data, so it cannot evict an image
 			// that it placed before. Any other replay transmits every image.
 			const reuse = clear && this.canReuseImages(images);
+			// The placement of each image line, made before any output: a reuse replay must not transmit image data.
+			const placements = new Map<string, string>();
+			if (reuse) {
+				for (const line of newLines) {
+					if (!isImageLine(line) || placements.has(line)) continue;
+					const placement = getKittyImagePlacement(line, 1);
+					if (!placement) throw new Error("A recognized image line of a reuse replay has no placement");
+					placements.set(line, placement.replacementLine);
+				}
+			}
 			const transaction = replay?.transaction?.(markedCause ?? cause, width, height);
 			if (transaction !== undefined) {
 				this.terminal.write(transaction.begin);
@@ -428,8 +439,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				output.append(this.deleteKittyImages(this.previousKittyImageIds));
 				output.append("\x1b[2J\x1b[H\x1b[3J"); // Clear screen, home, then clear scrollback
 			}
-			const emitted = (line: string): string =>
-				reuse && isImageLine(line) ? (getKittyImagePlacement(line, 1)?.replacementLine ?? line) : line;
+			const emitted = (line: string): string => placements.get(line) ?? line;
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) output.append("\r\n");
 				const line = newLines[i];

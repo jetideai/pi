@@ -1343,6 +1343,38 @@ describe("TUI image reuse in a full replay", () => {
 			assert.equal(fresh(output), true);
 		}));
 
+	it("transmits the new payload when an image of the same id changes together with a resize", () =>
+		withKitty(async () => {
+			const { terminal, tui, component } = await startedScreen(["header", registeredImage(98, 9801), "", ""]);
+			registerKittyImageMetadata({ imageId: 98, columns: 2, rows: 3, widthPx: 20, heightPx: 30 }, 9802);
+			component.lines = [
+				"header",
+				encodeKitty("BBBB", { columns: 2, rows: 3, imageId: 98, moveCursor: false }),
+				"",
+				"",
+			];
+
+			terminal.resize(30, 10);
+			await terminal.waitForRender();
+			const output = terminal.getWrites();
+			tui.stop();
+
+			assert.deepEqual([fresh(output), output.includes(";BBBB"), output.includes("a=p")], [true, true, false]);
+		}));
+
+	it("transmits the image that replaces another image id together with a resize", () =>
+		withKitty(async () => {
+			const { terminal, tui, component } = await startedScreen(["header", registeredImage(99, 9901), "", ""]);
+			component.lines = ["header", registeredImage(100, 10001), "", ""];
+
+			terminal.resize(30, 10);
+			await terminal.waitForRender();
+			const output = terminal.getWrites();
+			tui.stop();
+
+			assert.deepEqual([fresh(output), output.includes("i=100"), output.includes("a=p")], [true, true, false]);
+		}));
+
 	it("keeps the zero-width content of reserved image rows at their rows in a reuse replay", () =>
 		withKitty(async () => {
 			const terminal = new QueuedLoggingTerminal(40, 10);
