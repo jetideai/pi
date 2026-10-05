@@ -498,6 +498,7 @@ export abstract class TuiBase extends Container implements TUI {
 	private renderRequested = false;
 	private immediateRenderScheduled = false;
 	private renderTimer: NodeJS.Timeout | undefined;
+	private outputDrainAwaited = false;
 	private lastRenderAt = 0;
 	private static readonly MIN_RENDER_INTERVAL_MS = 16;
 	private showHardwareCursor = false;
@@ -1010,10 +1011,30 @@ export abstract class TuiBase extends Container implements TUI {
 			// A previously queued scheduleRender() can create a timer before this
 			// callback runs. User input must preempt that throttled frame.
 			this.cancelRenderTimer();
+			if (this.deferWhileOutputQueued()) return;
 			this.renderRequested = false;
 			this.lastRenderAt = performance.now();
 			this.doRender();
 		});
+	}
+
+	/**
+	 * A render while the earlier output is still queued would queue a frame for a grid that can be stale when the
+	 * terminal reads it. Keep the request and render once when the output drains. The drain yields one I/O turn first,
+	 * so a pending resize updates the grid before the render reads it. A render that started writes all its output.
+	 */
+	private deferWhileOutputQueued(): boolean {
+		if (!this.terminal.outputQueued?.()) return false;
+		this.renderRequested = false;
+		if (this.outputDrainAwaited) return true;
+		this.outputDrainAwaited = true;
+		this.terminal.onceOutputDrained?.(() => {
+			setImmediate(() => {
+				this.outputDrainAwaited = false;
+				if (!this.stopped) this.requestRender();
+			});
+		});
+		return true;
 	}
 
 	private cancelRenderTimer(): void {
@@ -1033,6 +1054,7 @@ export abstract class TuiBase extends Container implements TUI {
 			if (this.stopped || !this.renderRequested) {
 				return;
 			}
+			if (this.deferWhileOutputQueued()) return;
 			this.renderRequested = false;
 			this.lastRenderAt = performance.now();
 			this.doRender();

@@ -200,3 +200,70 @@ describe("TUI replay transactions", () => {
 		assert.ok(output.startsWith("\x1b[?2026h"));
 	});
 });
+
+/** A terminal whose written output can stay queued until the test drains it. */
+class QueuedTerminal extends RecordingTerminal {
+	queued = false;
+	drainListeners: (() => void)[] = [];
+
+	outputQueued(): boolean {
+		return this.queued;
+	}
+
+	onceOutputDrained(listener: () => void): void {
+		this.drainListeners.push(listener);
+	}
+
+	drain(): void {
+		this.queued = false;
+		for (const listener of this.drainListeners.splice(0)) listener();
+	}
+}
+
+function queuedFixture() {
+	const events: string[] = [];
+	const terminal = new QueuedTerminal(40, 10);
+	const tui = new TuiMainScreen(terminal);
+	const provider = new RecordingProvider(events);
+	const content = new Lines(events);
+	content.lines = Array.from({ length: 30 }, (_, i) => `line ${i}`);
+	tui.addChild(content);
+	tui.setReplayTransactionProvider(provider);
+	const begins = () => terminal.writes.join("").match(/begin-\d+-[a-z-]+-\d+x\d+/g) ?? [];
+	return { tui, terminal, provider, begins };
+}
+
+/** Lets the scheduled render, its throttle timer, and one immediate turn run. */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 40));
+
+describe("TUI replay output backpressure", () => {
+	it("starts no replay while the earlier output is still queued", async () => {
+		const f = queuedFixture();
+		f.tui.start();
+		await settle();
+		f.terminal.queued = true;
+		f.terminal.resize(50, 10);
+		await settle();
+		f.terminal.resize(60, 10);
+		await settle();
+		f.tui.stop();
+
+		assert.deepEqual(f.provider.causes, ["first-load"]);
+	});
+
+	it("replays once at the latest grid after the queued output drains", async () => {
+		const f = queuedFixture();
+		f.tui.start();
+		await settle();
+		f.terminal.queued = true;
+		f.terminal.resize(50, 10);
+		await settle();
+		f.terminal.resize(60, 12);
+		await settle();
+		f.terminal.drain();
+		await settle();
+		f.tui.stop();
+
+		assert.deepEqual(f.begins().slice(1), ["begin-2-resize-60x12"]);
+	});
+});

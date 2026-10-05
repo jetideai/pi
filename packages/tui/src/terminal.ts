@@ -86,6 +86,15 @@ export interface Terminal {
 	// Write output to terminal
 	write(data: string): void;
 
+	/**
+	 * Whether written output still waits in the output queue and a drain notification will follow.
+	 * A terminal without an output queue omits it.
+	 */
+	outputQueued?(): boolean;
+
+	/** Call the listener once when the queued output is written. Only called while outputQueued() is true. */
+	onceOutputDrained?(listener: () => void): void;
+
 	// Get terminal dimensions
 	get columns(): number;
 	get rows(): number;
@@ -476,6 +485,15 @@ export class ProcessTerminal implements Terminal {
 				// Ignore logging errors
 			}
 		}
+	}
+
+	outputQueued(): boolean {
+		// Node emits "drain" only after a write returned false, which also sets writableNeedDrain.
+		return process.stdout.writableNeedDrain;
+	}
+
+	onceOutputDrained(listener: () => void): void {
+		process.stdout.once("drain", listener);
 	}
 
 	get columns(): number {
