@@ -400,8 +400,11 @@ const KITTY_PLACEMENT_CONTROL_KEYS = new Set([
 	"V",
 ]);
 
-/** Build a placement-only command for an image line emitted by {@link renderImage}. */
-export function getKittyImagePlacement(line: string): KittyImagePlacement | undefined {
+/**
+ * Build a placement-only command for an image line emitted by {@link renderImage}. With [quiet] 1 the terminal replies
+ * only with an error, for example ENOENT when it no longer stores the image.
+ */
+export function getKittyImagePlacement(line: string, quiet: 1 | 2 = 2): KittyImagePlacement | undefined {
 	const match = /\x1b_G([^;]*);/.exec(line);
 	const metadata = getRegisteredKittyImageMetadata(line);
 	if (!match || !metadata) return undefined;
@@ -424,7 +427,7 @@ export function getKittyImagePlacement(line: string): KittyImagePlacement | unde
 	const controls = match[1]
 		.split(",")
 		.filter((control) => KITTY_PLACEMENT_CONTROL_KEYS.has(control.split("=", 1)[0] ?? ""));
-	const sequence = `\x1b_Ga=p,q=2,${controls.join(",")}\x1b\\`;
+	const sequence = `\x1b_Ga=p,q=${quiet},${controls.join(",")}\x1b\\`;
 	return {
 		imageId: metadata.imageId,
 		transmissionGeneration: metadata.transmissionGeneration,

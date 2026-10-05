@@ -1071,6 +1071,9 @@ export abstract class TuiBase extends Container implements TUI {
 		if (this.consumeTerminalColorSchemeReport(data)) {
 			return;
 		}
+		if (this.consumeKittyGraphicsReply(data)) {
+			return;
+		}
 
 		if (this.inputListeners.size > 0) {
 			let current = data;
@@ -1177,6 +1180,18 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		return true;
 	}
+
+	/** A Kitty graphics reply `ESC _ G <keys> ; <message> ESC \\` is terminal output, never input for a component. */
+	private consumeKittyGraphicsReply(data: string): boolean {
+		const reply = /^\x1b_G([^;\x1b]*);([^\x1b]*)\x1b\\$/.exec(data);
+		if (!reply) return false;
+		const imageId = /(?:^|,)i=(\d+)(?:,|$)/.exec(reply[1] ?? "")?.[1];
+		this.kittyGraphicsReplied(imageId === undefined ? undefined : Number.parseInt(imageId, 10), reply[2] ?? "");
+		return true;
+	}
+
+	/** The terminal replied [message], for example `OK` or `ENOENT:...`, for the Kitty image [imageId]. */
+	protected kittyGraphicsReplied(_imageId: number | undefined, _message: string): void {}
 
 	private consumeCellSizeResponse(data: string): boolean {
 		// Response format: ESC [ 6 ; height ; width t

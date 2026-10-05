@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
+import { deleteAllKittyPlacements, deleteKittyImage, getKittyImagePlacement, isImageLine } from "./terminal-image.ts";
 import { type ReplayCause, type SemanticRedrawRequest, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
@@ -135,6 +135,13 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	readonly mode = "regular" as const;
 	private previousLines: string[] = [];
 	private previousKittyImageIds = new Set<number>();
+	/**
+	 * The image id and transmission generation of every image of the last full replay, when each image line of it was
+	 * a recognized Kitty image with one id. The terminal keeps the data of exactly these images.
+	 */
+	private reusableImages: Map<number, number> | undefined;
+	/** Whether the last full replay placed the reusable images again instead of transmitting them. */
+	private lastFullReplayReused = false;
 	private previousWidth = 0;
 	private previousHeight = 0;
 	private cursorRow = 0;
@@ -176,6 +183,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	restoreRenderState(state: TuiMainScreenRenderState): void {
 		this.previousLines = state.previousLines.map((line) => (isImageLine(line) ? "" : line));
 		this.previousKittyImageIds = new Set();
+		this.forgetReusableImages();
 		this.previousWidth = state.previousWidth;
 		this.previousHeight = state.previousHeight;
 		this.cursorRow = state.cursorRow;
@@ -213,6 +221,54 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			}
 		}
 		return ids;
+	}
+
+	/**
+	 * The image id and transmission generation of each image line of [lines], or undefined when an image line is not a
+	 * recognized Kitty image with one id, or when an id appears twice.
+	 */
+	private recognizedImages(lines: string[]): Map<number, number> | undefined {
+		const images = new Map<number, number>();
+		for (const line of lines) {
+			if (!isImageLine(line)) continue;
+			const ids = extractKittyImageIds(line);
+			const placement = ids.length === 1 ? getKittyImagePlacement(line) : undefined;
+			if (!placement || placement.imageId !== ids[0] || images.has(placement.imageId)) return undefined;
+			images.set(placement.imageId, placement.transmissionGeneration);
+		}
+		return images;
+	}
+
+	/** The terminal still stores the data of [images]: the same ids with the same payloads as the last full replay. */
+	private canReuseImages(images: Map<number, number> | undefined): boolean {
+		const reusable = this.reusableImages;
+		if (!images || !reusable || images.size === 0 || images.size !== reusable.size) return false;
+		for (const [id, generation] of images) {
+			if (reusable.get(id) !== generation) return false;
+		}
+		return true;
+	}
+
+	private forgetReusableImages(): void {
+		this.reusableImages = undefined;
+		this.lastFullReplayReused = false;
+	}
+
+	/** A differential render that rewrites lines of images transmits or deletes image data that a replay may reuse. */
+	private forgetReusableImagesAfterDiff(firstChanged: number, newLines: string[]): void {
+		const touches = (lines: string[]) => lines.slice(Math.max(0, firstChanged)).some((line) => isImageLine(line));
+		if (touches(this.previousLines) || touches(newLines)) this.forgetReusableImages();
+	}
+
+	/**
+	 * The terminal no longer stores an image that the last reuse replay placed. Reuse ends before the fresh replay is
+	 * requested, so further replies of the same replay request nothing.
+	 */
+	protected override kittyGraphicsReplied(imageId: number | undefined, message: string): void {
+		if (!message.startsWith("ENOENT") || imageId === undefined) return;
+		if (!this.lastFullReplayReused || !this.reusableImages?.has(imageId)) return;
+		this.forgetReusableImages();
+		this.requestRender(true);
 	}
 
 	private deleteKittyImages(ids: Iterable<number>): string {
@@ -351,6 +407,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean, cause: ReplayCause, semanticRedraw?: SemanticRedrawRequest): void => {
 			this.fullRedrawCount += 1;
+			const images = this.recognizedImages(newLines);
+			// A replay of the same images places them again and transmits no image data, so it cannot evict an image
+			// that it placed before. Any other replay transmits every image.
+			const reuse = clear && this.canReuseImages(images);
 			const transaction = replay?.transaction?.(markedCause ?? cause, width, height);
 			if (transaction !== undefined) {
 				this.terminal.write(transaction.begin);
@@ -359,10 +419,17 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			}
 			const output = new BoundedTerminalWriter((data) => this.terminal.write(data));
 			output.append("\x1b[?2026h"); // Begin synchronized output
-			if (clear) {
+			if (reuse) {
+				// Delete the placements, then clear the text and the scrollback: erasing below the home position keeps
+				// the image data, as clearing the whole screen would not.
+				output.append(deleteAllKittyPlacements());
+				output.append("\x1b[H\x1b[0J\x1b[3J");
+			} else if (clear) {
 				output.append(this.deleteKittyImages(this.previousKittyImageIds));
 				output.append("\x1b[2J\x1b[H\x1b[3J"); // Clear screen, home, then clear scrollback
 			}
+			const emitted = (line: string): string =>
+				reuse && isImageLine(line) ? (getKittyImagePlacement(line, 1)?.replacementLine ?? line) : line;
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) output.append("\r\n");
 				const line = newLines[i];
@@ -373,12 +440,12 @@ export class TuiMainScreen extends TuiBase implements TUI {
 						output.append("\r\n");
 					}
 					output.append(`\x1b[${imageReservedRows - 1}A`);
-					output.append(line);
+					output.append(emitted(line));
 					this.appendReservedImageRows(output, newLines, i, imageReservedRows);
 					i += imageReservedRows - 1;
 					continue;
 				}
-				output.append(line);
+				output.append(emitted(line));
 			}
 			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.hardwareCursorRow = this.cursorRow;
@@ -403,6 +470,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
+			this.reusableImages = images;
+			this.lastFullReplayReused = reuse;
 		};
 
 		const redrawLogDirectory = process.env.PI_TUI_DEBUG_REDRAW === "1" ? this.logDirectory : undefined;
@@ -536,6 +605,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			} else {
 				this.positionHardwareCursor(cursorPos, newLines.length);
 			}
+			this.forgetReusableImagesAfterDiff(firstChanged, newLines);
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
@@ -706,6 +776,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousViewportTop = Math.max(prevViewportTop, finalCursorRow - height + 1);
 		this.showFinalCursor(cursorPos, newLines.length);
 
+		this.forgetReusableImagesAfterDiff(firstChanged, newLines);
 		this.previousLines = newLines;
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 		this.previousWidth = width;

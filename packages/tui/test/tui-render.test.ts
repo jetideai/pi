@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { Image } from "../src/components/image.ts";
+import { StdinBuffer } from "../src/stdin-buffer.ts";
 import type { Terminal } from "../src/terminal.ts";
 import {
 	deleteKittyImage,
 	encodeKitty,
+	registerKittyImageMetadata,
 	resetCapabilitiesCache,
 	setCapabilities,
 	setCellDimensions,
@@ -1216,4 +1218,198 @@ describe("TUI differential rendering", () => {
 
 		tui.stop();
 	});
+});
+
+/** A Kitty image line of [imageId] whose payload has transmission [generation], 2 columns x 3 rows. */
+function registeredImage(imageId: number, generation: number): string {
+	registerKittyImageMetadata({ imageId, columns: 2, rows: 3, widthPx: 20, heightPx: 30 }, generation);
+	return encodeKitty("AAAA", { columns: 2, rows: 3, imageId, moveCursor: false });
+}
+
+/** A main screen terminal whose written output can wait in a queue until the test drains it. */
+class QueuedLoggingTerminal extends LoggingVirtualTerminal {
+	queued = false;
+	private drainListeners: (() => void)[] = [];
+
+	outputQueued(): boolean {
+		return this.queued;
+	}
+
+	onceOutputDrained(listener: () => void): void {
+		this.drainListeners.push(listener);
+	}
+
+	drain(): void {
+		this.queued = false;
+		for (const listener of this.drainListeners.splice(0)) listener();
+	}
+}
+
+/** The terminal replies of [replies], split once in the middle and parsed by the production input buffer. */
+function replyThroughInputBuffer(terminal: VirtualTerminal, replies: string): void {
+	const buffer = new StdinBuffer();
+	buffer.on("data", (sequence) => terminal.sendInput(sequence));
+	const middle = Math.floor(replies.length / 2);
+	buffer.process(replies.slice(0, middle));
+	buffer.process(replies.slice(middle));
+}
+
+const enoent = (imageId: number) => `\x1b_Gi=${imageId};ENOENT:image not found\x1b\\`;
+
+/** A focused component that records its input and keeps its lines. */
+class RecordingInputComponent extends TestComponent {
+	received: string[] = [];
+
+	handleInput(data: string): void {
+		this.received.push(data);
+	}
+}
+
+/** A main screen with [lines] after its first render, with no semantic resize deferral. */
+async function startedScreen(lines: string[], terminal = new QueuedLoggingTerminal(40, 10)) {
+	const tui = new TuiMainScreen(terminal);
+	const component = new RecordingInputComponent();
+	component.lines = lines;
+	tui.addChild(component);
+	tui.setFocus(component);
+	tui.start();
+	await terminal.waitForRender();
+	terminal.clearWrites();
+	return { terminal, tui, component };
+}
+
+describe("TUI image reuse in a full replay", () => {
+	const fresh = (output: string) => output.includes("a=T") && output.includes("\x1b[2J");
+	const reused = (output: string) =>
+		!output.includes("a=T") &&
+		output.includes("\x1b_Ga=d,d=a,q=2\x1b\\\x1b[H\x1b[0J\x1b[3J") &&
+		!output.includes("\x1b[2J");
+	const withKitty = (run: () => Promise<void>) =>
+		withEnv({ JETIDEAI_SEMANTIC_LAYERS_ENABLED: undefined }, async () => {
+			setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+			setCellDimensions({ widthPx: 10, heightPx: 10 });
+			try {
+				await run();
+			} finally {
+				resetCapabilitiesCache();
+				setCellDimensions({ widthPx: 9, heightPx: 18 });
+			}
+		});
+
+	it("replays an unchanged image as a placement of its new size with no image data after a resize", () =>
+		withKitty(async () => {
+			const image = new Image(
+				"AAAA",
+				"image/png",
+				{ fallbackColor: (text) => text },
+				{ imageId: 91 },
+				{
+					widthPx: 100,
+					heightPx: 100,
+				},
+			);
+			const terminal = new QueuedLoggingTerminal(40, 10);
+			const tui = new TuiMainScreen(terminal);
+			tui.addChild(image);
+			tui.start();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+
+			terminal.resize(20, 10);
+			await terminal.waitForRender();
+			const output = terminal.getWrites();
+			tui.stop();
+
+			assert.deepEqual([reused(output), /\x1b_Ga=p,q=1,[^\x1b]*c=18,/.test(output)], [true, true]);
+		}));
+
+	it("transmits every image again after a differential render added an image and removed it", () =>
+		withKitty(async () => {
+			const first = registeredImage(92, 9201);
+			const { terminal, tui, component } = await startedScreen(["header", first, "", "", "after"]);
+			component.lines = ["header", first, "", "", "after", registeredImage(93, 9301), "", ""];
+			tui.requestRender();
+			await terminal.waitForRender();
+			component.lines = ["header", first, "", "", "after"];
+			tui.requestRender();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+
+			terminal.resize(30, 10);
+			await terminal.waitForRender();
+			const output = terminal.getWrites();
+			tui.stop();
+
+			assert.equal(fresh(output), true);
+		}));
+
+	it("keeps the zero-width content of reserved image rows at their rows in a reuse replay", () =>
+		withKitty(async () => {
+			const terminal = new QueuedLoggingTerminal(40, 10);
+			const marks = recordOscRows(terminal);
+			await startedScreen(reservedRowMarkerLines(registeredImage(94, 9401)), terminal);
+			marks.length = 0;
+
+			terminal.resize(30, 10);
+			await terminal.waitForRender();
+			await terminal.flush();
+
+			assert.deepEqual([reused(terminal.getWrites()), marks], [true, RESERVED_ROW_MARKS]);
+		}));
+
+	it("transmits once for a batch of missing image replies and delivers none of them as input", () =>
+		withKitty(async () => {
+			const { terminal, tui, component } = await startedScreen(["header", registeredImage(95, 9501), "", ""]);
+			terminal.resize(30, 10);
+			await terminal.waitForRender();
+			terminal.clearWrites();
+
+			replyThroughInputBuffer(terminal, enoent(95) + enoent(95));
+			await terminal.waitForRender();
+			const output = terminal.getWrites();
+			tui.stop();
+
+			assert.deepEqual(
+				[output.split("a=T").length - 1, output.split("\x1b[2J").length - 1, component.received],
+				[1, 1, []],
+			);
+		}));
+
+	it("schedules nothing for a missing image reply after a fresh replay or for an image it did not place", () =>
+		withKitty(async () => {
+			const { terminal, tui } = await startedScreen(["header", registeredImage(96, 9601), "", ""]);
+			replyThroughInputBuffer(terminal, enoent(96));
+			await terminal.waitForRender();
+			const afterFresh = terminal.getWrites();
+			terminal.resize(30, 10);
+			await terminal.waitForRender();
+			terminal.clearWrites();
+
+			replyThroughInputBuffer(terminal, enoent(999));
+			await terminal.waitForRender();
+			const afterReuse = terminal.getWrites();
+			tui.stop();
+
+			assert.deepEqual([afterFresh, afterReuse], ["", ""]);
+		}));
+
+	it("transmits after the queued output drains and still delivers the input that arrived meanwhile", () =>
+		withKitty(async () => {
+			const { terminal, tui, component } = await startedScreen(["header", registeredImage(97, 9701), "", ""]);
+			terminal.resize(30, 10);
+			await terminal.waitForRender();
+			terminal.clearWrites();
+			terminal.queued = true;
+
+			replyThroughInputBuffer(terminal, enoent(97));
+			terminal.sendInput("x");
+			await terminal.waitForRender();
+			const whileQueued = terminal.getWrites();
+			terminal.drain();
+			await terminal.waitForRender();
+			const afterDrain = terminal.getWrites();
+			tui.stop();
+
+			assert.deepEqual([whileQueued, component.received, fresh(afterDrain)], ["", ["x"], true]);
+		}));
 });
