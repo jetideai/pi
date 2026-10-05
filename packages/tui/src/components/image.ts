@@ -6,6 +6,8 @@ import {
 	getImageDimensions,
 	type ImageDimensions,
 	imageFallback,
+	type KittyImageMetadata,
+	registerKittyImageMetadata,
 	renderImage,
 } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
@@ -35,6 +37,8 @@ export class Image implements Component {
 
 	private cachedLines?: string[];
 	private cachedWidth?: number;
+	/** The Kitty metadata of the cached lines; another image can register its own metadata for the same id. */
+	private cachedMetadata?: KittyImageMetadata;
 
 	constructor(
 		base64Data: string,
@@ -59,13 +63,16 @@ export class Image implements Component {
 	invalidate(): void {
 		this.cachedLines = undefined;
 		this.cachedWidth = undefined;
+		this.cachedMetadata = undefined;
 	}
 
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) {
+			if (this.cachedMetadata) registerKittyImageMetadata(this.cachedMetadata, this.transmissionGeneration);
 			return this.cachedLines;
 		}
 
+		this.cachedMetadata = undefined;
 		const maxWidth = Math.max(1, Math.min(width - 2, this.options.maxWidthCells ?? 60));
 		const cellDimensions = getCellDimensions();
 		const defaultMaxHeight = Math.max(1, Math.ceil((maxWidth * cellDimensions.widthPx) / cellDimensions.heightPx));
@@ -94,6 +101,15 @@ export class Image implements Component {
 				}
 
 				if (caps.images === "kitty") {
+					if (this.imageId !== undefined) {
+						this.cachedMetadata = {
+							imageId: this.imageId,
+							columns: result.columns,
+							rows: result.rows,
+							widthPx: this.dimensions.widthPx,
+							heightPx: this.dimensions.heightPx,
+						};
+					}
 					// For Kitty: C=1 prevents cursor movement.
 					// Don't need the cursor movement.
 					lines = [result.sequence];

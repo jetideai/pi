@@ -49,6 +49,14 @@ describe("Kitty image transmission generation", () => {
 		assert.notStrictEqual(second.transmissionGeneration, first.transmissionGeneration);
 	});
 
+	it("reports the generation of its own payload when a cached image line is rendered again", () => {
+		const first = new Image("AAAA", "image/png", theme, { imageId: 74 }, dimensions);
+		const own = placementOf(first, 40);
+		placementOf(new Image("BBBB", "image/png", theme, { imageId: 74 }, dimensions), 40);
+
+		assert.strictEqual(placementOf(first, 40).transmissionGeneration, own.transmissionGeneration);
+	});
+
 	it("gives each direct render without a content generation a fresh generation", () => {
 		const options = { maxWidthCells: 4, imageId: 73, moveCursor: false };
 		const first = getKittyImagePlacement(renderImage("AAAA", dimensions, options)?.sequence ?? "");
