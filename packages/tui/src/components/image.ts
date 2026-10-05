@@ -1,5 +1,6 @@
 import {
 	allocateImageId,
+	allocateKittyTransmissionGeneration,
 	getCapabilities,
 	getCellDimensions,
 	getImageDimensions,
@@ -29,6 +30,8 @@ export class Image implements Component {
 	private theme: ImageTheme;
 	private options: ImageOptions;
 	private imageId?: number;
+	/** The payload of an Image never changes, so one transmission generation identifies it at every width. */
+	private transmissionGeneration?: number;
 
 	private cachedLines?: string[];
 	private cachedWidth?: number;
@@ -72,14 +75,16 @@ export class Image implements Component {
 		let lines: string[];
 
 		if (caps.images) {
-			if (caps.images === "kitty" && this.imageId === undefined) {
-				this.imageId = allocateImageId();
+			if (caps.images === "kitty") {
+				this.imageId ??= allocateImageId();
+				this.transmissionGeneration ??= allocateKittyTransmissionGeneration();
 			}
 			const result = renderImage(this.base64Data, this.dimensions, {
 				maxWidthCells: maxWidth,
 				maxHeightCells: maxHeight,
 				imageId: this.imageId,
 				moveCursor: false,
+				transmissionGeneration: this.transmissionGeneration,
 			});
 
 			if (result) {

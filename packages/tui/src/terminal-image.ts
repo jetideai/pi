@@ -29,6 +29,11 @@ export interface ImageRenderOptions {
 	imageId?: number;
 	/** Whether Kitty should apply its default cursor movement after placement. */
 	moveCursor?: boolean;
+	/**
+	 * The transmission generation of an unchanged payload with this imageId. Without it, each render counts as a new
+	 * transmission.
+	 */
+	transmissionGeneration?: number;
 }
 
 let cachedCapabilities: TerminalCapabilities | null = null;
@@ -334,10 +339,22 @@ export interface KittyImagePlacement {
 const kittyImageMetadata = new Map<number, RegisteredKittyImageMetadata>();
 let kittyTransmissionGeneration = 0;
 
-export function registerKittyImageMetadata(metadata: KittyImageMetadata): void {
+/** A new transmission generation: the identity of one immutable image payload. */
+export function allocateKittyTransmissionGeneration(): number {
 	kittyTransmissionGeneration += 1;
+	return kittyTransmissionGeneration;
+}
+
+/**
+ * Register the cell size of an image. A caller that knows that the payload did not change passes its
+ * [transmissionGeneration]; without it, the payload counts as a new transmission.
+ */
+export function registerKittyImageMetadata(
+	metadata: KittyImageMetadata,
+	transmissionGeneration: number = allocateKittyTransmissionGeneration(),
+): void {
 	kittyImageMetadata.delete(metadata.imageId);
-	kittyImageMetadata.set(metadata.imageId, { ...metadata, transmissionGeneration: kittyTransmissionGeneration });
+	kittyImageMetadata.set(metadata.imageId, { ...metadata, transmissionGeneration });
 	if (kittyImageMetadata.size > 1000) {
 		const oldestImageId = kittyImageMetadata.keys().next().value;
 		if (oldestImageId !== undefined) kittyImageMetadata.delete(oldestImageId);
@@ -623,13 +640,16 @@ export function renderImage(
 
 	if (caps.images === "kitty") {
 		if (options.imageId !== undefined) {
-			registerKittyImageMetadata({
-				imageId: options.imageId,
-				columns: size.columns,
-				rows: size.rows,
-				widthPx: imageDimensions.widthPx,
-				heightPx: imageDimensions.heightPx,
-			});
+			registerKittyImageMetadata(
+				{
+					imageId: options.imageId,
+					columns: size.columns,
+					rows: size.rows,
+					widthPx: imageDimensions.widthPx,
+					heightPx: imageDimensions.heightPx,
+				},
+				options.transmissionGeneration,
+			);
 		}
 		const sequence = encodeKitty(base64Data, {
 			columns: size.columns,
