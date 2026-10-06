@@ -123,6 +123,37 @@ describe("message source points", () => {
 		expect(points).toEqual([]);
 	});
 
+	it("keeps the offset points of one long assistant paragraph without a newline across width reflow", () => {
+		const source = "reading position word ".repeat(160);
+		const points: MessageRenderSourcePointV1[] = [];
+		const component = new AssistantMessageComponent(
+			assistant(source),
+			false,
+			getMarkdownTheme(),
+			"Thinking...",
+			1,
+			[],
+			{
+				entryId: "assistant-a",
+				decorators: [],
+				sourcePointDecorators: [
+					(point) => {
+						points.push({ ...point });
+						return CONTROL;
+					},
+				],
+			},
+		);
+		const rows60 = component.render(60).length;
+		const points60 = points.splice(0);
+		const rows140 = component.render(140).length;
+		const points140 = points.splice(0);
+
+		expect(rows60).toBeGreaterThan(rows140);
+		expect(points60.filter((point) => point.pointKind === "offset").length).toBeGreaterThanOrEqual(6);
+		expect(points140).toEqual(points60);
+	});
+
 	it("keeps assistant block-start identities stable around an ordered list", () => {
 		const source = [
 			"Сделаю два атомарных коммита:",
