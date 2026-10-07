@@ -24,6 +24,7 @@ import type { BashExecutionMessage } from "../src/core/messages.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { continuationRule } from "../src/modes/interactive/components/history-continuation.ts";
+import { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { selectTranscriptWindow, type TranscriptWindowItem } from "../src/modes/interactive/transcript-window.ts";
@@ -747,30 +748,180 @@ describe("InteractiveMode transcript window", () => {
 		expect(text()).toBe(before.text);
 	});
 
-	it("rejects a window while the session streams without changing the chat", async () => {
-		let release: () => void = () => {};
-		const gate = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const { runtimeHost, window, projections, text } = await createWindowedMode({
-			faux: (faux) =>
-				faux.setResponses([
-					async () => {
-						await gate;
-						return fauxAssistantMessage("late answer");
-					},
-				]),
-		});
-		const prompt = runtimeHost.session.prompt("Stream now");
-		await vi.waitFor(() => expect(runtimeHost.session.isIdle).toBe(false));
-		const before = { count: projections.length, text: text() };
+	describe("while an unsolicited run streams", () => {
+		async function heldRunFromAnOlderSection() {
+			let release: () => void = () => {};
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const mode = await createWindowedMode({
+				faux: (faux) =>
+					faux.setResponses([
+						async () => {
+							await gate;
+							return fauxAssistantMessage("late answer");
+						},
+					]),
+			});
+			mode.window(1);
+			const known = new Set(mode.runtimeHost.session.sessionManager.getEntries().map((entry) => entry.id));
+			const prompt = mode.runtimeHost.session.prompt("Background question");
+			// The run is active and its prompt is a session entry.
+			await vi.waitFor(() =>
+				expect(
+					mode.runtimeHost.session.sessionManager
+						.getEntries()
+						.some((entry) => !known.has(entry.id) && entry.type === "message" && entry.message.role === "user"),
+				).toBe(true),
+			);
+			expect(mode.runtimeHost.session.isIdle).toBe(false);
+			const tailSection = Math.max(...mode.latest().members.map((member) => member.section ?? -1));
+			const tail = mode.latest().members.find((member) => member.section === tailSection && member.role === "user")!;
+			const finish = async () => {
+				release();
+				await prompt;
+			};
+			return { ...mode, known, tail: { entryId: tail.entryId, role: "user" as const }, finish };
+		}
+		const runRows = (members: readonly Readonly<MessageRenderProjectionMemberV1>[], ids: readonly string[]) =>
+			members.filter((member) => ids.includes(member.entryId)).map((member) => [member.role, member.loaded ?? true]);
+		const runIds = (mode: Awaited<ReturnType<typeof heldRunFromAnOlderSection>>, known: Set<string>) =>
+			mode.runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => !known.has(entry.id) && entry.type === "message")
+				.map((entry) => entry.id);
 
-		expect(window(1)).toEqual({ status: "streaming" });
+		it("loads the live tail with the run in view, and the run streams into it", async () => {
+			const mode = await heldRunFromAnOlderSection();
+			const { known } = mode;
 
-		expect(projections).toHaveLength(before.count);
-		expect(text()).toBe(before.text);
-		release();
-		await prompt;
+			expect(mode.requestWindow(mode.tail)).toEqual({ status: "applied" });
+			const atTail = { liveTail: mode.latest().liveTail, question: mode.text().includes("Background question") };
+			await mode.finish();
+			const ids = runIds(mode, known);
+			await vi.waitFor(() =>
+				expect(mode.latest().members.some((member) => member.entryId === ids.at(-1))).toBe(true),
+			);
+
+			expect({
+				atTail,
+				answers: mode.text().split("late answer").length - 1,
+				run: runRows(mode.latest().members, ids),
+			}).toEqual({
+				atTail: { liveTail: true, question: true },
+				answers: 1,
+				run: [
+					["user", true],
+					["assistant", true],
+				],
+			});
+		});
+
+		it("keeps the open Tool Group of the run as one owned group through an older window and back", async () => {
+			const mode = await createWindowedMode();
+			const sessionManager = mode.runtimeHost.session.sessionManager;
+			// A boundary selector, as the jetIDEAI bridge registers, renders calls in Tool Groups.
+			Object.assign(mode.mode, { getMessageRenderBoundarySelectorsV3: () => [() => undefined] });
+			mode.window(8);
+			const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (event: unknown) => Promise<void>;
+			const emit = (event: unknown) => handleEvent.call(mode.mode, event);
+			const respond = async (message: AssistantMessage) => {
+				const entryId = sessionManager.appendMessage(message);
+				await emit({ type: "message_start", message: { ...message, content: [] }, entryId });
+				await emit({ type: "message_update", message, entryId });
+				await emit({ type: "message_end", message, entryId });
+			};
+			const execute = async (id: string) => {
+				await emit({ type: "tool_execution_start", toolCallId: id, toolName: "read", args: {} });
+				const result = toolResult(id);
+				await emit({ type: "tool_execution_end", toolCallId: id, toolName: "read", result, isError: false });
+				const entryId = sessionManager.appendMessage(result);
+				await emit({ type: "message_start", message: result, entryId });
+				await emit({ type: "message_end", message: result, entryId });
+			};
+			const groups = (container: Container): ToolGroupComponent[] =>
+				container.children.flatMap((child) => [
+					...(child instanceof ToolGroupComponent ? [child] : []),
+					...("children" in child ? groups(child as Container) : []),
+				]);
+			const owned = () => [
+				...((
+					mode.mode as unknown as { liveRun?: { groups?: Map<string, ToolGroupComponent> } }
+				).liveRun?.groups?.values() ?? []),
+			];
+			await emit({ type: "agent_start" });
+			const user = { role: "user" as const, content: "Live question", timestamp: 3 };
+			const userId = sessionManager.appendMessage(user);
+			await emit({ type: "message_start", message: user, entryId: userId });
+			await emit({ type: "message_end", message: user, entryId: userId });
+			await respond(toolCalls("live-a"));
+			await execute("live-a");
+			const tail = mode.latest().members.find((member) => member.entryId === userId)!;
+			const mounted = owned().length === 1 && groups(mode.mode.chatContainer).includes(owned()[0]!);
+
+			const away = mode.window(1);
+			const back = mode.requestWindow({ entryId: tail.entryId, role: "user" });
+			await respond(toolCalls("live-b"));
+			await execute("live-b");
+			const ownedInView = owned().length === 1 && groups(mode.mode.chatContainer).includes(owned()[0]!);
+			await respond(fauxAssistantMessage("late answer"));
+			await emit({ type: "agent_end", messages: [], willRetry: false });
+			const calls = mode
+				.latest()
+				.members.filter(
+					(member): member is Extract<typeof member, { role: "tool" }> =>
+						member.role === "tool" && member.entryId.startsWith("live-"),
+				);
+
+			expect({
+				statuses: [away, back].map((result) => result.status),
+				groupIds: [...new Set(calls.map((member) => member.groupId))].length,
+				calls: calls.map((member) => [member.entryId, member.groupOrder, member.loaded ?? true]),
+				mounted,
+				ownedInView,
+				groupComponents: groups(mode.mode.chatContainer).length,
+				answers: mode.text().split("late answer").length - 1,
+			}).toEqual({
+				statuses: ["applied", "applied"],
+				groupIds: 1,
+				calls: [
+					["live-a", 0, true],
+					["live-b", 1, true],
+				],
+				mounted: true,
+				ownedInView: true,
+				groupComponents: 1,
+				answers: 1,
+			});
+		});
+
+		it("keeps an older section in view after the run left the tail, and the tail later shows the run once", async () => {
+			const mode = await heldRunFromAnOlderSection();
+			const { known } = mode;
+			expect(mode.requestWindow(mode.tail)).toEqual({ status: "applied" });
+
+			expect(mode.window(1)).toEqual({ status: "applied" });
+			const older = { liveTail: mode.latest().liveTail, question: mode.text().includes("Background question") };
+			await mode.finish();
+			const ids = runIds(mode, known);
+			await vi.waitFor(() =>
+				expect(mode.latest().members.some((member) => member.entryId === ids.at(-1))).toBe(true),
+			);
+			const hidden = { answer: mode.text().includes("late answer"), run: runRows(mode.latest().members, ids) };
+			expect(mode.requestWindow(mode.tail)).toEqual({ status: "applied" });
+
+			expect({ older, hidden, answers: mode.text().split("late answer").length - 1 }).toEqual({
+				older: { liveTail: false, question: false },
+				hidden: {
+					answer: false,
+					run: [
+						["user", false],
+						["assistant", false],
+					],
+				},
+				answers: 1,
+			});
+		});
 	});
 
 	it("replays the applied window completely in the next render with a new capture generation", async () => {

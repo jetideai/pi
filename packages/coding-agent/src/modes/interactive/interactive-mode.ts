@@ -5167,10 +5167,10 @@ export class InteractiveMode {
 
 	/**
 	 * Experimental: replace the chat with the window that contains the requested message. The next render replays it.
-	 * Streaming and a missing message leave the chat and the projection unchanged.
+	 * A missing message leaves the chat and the projection unchanged. During a run the rebuild mounts the run at the
+	 * live tail and keeps it out of view in an older window, as every rebuild does.
 	 */
 	private requestTranscriptWindow(request: TranscriptWindowRequestV1): TranscriptWindowResultV1 {
-		if (!this.session.isIdle) return { status: "streaming" };
 		const { through } = request;
 		// An interval has no adjacent section; both together are not a valid request.
 		if (through && request.adjacent) return { status: "missing" };
