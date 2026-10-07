@@ -143,12 +143,16 @@ export interface SemanticRedrawRequest {
 /**
  * Experimental: the message that a transcript window must contain. With `through`, the window is the compaction
  * sections from the section of this message to the section of the `through` message, which must not come before it.
+ * With `untilEnd`, the window is the compaction sections from the section of this message through the end of the
+ * transcript, also sections without a user or assistant message. `untilEnd` excludes `through` and `adjacent`; a
+ * UI that accepts it declares `transcriptWindowUntilEndV1`.
  */
 export interface TranscriptWindowRequestV1 {
 	entryId: string;
 	role: "user" | "assistant";
 	adjacent?: "previous" | "next";
 	through?: { entryId: string; role: "user" | "assistant" };
+	untilEnd?: true;
 }
 
 /** Experimental: "applied" means that the window is composed and its projection is published; replay follows. */
@@ -187,6 +191,9 @@ export interface ExtensionUIContext {
 
 	/** Experimental: replace the chat with the transcript window that contains one message. Interactive mode only. */
 	requestTranscriptWindow?(request: TranscriptWindowRequestV1): TranscriptWindowResultV1;
+
+	/** Experimental: true when `requestTranscriptWindow` accepts `untilEnd`. */
+	readonly transcriptWindowUntilEndV1?: true;
 
 	/** Set status text in the footer/status bar. Pass undefined to clear. */
 	setStatus(key: string, text: string | undefined): void;

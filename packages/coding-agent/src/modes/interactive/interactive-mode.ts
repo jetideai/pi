@@ -3165,6 +3165,7 @@ export class InteractiveMode {
 			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
 			requestSemanticRedraw: (request) => this.ui.requestSemanticRedraw(request),
 			requestTranscriptWindow: (request) => this.requestTranscriptWindow(request),
+			transcriptWindowUntilEndV1: true,
 			setStatus: (key, text) => this.setExtensionStatus(key, text),
 			setWorkingMessage: (message) => {
 				this.workingMessage = message;
@@ -5195,13 +5196,18 @@ export class InteractiveMode {
 	 * live tail and keeps it out of view in an older window, as every rebuild does.
 	 */
 	private requestTranscriptWindow(request: TranscriptWindowRequestV1): TranscriptWindowResultV1 {
-		const { through } = request;
-		// An interval has no adjacent section; both together are not a valid request.
-		if (through && request.adjacent) return { status: "missing" };
+		const { through, untilEnd } = request;
+		// An interval has no adjacent section and one end; other combinations are not a valid request.
+		if ((through || untilEnd) && request.adjacent) return { status: "missing" };
+		if (through && untilEnd) return { status: "missing" };
 		// An interval request is exact: a missing or reversed interval is missing, not the tail.
-		const transcript = through
-			? this.selectTranscript({ from: request.entryId, to: through.entryId }, { tailWhenMissing: false })
-			: this.selectTranscript(request);
+		const transcript =
+			through || untilEnd
+				? this.selectTranscript(
+						{ from: request.entryId, ...(through ? { to: through.entryId } : {}) },
+						{ tailWhenMissing: false },
+					)
+				: this.selectTranscript(request);
 		const present = (end: { entryId: string; role: "user" | "assistant" }) =>
 			transcript.items.some(
 				(item) => isRenderMessageItem(item) && item.entryId === end.entryId && item.message.role === end.role,

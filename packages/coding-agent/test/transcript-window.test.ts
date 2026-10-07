@@ -748,6 +748,75 @@ describe("InteractiveMode transcript window", () => {
 		expect(text()).toBe(before.text);
 	});
 
+	describe("a window until the end of the transcript", () => {
+		/** Two turns, then two compaction sections that have only a bash execution each. */
+		function bashOnlyTail(sessionManager: SessionManager): string[] {
+			const users: string[] = [];
+			for (let index = 0; index < 2; index++) {
+				users.push(sessionManager.appendMessage({ role: "user", content: `Question ${index}`, timestamp: 1 }));
+				sessionManager.appendMessage(fauxAssistantMessage(`Answer ${index}`));
+			}
+			sessionManager.appendCompaction("summary", users[1]!, 100);
+			sessionManager.appendMessage(bashNotice("BASH-TAIL-ONE"));
+			sessionManager.appendCompaction("summary", users[1]!, 100);
+			sessionManager.appendMessage(bashNotice("BASH-TAIL-TWO"));
+			return users;
+		}
+
+		it("declares that the UI accepts a window until the end", async () => {
+			const { mode } = await openWindowedSession(bashOnlyTail, { transcriptWindows: true });
+			const ui = Reflect.get(mode, "createExtensionUIContext").call(mode) as ExtensionUIContext;
+
+			expect(ui.transcriptWindowUntilEndV1).toBe(true);
+		});
+
+		it("loads the section of the message through every later section without a user or assistant", async () => {
+			const { requestWindow, journal, latest, text } = await openWindowedSession(bashOnlyTail, {
+				transcriptWindows: true,
+			});
+			requestWindow({ entryId: journal[1]!, role: "user" });
+
+			const result = requestWindow({ entryId: journal[1]!, role: "user", untilEnd: true });
+
+			expect({
+				result,
+				liveTail: latest().liveTail,
+				loaded: latest().members.map((member) => member.loaded !== false),
+				tail: ["BASH-TAIL-ONE", "BASH-TAIL-TWO"].map((marker) => text().includes(marker)),
+				question: text().includes("Question 1"),
+			}).toEqual({
+				result: { status: "applied" },
+				liveTail: true,
+				loaded: [true, true, true, true],
+				tail: [true, true],
+				question: true,
+			});
+		});
+
+		it("refuses a window until the end together with another end without changing the chat", async () => {
+			const { requestWindow, journal, projections, text } = await openWindowedSession(bashOnlyTail, {
+				transcriptWindows: true,
+			});
+			const before = { count: projections.length, text: text() };
+
+			const results = [
+				requestWindow({
+					entryId: journal[0]!,
+					role: "user",
+					untilEnd: true,
+					through: { entryId: journal[1]!, role: "user" },
+				}),
+				requestWindow({ entryId: journal[0]!, role: "user", untilEnd: true, adjacent: "next" }),
+				requestWindow({ entryId: "unknown", role: "user", untilEnd: true }),
+			];
+
+			expect({ results, count: projections.length, text: text() }).toEqual({
+				results: [{ status: "missing" }, { status: "missing" }, { status: "missing" }],
+				...before,
+			});
+		});
+	});
+
 	describe("completed turns of a session without settlement records", () => {
 		/** Emit the events of a run whose entries the test appends, as the agent session does. */
 		function runEvents(mode: Awaited<ReturnType<typeof createWindowedMode>>) {
