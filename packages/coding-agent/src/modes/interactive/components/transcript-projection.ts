@@ -117,6 +117,7 @@ function attachCompletedTurns(
 			userEntryId = member.entryId;
 			const message = readMessage(member.entryId);
 			userPreview = userMessagePreview(message);
+			if (userPreview !== undefined) completedMembers[index] = { ...member, preview: userPreview };
 			initiator = message?.role === "user" ? copyExternalAgentOriginV1(message.initiator) : undefined;
 			terminalAssistants = [];
 			continue;

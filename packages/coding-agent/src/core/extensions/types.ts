@@ -1584,6 +1584,8 @@ export type MessageRenderProjectionMemberV1 = (
 			entryId: string;
 			blockId: string;
 			role: "user";
+			/** The bounded user text. It identifies the turn for navigation; it does not mean the turn is settled. */
+			preview?: string;
 			completedTurn?: Readonly<MessageRenderCompletedTurnV1>;
 	  }
 	| { entryId: string; blockId: string; role: "assistant" }

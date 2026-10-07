@@ -65,6 +65,7 @@ describe("completed transcript projection", () => {
 					entryId: "user-a",
 					blockId: "user-a",
 					role: "user",
+					preview: "Question",
 					completedTurn: {
 						assistantEntryId: "assistant-a",
 						userPreview: "Question",
@@ -372,6 +373,33 @@ describe("completed transcript projection", () => {
 				assistantEntryId: "assistant-terminal",
 				assistantPreview: "Answer",
 			},
+		});
+	});
+
+	it("publishes the user preview of a branch root without a terminal assistant and keeps it unsettled", () => {
+		const messages = new Map<string, AgentMessage>([
+			["user-root", { ...user, content: "Root question" }],
+			["assistant-tool-use", { ...assistant, stopReason: "toolUse" }],
+			["user-next", { ...user, content: "Next question" }],
+		]);
+		const projection = buildMessageRenderProjection({
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			members: [
+				{ entryId: "user-root", blockId: "user-root", role: "user" },
+				{ entryId: "assistant-tool-use", blockId: "assistant-tool-use", role: "assistant" },
+				{ entryId: "user-next", blockId: "user-next", role: "user" },
+			],
+			mode: "replace",
+			inferMissingTurns: true,
+			readMessage: (entryId) => messages.get(entryId),
+		});
+
+		expect(projection.members[0]).toEqual({
+			entryId: "user-root",
+			blockId: "user-root",
+			role: "user",
+			preview: "Root question",
 		});
 	});
 

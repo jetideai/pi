@@ -189,7 +189,7 @@ describe("InteractiveMode response projection", () => {
 			{ assistantEntryId: assistantId, userPreview: "Question", assistantPreview: "Answer" },
 		]);
 		expect(projections.at(-1)?.members).toEqual([
-			{ entryId: userId, blockId: userId, role: "user", completedTurn: completed[0] },
+			{ entryId: userId, blockId: userId, role: "user", preview: "Question", completedTurn: completed[0] },
 			{ entryId: assistantId, blockId: assistantId, role: "assistant" },
 			{
 				entryId: `tool-group:tool-a`,
