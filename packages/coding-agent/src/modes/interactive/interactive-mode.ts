@@ -387,7 +387,10 @@ function withAppendedSections(
 	return changed ? sectioned : members;
 }
 
-/** An append keeps each published member; it may only close a Tool Group that was open. */
+/**
+ * An append keeps each published member and completed turn; it may only close a Tool Group that was open or complete a
+ * turn that had no completion.
+ */
 function isProjectionPrefix(
 	prefix: readonly Readonly<MessageRenderProjectionMemberV1>[],
 	members: readonly MessageRenderProjectionMemberV1[],
@@ -396,6 +399,7 @@ function isProjectionPrefix(
 		prefix.length <= members.length &&
 		prefix.every((member, index) => {
 			const candidate = members[index]!;
+			if (!keepsCompletedTurn(member, candidate)) return false;
 			if (sameProjectionMember(member, candidate)) return true;
 			return (
 				member.role === "tool-group" &&
@@ -405,6 +409,16 @@ function isProjectionPrefix(
 				sameProjectionMember({ ...member, groupClosed: true }, candidate)
 			);
 		})
+	);
+}
+
+function keepsCompletedTurn(
+	published: Readonly<MessageRenderProjectionMemberV1>,
+	candidate: Readonly<MessageRenderProjectionMemberV1>,
+): boolean {
+	if (published.role !== "user" || !published.completedTurn) return true;
+	return (
+		candidate.role === "user" && JSON.stringify(candidate.completedTurn) === JSON.stringify(published.completedTurn)
 	);
 }
 
@@ -678,6 +692,8 @@ export class InteractiveMode {
 		| { sessionId: string; leafId: string | null; from: string; to: string; liveTail: boolean }
 		| undefined;
 	private messageRenderSettlements: readonly Readonly<SemanticTurnSettlementV1>[] = [];
+	/** The turn inference of the published render; its live appends keep it, so a published completion stays. */
+	private messageRenderInferMissingTurns = false;
 	private publishedMessageRenderProjection: Readonly<MessageRenderProjectionV1> | undefined;
 	private messageRenderScopeId = crypto.randomUUID();
 	private messageRenderExecutionState: Readonly<MessageRenderExecutionStateV1> | undefined;
@@ -2517,6 +2533,7 @@ export class InteractiveMode {
 		this.messageRenderScopeId = crypto.randomUUID();
 		this.messageRenderMembers = [];
 		this.messageRenderSettlements = [];
+		this.messageRenderInferMissingTurns = false;
 		this.publishedMessageRenderProjection = undefined;
 	}
 
@@ -2705,28 +2722,35 @@ export class InteractiveMode {
 	): void {
 		const observers = this.getMessageRenderProjectionObserversV1();
 		if (observers.length === 0) return;
+		if (requestedMode === "replace") this.messageRenderInferMissingTurns = inferMissingTurns;
 		// Live output continues the published window, so an append keeps its liveTail fact.
 		const windowTail =
 			liveTail ?? (requestedMode === "append" ? this.publishedMessageRenderProjection?.liveTail : undefined);
 		const projected = windowTail === undefined ? members : withAppendedSections(members);
 		const previous = this.publishedMessageRenderProjection?.members;
-		const mode =
-			requestedMode === "append" && previous && !isProjectionPrefix(previous, projected) ? "replace" : requestedMode;
-		const projection = buildMessageRenderProjection({
-			producerSessionId: this.sessionManager.getSessionId(),
-			renderScopeId: this.messageRenderScopeId,
-			members: projected,
-			mode,
-			...(finalized ? { finalized } : {}),
-			settledTurns: this.messageRenderSettlements ?? [],
-			inferMissingTurns,
-			...(windowTail !== undefined ? { liveTail: windowTail } : {}),
-			readMessage: (entryId) => {
-				if (finalized?.entryId === entryId) return finalized.message;
-				const entry = this.sessionManager.getEntry(entryId);
-				return entry?.type === "message" ? entry.message : undefined;
-			},
-		});
+		const build = (mode: "append" | "replace") =>
+			buildMessageRenderProjection({
+				producerSessionId: this.sessionManager.getSessionId(),
+				renderScopeId: this.messageRenderScopeId,
+				members: projected,
+				mode,
+				...(finalized ? { finalized } : {}),
+				settledTurns: this.messageRenderSettlements ?? [],
+				inferMissingTurns: this.messageRenderInferMissingTurns,
+				activeRun: this.liveRun !== undefined || !this.session.isIdle,
+				...(windowTail !== undefined ? { liveTail: windowTail } : {}),
+				readMessage: (entryId) => {
+					if (finalized?.entryId === entryId) return finalized.message;
+					const entry = this.sessionManager.getEntry(entryId);
+					return entry?.type === "message" ? entry.message : undefined;
+				},
+			});
+		const appended = build(requestedMode);
+		// An append keeps every published member and completion; a changed or removed completion is a replacement.
+		const projection =
+			requestedMode === "append" && previous && !isProjectionPrefix(previous, appended.members)
+				? build("replace")
+				: appended;
 		// A requested window needs its own replay, so only an unrequested equal projection is not published again.
 		if (sameProjection(this.publishedMessageRenderProjection, projection) && !finalized && !requested) return;
 		this.publishedMessageRenderProjection = projection;

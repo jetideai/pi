@@ -24,6 +24,8 @@ export interface BuildMessageRenderProjectionOptions {
 	finalized?: MessageRenderFinalizedEntryV1;
 	settledTurns?: readonly Readonly<SemanticTurnSettlementV1>[];
 	inferMissingTurns?: boolean;
+	/** A run is active: its turn, the last one, completes only from its settlement record. */
+	activeRun?: boolean;
 	liveTail?: boolean;
 	readMessage(entryId: string): AgentMessage | undefined;
 }
@@ -36,6 +38,7 @@ export function buildMessageRenderProjection(
 		options.readMessage,
 		options.settledTurns ?? [],
 		options.inferMissingTurns ?? false,
+		options.activeRun ?? false,
 	).map((member) =>
 		Object.freeze({
 			...member,
@@ -72,6 +75,7 @@ function attachCompletedTurns(
 	readMessage: (entryId: string) => AgentMessage | undefined,
 	settledTurns: readonly Readonly<SemanticTurnSettlementV1>[],
 	inferMissingTurns: boolean,
+	activeRun: boolean,
 ): MessageRenderProjectionMemberV1[] {
 	const completedMembers = [...members];
 	const settledAssistantByUser = new Map<string, string>();
@@ -90,7 +94,8 @@ function attachCompletedTurns(
 	let userPreview: string | undefined;
 	let initiator: Readonly<ExternalAgentOriginV1> | undefined;
 	let terminalAssistants: Array<{ entryId: string; preview: string | null }> = [];
-	const completeTurn = (): void => {
+	// A later user closes a span, so its last terminal assistant is final; the last span of an active run is open.
+	const completeTurn = (infer: boolean): void => {
 		if (userIndex === undefined || userEntryId === undefined || userPreview === undefined) return;
 		const user = completedMembers[userIndex];
 		if (user?.role !== "user" || user.completedTurn) return;
@@ -98,7 +103,7 @@ function attachCompletedTurns(
 		const settledAssistantEntryId = settledAssistantByUser.get(userEntryId);
 		const terminalAssistant = settledAssistantEntryId
 			? terminalAssistants.find((assistant) => assistant.entryId === settledAssistantEntryId)
-			: inferMissingTurns
+			: infer
 				? terminalAssistants.at(-1)
 				: undefined;
 		if (!terminalAssistant) return;
@@ -112,7 +117,7 @@ function attachCompletedTurns(
 	};
 	for (const [index, member] of members.entries()) {
 		if (member.role === "user") {
-			completeTurn();
+			completeTurn(inferMissingTurns);
 			userIndex = index;
 			userEntryId = member.entryId;
 			const message = readMessage(member.entryId);
@@ -127,7 +132,7 @@ function attachCompletedTurns(
 		const preview = terminalAssistantPreview(message);
 		if (preview !== undefined) terminalAssistants.push({ entryId: member.entryId, preview });
 	}
-	completeTurn();
+	completeTurn(inferMissingTurns && !activeRun);
 	return completedMembers;
 }
 

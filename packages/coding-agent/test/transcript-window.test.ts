@@ -748,6 +748,92 @@ describe("InteractiveMode transcript window", () => {
 		expect(text()).toBe(before.text);
 	});
 
+	describe("completed turns of a session without settlement records", () => {
+		/** Emit the events of a run whose entries the test appends, as the agent session does. */
+		function runEvents(mode: Awaited<ReturnType<typeof createWindowedMode>>) {
+			const sessionManager = mode.runtimeHost.session.sessionManager;
+			const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (event: unknown) => Promise<void>;
+			const emit = (event: unknown) => handleEvent.call(mode.mode, event);
+			return {
+				start: () => emit({ type: "agent_start" }),
+				end: () => emit({ type: "agent_end", messages: [], willRetry: false }),
+				user: async (content: string) => {
+					const message = { role: "user" as const, content, timestamp: 3 };
+					const entryId = sessionManager.appendMessage(message);
+					await emit({ type: "message_start", message, entryId });
+					await emit({ type: "message_end", message, entryId });
+					return entryId;
+				},
+				respond: async (message: AssistantMessage) => {
+					const entryId = sessionManager.appendMessage(message);
+					await emit({ type: "message_start", message: { ...message, content: [] }, entryId });
+					await emit({ type: "message_update", message, entryId });
+					await emit({ type: "message_end", message, entryId });
+					return entryId;
+				},
+			};
+		}
+		const turnOfUser = (projection: Readonly<MessageRenderProjectionV1>, entryId: string) => {
+			const member = projection.members.find((candidate) => candidate.entryId === entryId);
+			return member?.role === "user" ? member.completedTurn : undefined;
+		};
+
+		it("keeps the inferred completion of the last turn of an idle session", async () => {
+			const mode = await createWindowedMode({ transcriptWindows: true });
+
+			expect(mode.latest().mode).toBe("replace");
+			expect(turnOfUser(mode.latest(), mode.userId(8))).toMatchObject({ assistantPreview: "Answer 8" });
+		});
+
+		it("keeps every published inferred completion in the live append of a new run", async () => {
+			const mode = await createWindowedMode({ transcriptWindows: true });
+			const opened = mode.latest();
+			const run = runEvents(mode);
+
+			await run.start();
+			await run.user("Live question");
+			const appended = mode.latest();
+
+			expect(appended.mode).toBe("append");
+			expect(mode.journal.map((ids) => turnOfUser(appended, ids[0]!))).toEqual(
+				mode.journal.map((ids) => turnOfUser(opened, ids[0]!)),
+			);
+		});
+
+		it("does not complete the turn of the active run in a window replacement", async () => {
+			const mode = await createWindowedMode({ transcriptWindows: true });
+			const run = runEvents(mode);
+			await run.start();
+			const live = await run.user("Live question");
+			await run.respond(fauxAssistantMessage("Live answer"));
+			const before = mode.projections.length;
+
+			expect(mode.window(8)).toEqual({ status: "applied" });
+
+			// The window publishes its replacement; the remount of the live run can append after it.
+			const replaced = mode.projections.slice(before).find((projection) => projection.mode === "replace")!;
+			expect(turnOfUser(replaced, live)).toBeUndefined();
+			expect(turnOfUser(replaced, mode.userId(8))).toMatchObject({ assistantPreview: "Answer 8" });
+			expect(turnOfUser(mode.latest(), live)).toBeUndefined();
+		});
+
+		it("replaces the projection when a run changes the published completion of the last turn", async () => {
+			const mode = await createWindowedMode({ transcriptWindows: true });
+			const published = turnOfUser(mode.latest(), mode.userId(8));
+			const run = runEvents(mode);
+
+			await run.start();
+			const before = mode.projections.length;
+			await run.respond(fauxAssistantMessage("Retried answer"));
+			const changed = mode.projections[before]!;
+
+			expect(published).toBeDefined();
+			expect(changed.mode).toBe("replace");
+			expect(turnOfUser(changed, mode.userId(8))).toBeUndefined();
+			expect(turnOfUser(mode.latest(), mode.userId(8))).toBeUndefined();
+		});
+	});
+
 	describe("while an unsolicited run streams", () => {
 		async function heldRunFromAnOlderSection() {
 			let release: () => void = () => {};

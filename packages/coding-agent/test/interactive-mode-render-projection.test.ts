@@ -100,6 +100,7 @@ function modeHarness(sessionManager: SessionManager, extensionRunner?: Extension
 		semanticStreamingContainer: undefined,
 		sessionManager,
 		session: {
+			isIdle: true,
 			retryAttempt: 0,
 			modelRuntime: undefined,
 			extensionRunner,
