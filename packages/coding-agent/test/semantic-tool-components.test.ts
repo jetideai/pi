@@ -1553,18 +1553,30 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 	});
 
 	describe("keeps summary outcome cues without changing stock outcome rows", () => {
-		function stockRows(component: ToolExecutionComponent, width: number): string[] {
-			const owner = component as unknown as { semanticSelectorsV3: unknown[] };
-			const selectors = owner.semanticSelectorsV3;
-			owner.semanticSelectorsV3 = [];
-			try {
-				return foldedRows(component.render(width), () => false);
-			} finally {
-				owner.semanticSelectorsV3 = selectors;
-			}
+		function openStyledRows(rows: string[]): string[] {
+			return rows
+				.filter((row) => !row.includes(summaryBegin))
+				.map((row) => Object.values(controls).reduce((text, control) => text.replaceAll(control, ""), row));
 		}
-		const edit = (path: string) => () =>
-			foldedBuiltIn("edit", editRenderersFor(), { path, edits: [{ oldText: "a", newText: "b" }] }, "no");
+		const edit = (path: string) => (folding: boolean) => {
+			const component = new ToolExecutionComponent(
+				"edit",
+				"call-edit",
+				{ path, edits: [{ oldText: "a", newText: "b" }] },
+				{
+					ownerEntryId: "assistant-a",
+					producerSessionId: "session-a",
+					renderScopeId: "scope-a",
+					semanticSelectorsV3: folding ? [summaryAware] : [],
+					toolExecutionPresentationSelectorsV1: [admitCompact],
+				},
+				editRenderersFor(),
+				{ requestRender() {} } as unknown as TUI,
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "text", text: "no" }], isError: false });
+			return component;
+		};
 		const shaded = (text: string) => `\x1b[48;5;236m${text}\x1b[49m`;
 		const headers = [
 			{
@@ -1584,17 +1596,21 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 				name: "a self-rendered Text call part with its own colors",
 				width: 40,
 				label: "argument-end",
-				create: () =>
-					savedCall({
-						renderShell: "self",
-						renderCall: () => new Text(`process ${"argument ".repeat(6)}argument-end`, 0, 0, shaded),
-					}),
+				create: (folding: boolean) =>
+					savedCall(
+						{
+							renderShell: "self",
+							renderCall: () => new Text(`process ${"argument ".repeat(6)}argument-end`, 0, 0, shaded),
+						},
+						[],
+						folding ? [summaryAware] : [],
+					),
 			},
 			{
 				name: "a call without a definition",
 				width: 24,
 				label: "wraps_at_a_narrow",
-				create: () =>
+				create: (folding: boolean) =>
 					new ToolExecutionComponent(
 						"a_tool_name_that_wraps_at_a_narrow_width",
 						"call-long-name",
@@ -1603,7 +1619,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 							ownerEntryId: "assistant-a",
 							producerSessionId: "session-a",
 							renderScopeId: "scope-a",
-							semanticSelectorsV3: [summaryAware],
+							semanticSelectorsV3: folding ? [summaryAware] : [],
 						},
 						undefined,
 						{ requestRender() {} } as unknown as TUI,
@@ -1622,8 +1638,10 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		for (const header of headers) {
 			for (const outcome of outcomes) {
 				it(`${outcome.cue}: ${header.name}`, () => {
-					const component = header.create();
+					const component = header.create(true);
+					const stock = header.create(false);
 					outcome.settle(component);
+					outcome.settle(stock);
 					const rows = component.render(header.width);
 					const open = foldedRows(rows, () => false).join("");
 
@@ -1632,18 +1650,24 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 						summaryHiddenWhenOpen: !open.includes("…"),
 						canonical: open.split(header.label).length - 1,
 					}).toEqual({ collapsed: true, summaryHiddenWhenOpen: true, canonical: 1 });
-					expect(foldedRows(rows, () => false)).toEqual(stockRows(component, header.width));
+					const stockRows = stock.render(header.width);
+					expect(stockRows.join("")).not.toContain(summaryBegin);
+					expect(openStyledRows(rows)).toEqual(stockRows);
 				});
 			}
 		}
 		for (const header of [headers[1]!, headers[3]!, headers[4]!]) {
 			it(`keeps the stock outcome rows of ${header.name} from wide to narrow to wide`, () => {
-				const component = header.create();
+				const component = header.create(true);
+				const stock = header.create(false);
 				outcomes[0]!.settle(component);
+				outcomes[0]!.settle(stock);
 				for (const width of [120, header.width, 120]) {
 					const rows = component.render(width);
 					expect(foldedRows(rows, () => true).join("")).toContain("Failed");
-					expect(foldedRows(rows, () => false)).toEqual(stockRows(component, width));
+					const stockRows = stock.render(width);
+					expect(stockRows.join("")).not.toContain(summaryBegin);
+					expect(openStyledRows(rows)).toEqual(stockRows);
 				}
 			});
 		}
