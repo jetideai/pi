@@ -55,7 +55,7 @@ export class SectionedToolCallHeader extends Text {
 		const firstLogicalLine = this.canonicalText.split("\n", 1)[0] ?? "";
 		const room = Math.max(0, width - visibleWidth(this.outcomeCue));
 		this.summarized = this.sectioned && visibleWidth(firstLogicalLine) > room;
-		this.setFirstLineSuffix(this.summarized ? this.outcomeCue : "");
+		this.setFirstLineSuffix(this.summarized || !this.sectioned ? this.outcomeCue : "");
 		const canonicalLines = super.render(width);
 		if (!this.sectioned) return canonicalLines;
 		if (!this.summarized) return [truncateToWidth(firstLogicalLine, width, ""), ...canonicalLines.slice(1)];

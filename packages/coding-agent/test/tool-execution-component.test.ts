@@ -1,5 +1,6 @@
 import { join, resolve } from "node:path";
 import {
+	Box,
 	Container,
 	Image,
 	resetCapabilitiesCache,
@@ -92,6 +93,66 @@ describe("ToolExecutionComponent parity", () => {
 
 	test("createAllToolRenderers returns one stable registry", () => {
 		expect(createAllToolRenderers()).toBe(createAllToolRenderers());
+	});
+
+	test("keeps non-folding padded rows byte-identical to the stock shell", () => {
+		const component = new ToolExecutionComponent(
+			"process",
+			"stock-bytes",
+			{},
+			{},
+			{
+				renderCall: () => new Text("Process: list", 0, 0),
+				renderResult: () => new Text("result", 0, 0),
+			},
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "result" }], isError: false });
+		const shell = new Box(1, 1, (text) => theme.bg("toolSuccessBg", text));
+		shell.addChild(new Text("Process: list", 0, 0));
+		shell.addChild(new Text("result", 0, 0));
+		for (const width of [24, 80]) expect(component.render(width)).toEqual(["", ...shell.render(width)]);
+	});
+
+	test("maps semantic padding and body mouse rows to the stock shell", () => {
+		const mouse = vi.fn(() => ({ handled: true as const }));
+		const component = new ToolExecutionComponent(
+			"process",
+			"mouse-padding",
+			{},
+			{
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => ({ begin: "", body: "", end: "" })],
+			},
+			{
+				renderCall: () => ({ render: () => ["Process: list", "arguments"], invalidate() {}, handleMouse: mouse }),
+			},
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [], isError: false });
+		const rows = component.render(40);
+		const event = (y: number): TuiMouseEvent => ({
+			type: "move",
+			button: "none",
+			x: 2,
+			y,
+			screenX: 2,
+			screenY: y,
+			width: 40,
+			height: rows.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 0,
+		});
+		expect(component.handleMouse(event(2))).toBeUndefined();
+		expect(component.handleMouse(event(3))).toMatchObject({ handled: true, target: { originY: 3 } });
+		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 0, height: 2 }));
+		expect(component.handleMouse(event(4))).toMatchObject({ handled: true, target: { originY: 3 } });
+		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 1, height: 2 }));
 	});
 
 	test("stacks custom call and result renderers like the old implementation", () => {

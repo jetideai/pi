@@ -51,7 +51,6 @@ import {
 	getTextOutput as getRenderedTextOutput,
 	SectionedToolCallHeader,
 	sectionedHeaderOf,
-	sectionedHeaderSummarized,
 } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
@@ -238,7 +237,7 @@ export class ToolExecutionComponent extends Container {
 			expanded: this.isBodyExpanded(),
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
-			sectioned: this.foldOwnsBody && this.rendersSemanticSections(),
+			sectioned: false,
 		};
 	}
 
@@ -359,8 +358,8 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): string[] {
 		if (this.hideComponent) return [];
-		// The owned call text fills the first row of its first line in sections, as a sectioned header does.
-		this.contentText.setFillFirstLine(this.rendersSemanticSections());
+		// Canonical rows use the stock layout. The fold summary is outside that layout.
+		this.contentText.setFillFirstLine(false);
 		this.placeOutcomeCue(width);
 		return this.decorateSemanticSections(this.withOutcomeCue(this.renderStock(width), width), width);
 	}
@@ -377,6 +376,7 @@ export class ToolExecutionComponent extends Container {
 	 * header row that the call renderer locates in its rendered component. A summary row is the header row.
 	 */
 	private headerRowIndex(): number {
+		if (this.callSummary) return 1;
 		const offset = this.hasRendererDefinition() && this.getRenderShell() === "self" ? 1 : this.contentStartRow();
 		const component = this.callRendererComponent;
 		const locator = this.getCallHeaderRowLocator();
@@ -426,7 +426,7 @@ export class ToolExecutionComponent extends Container {
 
 	/**
 	 * An open Fold hides a summary row: the canonical header that follows it then ends its first line with the outcome
-	 * cue. A sectioned header also keeps room for the cue on its summary row, so it never needs a title summary.
+	 * cue. The compact summary also keeps space for the cue.
 	 */
 	private placeOutcomeCue(width: number): void {
 		const call = this.callPartComponent;
@@ -439,14 +439,14 @@ export class ToolExecutionComponent extends Container {
 		}
 		const cue = this.reservedCue(this.hasRendererDefinition() ? this.callWidth(width) : width);
 		if (call) sectionedHeaderOf(call)?.setOutcomeCue(cue);
-		this.summarizedText(width)?.setFirstLineSuffix(cue && this.callSummaryRow(width) !== undefined ? cue : "");
+		this.summarizedText()?.setFirstLineSuffix(cue && this.callSummaryRow(width) !== undefined ? cue : "");
 	}
 
 	/** The Text whose first line a summary row summarizes: the owned call text, or a Text call part. */
-	private summarizedText(width: number): Text | undefined {
+	private summarizedText(): Text | undefined {
 		if (!this.hasRendererDefinition()) return this.contentText;
 		const call = this.callPartComponent;
-		if (!(call instanceof Text) || sectionedHeaderOf(call) || this.locatesOwnRows(width)) return undefined;
+		if (!(call instanceof Text)) return undefined;
 		return call;
 	}
 
@@ -463,33 +463,14 @@ export class ToolExecutionComponent extends Container {
 		return this.outcomeCues().find((candidate) => visibleWidth(candidate) < room) ?? "";
 	}
 
-	/** True when the header row that the call renderer gives has room for [reserved] columns after its content. */
-	private ownHeaderRowHasRoom(callWidth: number, reserved: number): boolean {
-		const component = this.callRendererComponent ?? this.callPartComponent;
-		if (!component) return true;
-		try {
-			const rows = component.render(callWidth);
-			const located = this.getCallHeaderRowLocator()?.(component as never) ?? 0;
-			const row = rows[located] ?? "";
-			const content = row.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
-			return visibleWidth(content) + reserved <= callWidth;
-		} catch {
-			return true;
-		}
-	}
-
 	private decorateSemanticSections(lines: string[], width: number): string[] {
 		if (!this.rendersSemanticSections()) return lines;
-		// A summary row is the header: the located rows of the renderer are then body rows.
-		const located = this.callSummary ? undefined : this.locatedSemanticRows(width);
-		const rows = located ?? this.wholeCallSemanticRows(width);
+		// The summary is separate from the complete stock shell, including its top padding.
+		const rows = this.callSummary
+			? { header: 1, body: 2 }
+			: (this.locatedSemanticRows(width) ?? this.wholeCallSemanticRows(width));
 		if (!rows || rows.header >= lines.length) return lines;
-		// The header row is a summary only when a known canonical header follows it: a sectioned header that
-		// summarized, or the owned call text or a Text call part. The title summary of an opaque part is its header.
-		const call = this.callPartComponent;
-		const summarizes =
-			(call !== undefined && sectionedHeaderSummarized(call)) ||
-			(this.callSummary && this.summarizedText(width) !== undefined);
+		const summarizes = this.callSummary;
 		// Without a body row the call is a plain range: the decorator context then has no foldable body.
 		return decorateMessageRenderV2(lines, rows.body, width, "tool", 0, {
 			entryId: this.toolCallId,
@@ -558,22 +539,24 @@ export class ToolExecutionComponent extends Container {
 			let shellLines: number;
 			if (!this.hasRendererDefinition()) {
 				const textLines = this.contentText.render(width).length;
-				contentRows = Math.max(0, textLines - 2) + this.summaryRows(width);
+				contentRows = Math.max(0, textLines - 2);
 				callRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
-				shellLines = this.contentStartRow() + contentRows + 1;
+				shellLines = 2 + this.summaryRows(width) + contentRows + 1;
 			} else if (this.getRenderShell() === "self") {
 				const selfRows = this.selfRenderContainer.render(width).length;
-				contentRows = selfRows > 0 ? selfRows + this.summaryRows(width) : 0;
+				contentRows = selfRows;
 				callRows = this.callPartComponent?.render(width).length ?? 0;
-				shellLines = contentRows > 0 ? 1 + contentRows : 0;
+				shellLines = contentRows > 0 ? 1 + this.summaryRows(width) + contentRows : 0;
 			} else {
 				const boxLines = this.contentBox.render(width).length;
-				contentRows = Math.max(0, boxLines - 2) + this.summaryRows(width);
+				contentRows = Math.max(0, boxLines - 2);
 				callRows = this.callPartComponent?.render(Math.max(0, width - 2)).length ?? 0;
-				shellLines = this.contentStartRow() + contentRows + 1;
+				shellLines = 2 + this.summaryRows(width) + contentRows + 1;
 			}
 			const contentStart =
-				this.hasRendererDefinition() && this.getRenderShell() === "self" ? 1 : this.contentStartRow();
+				this.hasRendererDefinition() && this.getRenderShell() === "self"
+					? 1 + this.summaryRows(width)
+					: this.contentStartRow();
 			const firstImageRow =
 				this.imageComponents.length > 0
 					? shellLines + (this.imageSpacers[0]?.render(width).length ?? 0)
@@ -609,8 +592,6 @@ export class ToolExecutionComponent extends Container {
 		const lines = super.render(width);
 		this.callSummary = false;
 		if (!this.rendersSemanticSections() || lines.length <= 1) return lines;
-		// The Spacer renders one row; the next row is the top padding of the padded shell.
-		lines.splice(1, 1);
 		const summary = this.callSummaryRow(width);
 		if (summary !== undefined) {
 			lines.splice(1, 0, summary);
@@ -619,39 +600,26 @@ export class ToolExecutionComponent extends Container {
 		return lines;
 	}
 
-	/**
-	 * The one summary row before the call rows, when the first call row is not a whole header. A call part that is one
-	 * Text gives its first line with an ellipsis when that line does not fit. Another call component does not tell its
-	 * first line, so the summary is the tool title, with an ellipsis when it does not fit. The complete call follows the
-	 * summary in the body. A renderer that locates its own header rows, a sectioned header that summarizes itself, and a
-	 * call part without rows give no summary row.
-	 */
+	/** The compact call row before the stock shell. Use the tool title only when the call has no rows. */
 	private callSummaryRow(width: number): string | undefined {
 		if (!this.rendersSemanticSections()) return undefined;
 		// A failed or cancelled call keeps room for its outcome cue: a first line that does not fit with it gets a summary,
 		// and its complete text follows in the body.
-		if (!this.hasRendererDefinition()) return this.contentText.summaryRow(width - this.reservedCueWidth(width));
+		if (!this.hasRendererDefinition()) {
+			const summary = truncateToWidth(` ${this.formatToolTitle()}`, width - this.reservedCueWidth(width), "…");
+			return new Text(summary, 0, 0, this.shellBgFn).render(width)[0];
+		}
 		const call = this.callPartComponent;
 		if (!call) return undefined;
-		// A sectioned header gives its own summary row, with room for the cue.
-		if (sectionedHeaderOf(call)) return undefined;
+
 		const self = this.getRenderShell() === "self";
 		const callWidth = this.callWidth(width);
 		const reserved = this.reservedCueWidth(callWidth);
-		let summary: string | undefined;
-		if (this.locatesOwnRows(width)) {
-			// The header row of the renderer keeps its place when it has room for the cue; otherwise the title summarizes
-			// it, and all rows of the call follow in the body.
-			if (reserved === 0 || this.ownHeaderRowHasRoom(callWidth, reserved)) return undefined;
-			summary = truncateToWidth(this.formatToolTitle(), callWidth - reserved, "…");
-		} else {
-			summary =
-				call instanceof Text
-					? call.summaryRow(callWidth - reserved)
-					: call.render(callWidth).length > 0
-						? truncateToWidth(this.formatToolTitle(), callWidth - reserved, "…")
-						: undefined;
-		}
+		const header = sectionedHeaderOf(call);
+		const text = header ?? (call instanceof Text ? call : undefined);
+		const rendered = call.render(callWidth);
+		const firstRow = rendered.length === 0 ? undefined : text ? text.getText().split("\n", 1)[0] : rendered[0];
+		const summary = truncateToWidth(firstRow ?? this.formatToolTitle(), callWidth - reserved, "…");
 		if (summary === undefined || self) return summary;
 		const shell = new Box(1, 0, this.shellBgFn);
 		shell.addChild({ render: () => [summary], invalidate: () => {} });
@@ -667,26 +635,7 @@ export class ToolExecutionComponent extends Container {
 		return this.callSummaryRow(width) === undefined ? 0 : 1;
 	}
 
-	/** True when the call renderer locates a valid header and body row in its own component. */
-	private locatesOwnRows(width: number): boolean {
-		const component = this.callRendererComponent;
-		const headerLocator = this.getCallHeaderRowLocator();
-		const bodyLocator = this.getCallBodyRowLocator();
-		if (!component || !headerLocator || !bodyLocator) return false;
-		try {
-			component.render(this.getRenderShell() === "self" ? width : Math.max(0, width - 2));
-			const headerRow = headerLocator(component);
-			const bodyRow = bodyLocator(component);
-			return headerRow !== undefined && bodyRow !== undefined && headerRow >= 0 && bodyRow > headerRow;
-		} catch {
-			return false;
-		}
-	}
-
-	/**
-	 * Semantic sections own the header row: the padded shell then has no top padding row. A call whose body the native
-	 * Fold owns has them also while it is ready or runs; another call has them when it is settled.
-	 */
+	/** A native Fold can own active call rows. Other calls get semantic sections after completion. */
 	private rendersSemanticSections(): boolean {
 		return this.semanticDecoratorsV2.length > 0 && (this.foldOwnsBody || !this.isPartial);
 	}
@@ -706,7 +655,7 @@ export class ToolExecutionComponent extends Container {
 
 	/** The first content row of the padded shell, after the Spacer and the top padding when it renders. */
 	private contentStartRow(): number {
-		return this.rendersSemanticSections() ? 1 : 2;
+		return 2 + (this.callSummary ? 1 : 0);
 	}
 
 	/** Pi tool output expansion, or the canonical settled body that a native Fold owns. */
@@ -716,17 +665,15 @@ export class ToolExecutionComponent extends Container {
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
-			// The children still render the top padding row that the semantic shell omits, and not its summary row.
-			if (!this.rendersSemanticSections() || event.y < 1) return super.handleMouse(event);
-			if (this.callSummary) return super.handleMouse({ ...event, y: Math.max(event.y, 2) });
-			return super.handleMouse({ ...event, y: event.y + 1, height: event.height + 1 });
+			if (!this.callSummary || event.y < 1) return super.handleMouse(event);
+			if (event.y === 1) return undefined;
+			return super.handleMouse({ ...event, y: event.y - 1, height: event.height - 1 });
 		}
-		// A summary row before the self-rendered rows points at the first of them.
 		const summaryRows = this.callSummary ? 1 : 0;
-		if (event.y <= 0 || event.y > this.selfRenderHeight + summaryRows) return undefined;
+		if (event.y <= summaryRows || event.y > this.selfRenderHeight + summaryRows) return undefined;
 		return this.selfRenderContainer.handleMouse({
 			...event,
-			y: Math.max(event.y - 1 - summaryRows, 0),
+			y: event.y - 1 - summaryRows,
 			height: this.selfRenderHeight,
 		});
 	}

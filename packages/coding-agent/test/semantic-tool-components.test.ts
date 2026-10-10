@@ -1,5 +1,6 @@
 import {
 	type Component,
+	Container,
 	resetCapabilitiesCache,
 	setCapabilities,
 	Text,
@@ -245,11 +246,6 @@ function pointRows(rows: string[]) {
 	return rows.flatMap((row) =>
 		row.includes(EDIT_POINT) ? [stripAnsi(row.replaceAll(EDIT_POINT, "")).trimEnd()] : [],
 	);
-}
-
-/** The stock rows of a padded shell without its top padding row, which a semantic shell omits. */
-function withoutShellTopPadding(rows: string[]) {
-	return [rows[0]!, ...rows.slice(2)];
 }
 
 function plainRows(renderers: ToolRenderers | undefined, width: number) {
@@ -802,7 +798,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rows.visible[rows.begin[0]!]).toBe(" process");
 		expect(rows.body).toEqual([rows.begin[0]! + 1]);
 		expect(rows.end).toEqual([rows.visible.length - 1]);
-		expect(rows.visible).toEqual(withoutShellTopPadding(plainRows(undefined, 80)));
+		expect(rows.visible).toEqual(["", " process", ...plainRows(undefined, 80).slice(1)]);
 	});
 
 	it("gives a call without a call renderer its title as the header and its result as the body", () => {
@@ -811,8 +807,8 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(rows.counts).toEqual([1, 1, 1]);
 		expect(rows.visible[rows.begin[0]!]).toBe(" process");
-		expect(rows.visible[rows.body[0]!]).toBe(" process output");
-		expect(rows.visible).toEqual(withoutShellTopPadding(plainRows(renderers, 80)));
+		expect(rows.visible[rows.body[0]!]).toBe("");
+		expect(rows.visible).toEqual(["", " process", ...plainRows(renderers, 80).slice(1)]);
 	});
 
 	it("keeps the whole-call range of a call whose renderer throws on its fallback title", () => {
@@ -825,7 +821,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(rows.counts).toEqual([1, 1, 1]);
 		expect(rows.visible[rows.begin[0]!]).toBe(" process");
-		expect(rows.visible[rows.body[0]!]).toBe(" process output");
+		expect(rows.visible[rows.body[0]!]).toBe("");
 	});
 
 	it("gives a custom self renderer without row locators its first call row as the header", () => {
@@ -838,11 +834,11 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(rows.counts).toEqual([1, 1, 1]);
 		expect(rows.visible[rows.begin[0]!]).toBe("custom call");
-		expect(rows.visible[rows.body[0]!]).toBe("custom arguments");
-		expect(rows.visible).toEqual(plainRows(renderers, 80));
+		expect(rows.visible[rows.body[0]!]).toBe("custom call");
+		expect(rows.visible).toEqual(["", "custom call", ...plainRows(renderers, 80).slice(1)]);
 	});
 
-	it("gives a completed self-rendered call with an empty result one plain whole-call range", () => {
+	it("gives a completed self-rendered call with an empty result a summary and stock body", () => {
 		const contexts: MessageRenderBoundaryContextV1[] = [];
 		const component = savedCall(
 			{ renderShell: "self", renderCall: () => new Text("custom call", 0, 0) },
@@ -852,25 +848,25 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		component.updateResult({ content: [], isError: false });
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", "custom call"]);
-		expect(rows.counts).toEqual([1, 0, 1]);
-		expect([rows.begin, rows.end]).toEqual([[1], [1]]);
-		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
+		expect(rows.visible).toEqual(["", "custom call", "custom call"]);
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect([rows.begin, rows.end]).toEqual([[1], [2]]);
+		expect(contexts.at(-1)?.bodyRow).toBe(2);
 	});
 
-	it("does not make the bottom padding of a call without a result the body of its range", () => {
+	it("keeps both padding rows in the body of a call without a result", () => {
 		const contexts: MessageRenderBoundaryContextV1[] = [];
 		const component = savedCall({}, [], recording(contexts));
 		component.updateResult({ content: [], isError: false });
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", " process", ""]);
-		expect(rows.counts).toEqual([1, 0, 1]);
-		expect([rows.begin, rows.end]).toEqual([[1], [2]]);
-		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
+		expect(rows.visible).toEqual(["", " process", "", " process", ""]);
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect([rows.begin, rows.end]).toEqual([[1], [4]]);
+		expect(contexts.at(-1)?.bodyRow).toBe(2);
 	});
 
-	it("gives a call whose result renderer draws no rows a plain range", () => {
+	it("keeps the stock shell in a Fold whose result renderer draws no rows", () => {
 		const contexts: MessageRenderBoundaryContextV1[] = [];
 		const component = savedCall(
 			{ renderCall: () => new Text("custom call", 0, 0), renderResult: () => new Text("", 0, 0) },
@@ -879,19 +875,19 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		);
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", " custom call", ""]);
-		expect(rows.counts).toEqual([1, 0, 1]);
-		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
+		expect(rows.visible).toEqual(["", " custom call", "", " custom call", ""]);
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect(contexts.at(-1)?.bodyRow).toBe(2);
 	});
 
-	it("starts the body of a call whose result is only an image at the first image row", () => {
+	it("keeps the stock shell and image spacer inside the fold body", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
 			const shells: [ToolRenderers, number, number][] = [
-				// The default semantic shell: Spacer, title, padding, image spacer, image.
-				[{}, 1, 4],
-				// The self shell: leading row, call, image spacer, image.
-				[{ renderShell: "self", renderCall: () => new Text("custom call", 0, 0) }, 1, 3],
+				// The padded shell adds its summary before the complete stock rows.
+				[{}, 1, 6],
+				// The self shell adds its summary before the call and image spacer.
+				[{ renderShell: "self", renderCall: () => new Text("custom call", 0, 0) }, 1, 4],
 			];
 			for (const [renderers, begin, body] of shells) {
 				const contexts: MessageRenderBoundaryContextV1[] = [];
@@ -900,17 +896,17 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 				const rendered = component.render(80);
 				const rows = boundaryRows(rendered);
 
-				expect([rows.begin, rows.body]).toEqual([[begin], [body]]);
+				expect([rows.begin, rows.body]).toEqual([[begin], [2]]);
 				expect(rendered[body - 1]).toBe("");
 				expect(rendered[body]).toContain("\x1b_G");
-				expect(contexts.at(-1)?.bodyRow).toBe(body);
+				expect(contexts.at(-1)?.bodyRow).toBe(2);
 			}
 		} finally {
 			resetCapabilitiesCache();
 		}
 	});
 
-	it("gives a call whose call renderer draws no rows one plain range over its result", () => {
+	it("uses the title summary when the call renderer draws no rows", () => {
 		const contexts: MessageRenderBoundaryContextV1[] = [];
 		const component = savedCall(
 			{ renderCall: () => new Text("", 0, 0), renderResult: () => new Text("custom result", 0, 0) },
@@ -919,10 +915,10 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		);
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", " custom result", ""]);
-		expect(rows.counts).toEqual([1, 0, 1]);
-		expect([rows.begin, rows.end]).toEqual([[1], [2]]);
-		expect(contexts.at(-1)?.bodyRow).toBeUndefined();
+		expect(rows.visible).toEqual(["", " process", "", " custom result", ""]);
+		expect(rows.counts).toEqual([1, 1, 1]);
+		expect([rows.begin, rows.end]).toEqual([[1], [4]]);
+		expect(contexts.at(-1)?.bodyRow).toBe(2);
 	});
 
 	it("gives the context of a call with a result the row of its foldable body", () => {
@@ -985,7 +981,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		for (const rows of [ready, settled]) {
 			expect(rows.counts).toEqual([1, 1, 1]);
 			expect(rows.visible[rows.begin[0]!]).toBe("stock header");
-			expect(rows.visible[rows.body[0]!]).toBe("stock preview");
+			expect(rows.visible[rows.body[0]!]).toBe("stock header");
 		}
 	});
 
@@ -1171,7 +1167,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(rows).toEqual(expect.arrayContaining(["line 1", "line 2"]));
 	});
 
-	it("gives a located call whose result draws no rows no fold body", () => {
+	it("gives a located call whose result draws no rows its complete stock body", () => {
 		const rows = foldedBuiltIn(
 			"custom_tool",
 			{
@@ -1184,7 +1180,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 			"ignored",
 		).render(80);
 
-		expect(boundaryRows(rows).counts).toEqual([1, 0, 1]);
+		expect(boundaryRows(rows).counts).toEqual([1, 1, 1]);
 	});
 
 	it("keeps a long bash command on one collapsed row and its complete command and output in the body", () => {
@@ -1212,6 +1208,88 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 
 		expect(foldedRows(rows, () => true)).toHaveLength(2);
 		expect(foldedRows(rows, () => false)).toEqual(expect.arrayContaining([expect.stringContaining("note-39")]));
+	});
+
+	it.each([false, true])("opens a padded call to exact stock rows with result=%s", (hasResult) => {
+		const renderers = { renderCall: () => new Text("Process: list", 0, 0) };
+		const create = (folding: boolean) =>
+			new ToolExecutionComponent(
+				"process",
+				"call-padding",
+				{},
+				folding
+					? {
+							producerSessionId: "session-a",
+							renderScopeId: "scope-a",
+							semanticSelectorsV3: [summaryAware],
+						}
+					: {},
+				renderers,
+				{ requestRender() {} } as unknown as TUI,
+				process.cwd(),
+			);
+		const stock = create(false);
+		const folded = create(true);
+		for (const component of [stock, folded]) {
+			component.updateResult({ content: hasResult ? [{ type: "text", text: "result" }] : [], isError: false });
+		}
+		const rows = folded.render(40);
+		const exact = hasResult
+			? ["", "<shaded blank>", "Process: list", "result", "<shaded blank>"]
+			: ["", "<shaded blank>", "Process: list", "<shaded blank>"];
+		expect(foldedRows(stock.render(40), () => false)).toEqual(exact);
+		expect(foldedRows(rows, () => false)).toEqual(exact);
+		expect(foldedRows(rows, () => true)).toEqual(["", "Process: list"]);
+		expect(rows[1]).toContain(summaryBegin);
+		expect(boundaryRows(rows).body).toEqual([2]);
+	});
+
+	it("opens a long built-in header to the exact stock wrapping and padding", () => {
+		const path = `src/${"segment/".repeat(12)}Long.kt`;
+		const stock = new ToolExecutionComponent(
+			"edit",
+			"call-edit",
+			{ path, edits: [{ oldText: "a", newText: "b" }] },
+			{},
+			editRenderersFor(),
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		stock.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
+		const folded = foldedBuiltIn("edit", editRenderersFor(), { path, edits: [{ oldText: "a", newText: "b" }] }, "ok");
+		for (const width of [40, 200, 40]) {
+			expect(foldedRows(folded.render(width), () => false)).toEqual(foldedRows(stock.render(width), () => false));
+		}
+	});
+
+	it("keeps source points on canonical content after the summary and top padding", () => {
+		const rows = savedCall(undefined).render(80);
+		expect(rows[1]).toContain(summaryBegin);
+		expect(rows[1]).not.toContain(EDIT_POINT);
+		expect(rows[2]).not.toContain(EDIT_POINT);
+		expect(rows[3]).toContain(EDIT_POINT);
+		expect(stripAnsi(rows[3]!)).toContain("process");
+	});
+
+	it("shows a container call name once in the open Fold", () => {
+		const rows = savedCall({
+			renderCall: () => {
+				const container = new Container();
+				container.addChild(new Text("Process: list", 0, 0));
+				container.addChild(new Text("arguments", 0, 0));
+				return container;
+			},
+		}).render(40);
+		expect(foldedRows(rows, () => false)).toEqual([
+			"",
+			"<shaded blank>",
+			"Process: list",
+			"arguments",
+			"process output",
+			"<shaded blank>",
+		]);
+		expect(foldedRows(rows, () => true)).toEqual(["", "Process: list"]);
+		expect(rows[1]).toContain(summaryBegin);
 	});
 
 	it("shows a collapsed custom call with a multirow call renderer as one row and all its content when open", () => {
@@ -1272,7 +1350,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(foldedRows(component.render(60), () => false).join("")).toContain("Long.kt");
 	});
 
-	it("opens a built-in edit with a long path to its complete header on the first row without the summary", () => {
+	it("opens a built-in edit with a long path to its stock header after top padding", () => {
 		const path = `../jetbrains-terminal_worktrees/semantic-resize-r0/src/uiTest/kotlin/${"segment/".repeat(4)}Long.kt`;
 		const component = foldedBuiltIn(
 			"edit",
@@ -1282,8 +1360,8 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		);
 		const open = foldedRows(component.render(60), () => false);
 
-		expect(open[1]).toMatch(/^edit \.\.\/jetbrains-terminal_worktrees\//);
-		expect(open.filter((row) => row === "edit" || row.endsWith("…"))).toEqual([]);
+		expect(open.slice(0, 3)).toEqual(["", "<shaded blank>", "edit"]);
+		expect(open.filter((row) => row.endsWith("…"))).toEqual([]);
 		expect(open.join("").split("Long.kt")).toHaveLength(2);
 		expect(foldedRows(component.render(60), () => true)).toEqual(["", expect.stringMatching(/^edit .*…$/)]);
 	});
@@ -1310,7 +1388,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(open.join("").split("a_tool_name_that_wraps")).toHaveLength(2);
 	});
 
-	it("keeps the owner title of an opaque call renderer as its header in the open Fold", () => {
+	it("marks the first row of an opaque call renderer as a summary hidden in the open Fold", () => {
 		const contexts: MessageRenderBoundaryContextV1[] = [];
 		const component = savedCall(
 			{
@@ -1323,7 +1401,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		);
 		component.render(80);
 
-		expect(contexts.map((context) => context.summaryRow)).toEqual([undefined]);
+		expect(contexts.map((context) => context.summaryRow)).toEqual([1]);
 	});
 
 	it("gives the decorator the summary row of a Text call part whose first line does not fit", () => {
@@ -1338,7 +1416,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(contexts.map((context) => context.summaryRow)).toEqual([1]);
 	});
 
-	it("gives the decorator the summary row only when the begin row summarizes the next header row", () => {
+	it("marks the compact row as a summary for both fitting and wrapped headers", () => {
 		const contexts: MessageRenderBoundaryContextV1[] = [];
 		const fits = foldedBuiltIn(
 			"edit",
@@ -1363,7 +1441,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		}
 
 		expect(contexts.map((context) => [context.summaryRow, context.bodyRow])).toEqual([
-			[undefined, 2],
+			[1, 2],
 			[1, 2],
 		]);
 	});
@@ -1578,10 +1656,10 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 	);
 
 	it.each([
-		["a short", "opaque_tool", 80, /^opaque_tool$/],
-		["a long", "an_opaque_tool_name_that_does_not_fit", 24, /^an_opaque.*…$/],
+		["a short", "opaque_tool", 80, /^opaque first row that may continue$/],
+		["a long", "an_opaque_tool_name_that_does_not_fit", 24, /^opaque first row.*…$/],
 	] as const)(
-		"shows a collapsed opaque call renderer without row locators as one tool title row for %s name",
+		"shows the first rendered row of an opaque call renderer for %s name",
 		(_name, toolName, width, title) => {
 			const opaque = (): Component => ({
 				render: () => ["opaque first row that may continue", "opaque second row"],
