@@ -233,7 +233,6 @@ export class ToolExecutionComponent extends Container {
 			expanded: this.isBodyExpanded(),
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
-			sectioned: false,
 		};
 	}
 

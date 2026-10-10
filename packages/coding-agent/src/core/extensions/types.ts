@@ -496,8 +496,6 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	showImages: boolean;
 	/** Whether the current result is an error. */
 	isError: boolean;
-	/** Whether the renderer must expose its exact compact header and canonical call rows. */
-	sectioned: boolean;
 }
 
 /**
