@@ -1161,10 +1161,14 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(foldedRows(readCall().render(80), () => true)).toEqual(["", "read a.md"]);
 	});
 
-	it("opens the Fold of a saved read with collapsed Pi output to its saved result", () => {
-		const rows = foldedRows(readCall().render(80), () => false);
+	it.each([false, true])("opens a saved read with stock result visibility at Pi expanded=%s", (expanded) => {
+		const component = readCall();
+		component.setExpanded(expanded);
+		const rows = foldedRows(component.render(80), () => false);
 
-		expect(rows).toEqual(expect.arrayContaining(["line 1", "line 2"]));
+		expect(rows).toContain("read a.md");
+		expect(rows.includes("line 1")).toBe(expanded);
+		expect(rows.includes("line 2")).toBe(expanded);
 	});
 
 	it("gives a located call whose result draws no rows its complete stock body", () => {
@@ -1198,16 +1202,21 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		);
 	});
 
-	it("keeps a long write call on one collapsed row and its complete content in the body", () => {
-		const rows = foldedBuiltIn(
+	it.each([false, true])("keeps a long write call body at the stock Pi expanded=%s state", (expanded) => {
+		const component = foldedBuiltIn(
 			"write",
 			withBuiltInRenderers("write", createWriteToolDefinition(process.cwd()) as unknown as ToolRenderers)!,
 			{ path: "notes.txt", content: numbered("note", 40) },
 			"Wrote notes.txt",
-		).render(80);
+		);
+		component.setExpanded(expanded);
+		const rows = component.render(80);
+		const open = foldedRows(rows, () => false).join("\n");
 
 		expect(foldedRows(rows, () => true)).toHaveLength(2);
-		expect(foldedRows(rows, () => false)).toEqual(expect.arrayContaining([expect.stringContaining("note-39")]));
+		expect(open).toContain("note-0");
+		expect(open.includes("note-39")).toBe(expanded);
+		expect(open.includes("30 more lines")).toBe(!expanded);
 	});
 
 	it.each([false, true])("opens a padded call to exact stock rows with result=%s", (hasResult) => {
@@ -1331,6 +1340,175 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 				.map((row) => Object.values(controls).reduce((text, control) => text.replaceAll(control, ""), row));
 			expect(rows).toEqual(stock.render(width));
 		}
+	});
+
+	describe("stock output expansion inside an open Tool Call", () => {
+		const openStyledRows = (rows: string[]) =>
+			rows
+				.filter((row) => !row.includes(summaryBegin))
+				.map((row) =>
+					[...Object.values(controls), EDIT_POINT].reduce((text, control) => text.replaceAll(control, ""), row),
+				);
+
+		for (const kind of ["bash", "fallback"] as const) {
+			for (const partial of [false, true]) {
+				it.each([false, true])(
+					`opens the stock ${kind} ${partial ? "partial" : "settled"} output with Pi expanded=%s`,
+					(expanded) => {
+						const renderers =
+							kind === "bash"
+								? withBuiltInRenderers(
+										"bash",
+										createBashToolDefinition(process.cwd()) as unknown as ToolRenderers,
+									)
+								: { renderCall: () => new Text("fallback call", 0, 0) };
+						const create = (folding: boolean) => {
+							const component = new ToolExecutionComponent(
+								kind,
+								"call-preview",
+								{ command: "printf output" },
+								{
+									ownerEntryId: "assistant-a",
+									producerSessionId: "session-a",
+									renderScopeId: "scope-a",
+									semanticSelectorsV3: folding ? [summaryAware] : [],
+									toolExecutionPresentationSelectorsV1: [settledCanonicalOnly],
+								},
+								renderers,
+								{ requestRender() {} } as unknown as TUI,
+								process.cwd(),
+							);
+							component.setExpanded(expanded);
+							component.updateResult(
+								{ content: [{ type: "text", text: numbered("output", 40) }], isError: false },
+								partial,
+							);
+							return component;
+						};
+						const stock = create(false);
+						const folded = create(true);
+						for (const width of [24, 80, 160]) {
+							const rows = folded.render(width);
+							expect(rows[1]).toContain(summaryBegin);
+							expect(openStyledRows(rows)).toEqual(stock.render(width));
+						}
+						const text = foldedRows(folded.render(80), () => false).join("\n");
+						expect(text.includes("output-20")).toBe(expanded);
+						if (kind === "bash") {
+							expect(text.includes("output-0")).toBe(expanded);
+							expect(text).toContain("output-39");
+							expect(text.includes("35 earlier lines")).toBe(!expanded);
+						} else {
+							expect(text).toContain("output-0");
+							expect(text).toContain("output-9");
+							expect(text.includes("output-39")).toBe(expanded);
+							expect(text.includes("30 more lines")).toBe(!expanded);
+						}
+					},
+				);
+			}
+		}
+
+		it("rebuilds stock preview, full output and preview with current semantic boundaries", () => {
+			const candidates: MessageRenderBoundaryCandidateV3[] = [];
+			const contexts: MessageRenderBoundaryContextV1[] = [];
+			const points: MessageRenderSourcePointV1[] = [];
+			const renderers = withBuiltInRenderers(
+				"bash",
+				createBashToolDefinition(process.cwd()) as unknown as ToolRenderers,
+			);
+			const create = (folding: boolean) => {
+				const component = new ToolExecutionComponent(
+					"bash",
+					"call-expansion",
+					{ command: "printf output" },
+					{
+						ownerEntryId: "assistant-a",
+						producerSessionId: "session-a",
+						renderScopeId: "scope-a",
+						sourcePointRevisions: new SourcePointRevisions(),
+						semanticSelectorsV3: folding
+							? [
+									(candidate) => {
+										candidates.push(candidate);
+										return (context) => {
+											contexts.push(context);
+											return { ...controls, begin: summaryBegin };
+										};
+									},
+								]
+							: [],
+						sourcePointDecoratorsV1: folding
+							? [
+									(point) => {
+										points.push(point);
+										return EDIT_POINT;
+									},
+								]
+							: [],
+						toolExecutionPresentationSelectorsV1: [admitCompact],
+					},
+					renderers,
+					{ requestRender() {} } as unknown as TUI,
+					process.cwd(),
+				);
+				component.updateResult({ content: [{ type: "text", text: numbered("output", 40) }], isError: false });
+				return component;
+			};
+			const stock = create(false);
+			const folded = create(true);
+			const renders = [false, true, false].map((expanded) => {
+				stock.setExpanded(expanded);
+				folded.setExpanded(expanded);
+				points.length = 0;
+				const rows = folded.render(80);
+				expect(openStyledRows(rows)).toEqual(stock.render(80));
+				const boundaries = boundaryRows(rows);
+				expect(boundaries.counts).toEqual([1, 1, 1]);
+				expect([boundaries.begin, boundaries.body, boundaries.end]).toEqual([[1], [2], [rows.length - 1]]);
+				expect(contexts.at(-1)).toMatchObject({
+					entryId: "call-expansion",
+					ownerEntryId: "assistant-a",
+					role: "tool",
+					summaryRow: 1,
+					bodyRow: 2,
+					allocatedColumns: { start: 0, end: 80 },
+					stockRows: { start: 0, end: rows.length },
+				});
+				expect(points.some((point) => point.sourcePart === undefined)).toBe(expanded);
+				for (const point of points) {
+					expect(point).toMatchObject({
+						entryId: "call-expansion",
+						ownerEntryId: "assistant-a",
+						producerSessionId: "session-a",
+						renderScopeId: "scope-a",
+						blockId: "call-expansion",
+						foldRole: "tool",
+						sourcePointRevision: contexts.at(-1)!.sourcePointRevision,
+					});
+				}
+				expect(foldedRows(rows, () => true)).toEqual(["", "$ printf output"]);
+				const open = foldedRows(rows, () => false).join("\n");
+				expect(open.includes("output-0")).toBe(expanded);
+				expect(open.includes("35 earlier lines")).toBe(!expanded);
+				expect(open).toContain("output-39");
+				return rows;
+			});
+			expect(candidates).toEqual([
+				{
+					producerSessionId: "session-a",
+					renderScopeId: "scope-a",
+					entryId: "call-expansion",
+					blockId: "call-expansion",
+					ownerEntryId: "assistant-a",
+					role: "tool",
+					state: "expanded",
+				},
+			]);
+			expect(contexts.map((context) => context.sourcePointRevision)).toEqual([1, 2, 3]);
+			expect(renders[1]!.length).toBeGreaterThan(renders[0]!.length);
+			expect(openStyledRows(renders[2]!)).toEqual(openStyledRows(renders[0]!));
+		});
 	});
 
 	it("keeps source points on canonical content after the summary and top padding", () => {
@@ -1825,36 +2003,33 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 			"a call without a result renderer under native folding",
 			true,
 			{ renderCall: () => new Text("call", 0, 0) },
-			true,
+			false,
 		],
 		["a call without a result renderer with folding off", false, { renderCall: () => new Text("call", 0, 0) }, false],
 		["a call of a tool without a definition under native folding", true, undefined, true],
-	] as const)(
-		"opens %s to its complete saved output only when the Fold owns it",
-		(_name, folded, renderers, complete) => {
-			const component = new ToolExecutionComponent(
-				"process",
-				"call-fallback",
-				{ action: "list" },
-				folded
-					? {
-							ownerEntryId: "assistant-a",
-							producerSessionId: "session-a",
-							renderScopeId: "scope-a",
-							semanticSelectorsV3: [() => () => controls],
-							toolExecutionPresentationSelectorsV1: [settledCanonicalOnly],
-						}
-					: {},
-				renderers,
-				{ requestRender() {} } as unknown as TUI,
-				process.cwd(),
-			);
-			component.updateResult({ content: [{ type: "text", text: numbered("out", 15) }], isError: false });
-			const text = foldedRows(component.render(80), () => false).join("\n");
+	] as const)("keeps the stock output of %s when Pi output is collapsed", (_name, folded, renderers, complete) => {
+		const component = new ToolExecutionComponent(
+			"process",
+			"call-fallback",
+			{ action: "list" },
+			folded
+				? {
+						ownerEntryId: "assistant-a",
+						producerSessionId: "session-a",
+						renderScopeId: "scope-a",
+						semanticSelectorsV3: [() => () => controls],
+						toolExecutionPresentationSelectorsV1: [settledCanonicalOnly],
+					}
+				: {},
+			renderers,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: numbered("out", 15) }], isError: false });
+		const text = foldedRows(component.render(80), () => false).join("\n");
 
-			expect(text.includes("out-14")).toBe(complete);
-		},
-	);
+		expect(text.includes("out-14")).toBe(complete);
+	});
 
 	it("keeps one Fold for each child of a closed Tool Group", () => {
 		const group = new ToolGroupComponent({

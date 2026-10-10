@@ -113,7 +113,7 @@ export class ToolExecutionComponent extends Container {
 		{ sourceData: string; sourceMimeType: string; data: string; mimeType: string }
 	> = new Map();
 	private hideComponent = false;
-	/** The selected presentation lets the native Fold own the settled body, so Pi renders its canonical content. */
+	/** The native Fold owns the rendered body. Pi controls its output expansion. */
 	private readonly foldOwnsBody: boolean;
 	private readonly ownerEntryId?: string;
 	private readonly semanticDecoratorsV2: readonly MessageRenderBoundaryDecoratorV2[];
@@ -230,7 +230,7 @@ export class ToolExecutionComponent extends Container {
 			executionStarted: this.executionStarted,
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
-			expanded: this.isBodyExpanded(),
+			expanded: this.expanded,
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
 		};
@@ -247,7 +247,7 @@ export class ToolExecutionComponent extends Container {
 		}
 
 		const lines = output.split("\n");
-		const displayLines = this.isBodyExpanded() ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
+		const displayLines = this.expanded ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
 		const remaining = lines.length - displayLines.length;
 		let text = displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
 		if (remaining > 0) {
@@ -624,11 +624,6 @@ export class ToolExecutionComponent extends Container {
 		return 2 + (this.callSummary ? 1 : 0);
 	}
 
-	/** Pi tool output expansion, or the canonical settled body that a native Fold owns. */
-	private isBodyExpanded(): boolean {
-		return this.expanded || (this.foldOwnsBody && this.rendersSemanticSections());
-	}
-
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
 			if (!this.callSummary || event.y < 1) return super.handleMouse(event);
@@ -645,8 +640,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * The presentation that the extensions select. The native Fold owns the canonical body of every call with initial
-	 * collapsed boundaries: the body of a settled call, and the current output or the working row of an active call.
+	 * The native Fold owns stock rows at the current Pi expansion state for calls with initial collapsed boundaries.
+	 * An active call has its current stock output or a working row.
 	 */
 	private selectPresentation(
 		selectors: readonly ToolExecutionPresentationSelectorV1[],
@@ -719,7 +714,7 @@ export class ToolExecutionComponent extends Container {
 					try {
 						const component = resultRenderer(
 							{ content: this.result.content as any, details: this.result.details },
-							{ expanded: this.isBodyExpanded(), isPartial: this.isPartial },
+							{ expanded: this.expanded, isPartial: this.isPartial },
 							theme,
 							this.getRenderContext(this.resultRendererComponent),
 						);
@@ -804,7 +799,7 @@ export class ToolExecutionComponent extends Container {
 			: genericText
 				? sourcePointPresentation(stripTerminalSequences(genericText.getText().replace(/\t/g, "   ")))
 				: sourcePointPresentation(output);
-		this.presentation = `${this.isBodyExpanded()}:${this.isPartial}:${source}`;
+		this.presentation = `${this.expanded}:${this.isPartial}:${source}`;
 		// Only a settled call renders a range or points. A rebuilt component passes a partial state first, which must
 		// not count as a new presentation of its settled key.
 		if (!this.isPartial) {
@@ -830,8 +825,8 @@ export class ToolExecutionComponent extends Container {
 			foldRole: "tool" as const,
 			sourcePointRevision: this.sourcePointRevision,
 		};
-		// The call body renders in full. A collapsed result renders only a preview, so it needs expansion.
-		const resultText = !this.isBodyExpanded()
+		// Call points follow the rendered call. Result points require expanded Pi output.
+		const resultText = !this.expanded
 			? undefined
 			: (this.fallbackResultText ??
 				(this.toolDefinition?.renderResult === this.toolDefinition?.semanticSourceTextRenderer
