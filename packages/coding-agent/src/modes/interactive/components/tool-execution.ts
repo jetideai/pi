@@ -47,11 +47,7 @@ export interface ToolRenderers {
 	) => Component;
 }
 
-import {
-	getTextOutput as getRenderedTextOutput,
-	SectionedToolCallHeader,
-	sectionedHeaderOf,
-} from "../../../core/tools/render-utils.ts";
+import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -242,9 +238,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createCallFallback(): Component {
-		const header = new SectionedToolCallHeader("", 0, 0);
-		header.setSectionedText(this.formatToolTitle(), this.rendersSemanticSections());
-		return header;
+		return new Text(this.formatToolTitle(), 0, 0);
 	}
 
 	private createResultFallback(): Text | undefined {
@@ -358,9 +352,6 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): string[] {
 		if (this.hideComponent) return [];
-		// Canonical rows use the stock layout. The fold summary is outside that layout.
-		this.contentText.setFillFirstLine(false);
-		this.placeOutcomeCue(width);
 		return this.decorateSemanticSections(this.withOutcomeCue(this.renderStock(width), width), width);
 	}
 
@@ -373,14 +364,16 @@ export class ToolExecutionComponent extends Container {
 
 	/**
 	 * The header row of the stock rows that the last render gave, without another render: the first content row, or the
-	 * header row that the call renderer locates in its rendered component. A summary row is the header row.
+	 * header row that the call renderer locates in its rendered component. The summary does not replace this row.
 	 */
 	private headerRowIndex(): number {
-		if (this.callSummary) return 1;
-		const offset = this.hasRendererDefinition() && this.getRenderShell() === "self" ? 1 : this.contentStartRow();
+		const offset =
+			this.hasRendererDefinition() && this.getRenderShell() === "self"
+				? 1 + (this.callSummary ? 1 : 0)
+				: this.contentStartRow();
 		const component = this.callRendererComponent;
 		const locator = this.getCallHeaderRowLocator();
-		if (component && locator && !this.callSummary) {
+		if (component && locator) {
 			try {
 				const row = locator(component);
 				if (row !== undefined && row >= 0) return offset + row;
@@ -403,16 +396,15 @@ export class ToolExecutionComponent extends Container {
 	 */
 	private withOutcomeCue(lines: string[], width: number): string[] {
 		if (this.outcomeCues().length === 0) return lines;
-		const header = this.headerRowIndex();
-		const line = lines[header];
-		if (line === undefined) return lines;
-		// Trailing padding is layout, not content: the cue follows the content of the row. The summary seam reserved its
-		// room; the full cue goes where it fits, else the compact cue. A header without room keeps all of its content.
-		const content = line.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
-		const cue = this.outcomeCues().find((candidate) => visibleWidth(content) + visibleWidth(candidate) <= width);
-		if (!cue) return lines;
 		const cued = [...lines];
-		cued[header] = `${content}${cue}`;
+		for (const header of [this.headerRowIndex(), ...(this.callSummary ? [1] : [])]) {
+			const line = lines[header];
+			if (line === undefined) continue;
+			// Use the stock cue position in canonical rows. The summary has its own cue space.
+			const content = line.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
+			const cue = this.outcomeCues().find((candidate) => visibleWidth(content) + visibleWidth(candidate) <= width);
+			if (cue) cued[header] = `${content}${cue}`;
+		}
 		return cued;
 	}
 
@@ -422,32 +414,6 @@ export class ToolExecutionComponent extends Container {
 		if (outcome === "failed") return [theme.fg("error", " Failed"), theme.fg("error", " ✗")];
 		if (outcome === "cancelled") return [theme.fg("warning", " Cancelled"), theme.fg("warning", " ⊘")];
 		return [];
-	}
-
-	/**
-	 * An open Fold hides a summary row: the canonical header that follows it then ends its first line with the outcome
-	 * cue. The compact summary also keeps space for the cue.
-	 */
-	private placeOutcomeCue(width: number): void {
-		const call = this.callPartComponent;
-		if (!this.rendersSemanticSections()) {
-			// Without sections there is no summary row, and no renderer location is asked.
-			if (call) sectionedHeaderOf(call)?.setOutcomeCue("");
-			this.contentText.setFirstLineSuffix("");
-			if (call instanceof Text) call.setFirstLineSuffix("");
-			return;
-		}
-		const cue = this.reservedCue(this.hasRendererDefinition() ? this.callWidth(width) : width);
-		if (call) sectionedHeaderOf(call)?.setOutcomeCue(cue);
-		this.summarizedText()?.setFirstLineSuffix(cue && this.callSummaryRow(width) !== undefined ? cue : "");
-	}
-
-	/** The Text whose first line a summary row summarizes: the owned call text, or a Text call part. */
-	private summarizedText(): Text | undefined {
-		if (!this.hasRendererDefinition()) return this.contentText;
-		const call = this.callPartComponent;
-		if (!(call instanceof Text)) return undefined;
-		return call;
 	}
 
 	/**
@@ -615,8 +581,9 @@ export class ToolExecutionComponent extends Container {
 		const self = this.getRenderShell() === "self";
 		const callWidth = this.callWidth(width);
 		const reserved = this.reservedCueWidth(callWidth);
-		const header = sectionedHeaderOf(call);
-		const text = header ?? (call instanceof Text ? call : undefined);
+		const header =
+			(call instanceof Container || call instanceof Box) && this.getCallHeaderRowLocator() ? call.children[0] : call;
+		const text = header instanceof Text ? header : undefined;
 		const rendered = call.render(callWidth);
 		const firstRow = rendered.length === 0 ? undefined : text ? text.getText().split("\n", 1)[0] : rendered[0];
 		const summary = truncateToWidth(firstRow ?? this.formatToolTitle(), callWidth - reserved, "…");

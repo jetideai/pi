@@ -16,7 +16,7 @@ import { formatPathRelativeToCwdOrAbsolute } from "../../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
 import { resolveToCwd } from "../path-utils.ts";
 import type { ReadToolDetails } from "../read.ts";
-import { getTextOutput, renderToolPath, replaceTabs, SectionedToolCallHeader, str } from "../render-utils.ts";
+import { getTextOutput, renderToolPath, replaceTabs, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "../truncate.ts";
 
 interface CompactReadClassification {
@@ -151,16 +151,14 @@ export const readRenderers: Pick<
 	ToolDefinition<any, ReadToolDetails | undefined>,
 	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
 > = {
-	getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
-	getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
+	getRenderCallHeaderRow: (component) => (component instanceof Text ? 0 : undefined),
+	getRenderCallBodyRow: (component) => (component instanceof Text ? 1 : undefined),
 	renderCall(rawArgs, theme, context) {
 		const args = rawArgs as ReadRenderArgs | undefined;
-		const header =
-			(context.lastComponent as SectionedToolCallHeader | undefined) ?? new SectionedToolCallHeader("", 0, 0);
+		const header = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 		const classification = !context.expanded ? getCompactReadClassification(args, context.cwd) : undefined;
-		header.setSectionedText(
+		header.setText(
 			classification ? formatCompactReadCall(classification, args, theme) : formatReadCall(args, theme, context.cwd),
-			context.sectioned,
 		);
 		return header;
 	},

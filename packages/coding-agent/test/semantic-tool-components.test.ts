@@ -1262,6 +1262,77 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		}
 	});
 
+	it.each([
+		["without result", {}, [], false, false],
+		["short result", {}, [{ type: "text", text: "short output" }], false, false],
+		["long result", {}, [{ type: "text", text: numbered("output", 40) }], false, false],
+		["error", {}, [{ type: "text", text: "failed output" }], true, false],
+		["cancelled", {}, [], false, true],
+		[
+			"long built-in path",
+			{ path: `src/${"directory/".repeat(12)}Long.kt`, edits: [{ oldText: "a", newText: "b" }] },
+			[{ type: "text", text: "ok" }],
+			false,
+			false,
+		],
+		["short Edit diff", { path: "src/a.ts", edits: [{ oldText: "old", newText: "new" }] }, [], false, false],
+		["multi-hunk Edit diff", { path: "src/a.ts", edits: [{ oldText: "old", newText: "new" }] }, [], false, false],
+		["pi-processes container shape", {}, [{ type: "text", text: "process output" }], false, false],
+	] as const)("opens %s to byte-identical stock rows", (name, args, content, isError, cancelled) => {
+		const isEdit = "path" in args;
+		const renderers: ToolRenderers = isEdit
+			? editRenderersFor()
+			: {
+					renderCall: () => {
+						if (name !== "pi-processes container shape")
+							return new Text("Process: list arguments that wrap at a narrow width", 0, 0);
+						const container = new Container();
+						container.addChild(new Text(theme.fg("toolTitle", "Process: start render checks"), 0, 0));
+						container.addChild(new Text(theme.fg("muted", "npm run check"), 0, 0));
+						return container;
+					},
+				};
+		const create = (folding: boolean) => {
+			const component = new ToolExecutionComponent(
+				isEdit ? "edit" : "process",
+				"styled-parity",
+				args,
+				folding
+					? { producerSessionId: "session-a", renderScopeId: "scope-a", semanticSelectorsV3: [summaryAware] }
+					: {},
+				renderers,
+				{ requestRender() {} } as unknown as TUI,
+				process.cwd(),
+			);
+			component.setExpanded(true);
+			if (cancelled) component.markCancelled("Operation aborted");
+			else
+				component.updateResult({
+					content: [...content],
+					isError,
+					details:
+						name === "short Edit diff"
+							? { diff: "-1 old\n+1 new" }
+							: name === "multi-hunk Edit diff"
+								? {
+										diff: " 1 context\n-2 old\n+2 new\n 3 context\n...\n 20 context\n-21 other\n+21 changed",
+									}
+								: undefined,
+				});
+			return component;
+		};
+		const stock = create(false);
+		const folded = create(true);
+		for (const width of [24, 40, 80, 200]) {
+			expect(foldedRows(folded.render(width), () => true)).toHaveLength(2);
+			const rows = folded
+				.render(width)
+				.filter((row) => !row.includes(summaryBegin))
+				.map((row) => Object.values(controls).reduce((text, control) => text.replaceAll(control, ""), row));
+			expect(rows).toEqual(stock.render(width));
+		}
+	});
+
 	it("keeps source points on canonical content after the summary and top padding", () => {
 		const rows = savedCall(undefined).render(80);
 		expect(rows[1]).toContain(summaryBegin);
@@ -1481,7 +1552,17 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		]).toEqual([["", expect.stringMatching(/…/)], [`edit ${path}`]]);
 	});
 
-	describe("keeps the outcome cue of a summarized header visible in both Fold states", () => {
+	describe("keeps summary outcome cues without changing stock outcome rows", () => {
+		function stockRows(component: ToolExecutionComponent, width: number): string[] {
+			const owner = component as unknown as { semanticSelectorsV3: unknown[] };
+			const selectors = owner.semanticSelectorsV3;
+			owner.semanticSelectorsV3 = [];
+			try {
+				return foldedRows(component.render(width), () => false);
+			} finally {
+				owner.semanticSelectorsV3 = selectors;
+			}
+		}
 		const edit = (path: string) => () =>
 			foldedBuiltIn("edit", editRenderersFor(), { path, edits: [{ oldText: "a", newText: "b" }] }, "no");
 		const shaded = (text: string) => `\x1b[48;5;236m${text}\x1b[49m`;
@@ -1550,30 +1631,20 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 						collapsed: foldedRows(rows, () => true)[1]?.endsWith(outcome.cue),
 						summaryHiddenWhenOpen: !open.includes("…"),
 						canonical: open.split(header.label).length - 1,
-						cue: open.split(outcome.cue).length - 1,
-					}).toEqual({ collapsed: true, summaryHiddenWhenOpen: true, canonical: 1, cue: 1 });
+					}).toEqual({ collapsed: true, summaryHiddenWhenOpen: true, canonical: 1 });
+					expect(foldedRows(rows, () => false)).toEqual(stockRows(component, header.width));
 				});
 			}
 		}
 		for (const header of [headers[1]!, headers[3]!, headers[4]!]) {
-			it(`shows one cue in each Fold state of ${header.name} from wide to narrow to wide`, () => {
+			it(`keeps the stock outcome rows of ${header.name} from wide to narrow to wide`, () => {
 				const component = header.create();
 				outcomes[0]!.settle(component);
-				const cues = (width: number) => {
+				for (const width of [120, header.width, 120]) {
 					const rows = component.render(width);
-					return [true, false].map(
-						(collapsed) =>
-							foldedRows(rows, () => collapsed)
-								.join("")
-								.split("Failed").length - 1,
-					);
-				};
-
-				expect([cues(120), cues(header.width), cues(120)]).toEqual([
-					[1, 1],
-					[1, 1],
-					[1, 1],
-				]);
+					expect(foldedRows(rows, () => true).join("")).toContain("Failed");
+					expect(foldedRows(rows, () => false)).toEqual(stockRows(component, width));
+				}
 			});
 		}
 	});

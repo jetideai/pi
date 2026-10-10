@@ -11,7 +11,7 @@ import { keyHint } from "../../../modes/interactive/components/keybinding-hints.
 import { theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
 import type { BashToolDetails } from "../bash.ts";
-import { getTextOutput, invalidArgText, SectionedToolCallHeader, str } from "../render-utils.ts";
+import { getTextOutput, invalidArgText, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "../truncate.ts";
 
 const BASH_PREVIEW_LINES = 5;
@@ -156,20 +156,16 @@ function buildShellRenderers(prompt: string): Pick<
 		ToolDefinition<any, any>,
 		"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
 	> = {
-		getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
-		getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
+		getRenderCallHeaderRow: (component) => (component instanceof Text ? 0 : undefined),
+		getRenderCallBodyRow: (component) => (component instanceof Text ? 1 : undefined),
 		renderCall(args, _theme, context) {
 			const state = context.state;
 			if (context.executionStarted && state.startedAt === undefined) {
 				state.startedAt = Date.now();
 				state.endedAt = undefined;
 			}
-			const header =
-				(context.lastComponent as SectionedToolCallHeader | undefined) ?? new SectionedToolCallHeader("", 0, 0);
-			header.setSectionedText(
-				formatShellCall(args as { command?: string; timeout?: number } | undefined, prompt),
-				context.sectioned,
-			);
+			const header = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			header.setText(formatShellCall(args as { command?: string; timeout?: number } | undefined, prompt));
 			return header;
 		},
 		renderResult(result, options, _theme, context) {
@@ -201,6 +197,6 @@ function buildShellRenderers(prompt: string): Pick<
 	return {
 		...renderers,
 		semanticSourceTextRenderer: renderers.renderResult,
-		getRenderCallSourceText: (component) => (component instanceof SectionedToolCallHeader ? component : undefined),
+		getRenderCallSourceText: (component) => (component instanceof Text ? component : undefined),
 	};
 }

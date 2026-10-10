@@ -10,7 +10,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
-import { normalizeDisplayText, renderToolPath, replaceTabs, SectionedToolCallHeader, str } from "../render-utils.ts";
+import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "../render-utils.ts";
 
 type WriteHighlightCache = {
 	rawPath: string | null;
@@ -19,7 +19,7 @@ type WriteHighlightCache = {
 	normalizedLines: string[];
 	highlightedLines: string[];
 };
-class WriteCallRenderComponent extends SectionedToolCallHeader {
+class WriteCallRenderComponent extends Text {
 	cache?: WriteHighlightCache;
 
 	constructor() {
@@ -161,7 +161,7 @@ export const writeRenderers: Pick<
 		} else {
 			component.cache = undefined;
 		}
-		component.setSectionedText(
+		component.setText(
 			formatWriteCall(
 				renderArgs,
 				{ expanded: context.expanded, isPartial: context.isPartial },
@@ -169,7 +169,6 @@ export const writeRenderers: Pick<
 				component.cache,
 				context.cwd,
 			),
-			context.sectioned,
 		);
 		return component;
 	},

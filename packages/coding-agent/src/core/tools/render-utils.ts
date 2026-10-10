@@ -1,16 +1,7 @@
 import * as os from "node:os";
 import { pathToFileURL } from "node:url";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import {
-	type Component,
-	getCapabilities,
-	getImageDimensions,
-	hyperlink,
-	imageFallback,
-	Text,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { getCapabilities, getImageDimensions, hyperlink, imageFallback } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
 import { resolvePath } from "../../utils/paths.ts";
@@ -23,56 +14,6 @@ export function shortenPath(path: unknown): string {
 		return `~${path.slice(home.length)}`;
 	}
 	return path;
-}
-
-/** A renderer-owned call component that exposes one compact header before canonical call rows. */
-export class SectionedToolCallHeader extends Text {
-	private canonicalText = "";
-	private sectioned = false;
-	private outcomeCue = "";
-	/** True when the last render gave a one-row summary of the first line before all canonical rows. */
-	summarized = false;
-
-	setSectionedText(canonicalText: string, sectioned: boolean): void {
-		this.canonicalText = canonicalText;
-		this.sectioned = sectioned;
-		this.setText(canonicalText);
-	}
-
-	/** The outcome cue of the call: the summary row keeps room for it, and the canonical rows of a summary show it. */
-	setOutcomeCue(cue: string): void {
-		this.outcomeCue = cue;
-	}
-
-	/**
-	 * A sectioned header is one summary row of its first line, with an ellipsis when that line does not fit the width.
-	 * The canonical rows follow it: all of them when the first line wraps or does not fit with the outcome cue, so no
-	 * text is lost. An open Fold hides the summary row, so the canonical first line then ends with the outcome cue.
-	 */
-	override render(width: number): string[] {
-		// The canonical first line fills its first row, so the tool label and the start of a long path share it.
-		this.setFillFirstLine(this.sectioned);
-		const firstLogicalLine = this.canonicalText.split("\n", 1)[0] ?? "";
-		const room = Math.max(0, width - visibleWidth(this.outcomeCue));
-		this.summarized = this.sectioned && visibleWidth(firstLogicalLine) > room;
-		this.setFirstLineSuffix(this.summarized || !this.sectioned ? this.outcomeCue : "");
-		const canonicalLines = super.render(width);
-		if (!this.sectioned) return canonicalLines;
-		if (!this.summarized) return [truncateToWidth(firstLogicalLine, width, ""), ...canonicalLines.slice(1)];
-		return [truncateToWidth(firstLogicalLine, room, "…"), ...canonicalLines];
-	}
-}
-
-/** The sectioned header that is [component], or the first child of a container. */
-export function sectionedHeaderOf(component: Component): SectionedToolCallHeader | undefined {
-	const children = (component as { children?: unknown }).children;
-	const header = Array.isArray(children) ? children[0] : component;
-	return header instanceof SectionedToolCallHeader ? header : undefined;
-}
-
-/** True when [component], or the first child of a container, is a sectioned header that gave a summary row. */
-export function sectionedHeaderSummarized(component: Component): boolean {
-	return sectionedHeaderOf(component)?.summarized ?? false;
 }
 
 export function linkPath(styledText: string, rawPath: string, cwd: string): string {

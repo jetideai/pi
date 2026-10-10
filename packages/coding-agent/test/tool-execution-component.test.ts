@@ -19,8 +19,9 @@ vi.mock("../src/utils/image-convert.ts", () => imageConvertMocks);
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition, ToolExecutionPresentationSelectorV1 } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
-import { createAllToolRenderers, withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
+import { createAllToolRenderers, type ToolRenderers, withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
@@ -54,6 +55,35 @@ describe("ToolExecutionComponent parity", () => {
 		imageConvertMocks.convertToPng.mockReset();
 		vi.useRealTimers();
 	});
+
+	test.each(["Failed", "Cancelled"] as const)(
+		"keeps folding-off %s Edit rows byte-identical to the stock shell",
+		(cue) => {
+			setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+			const component = new ToolExecutionComponent(
+				"edit",
+				"stock-outcome",
+				{ path: "src/a.ts" },
+				{},
+				withBuiltInRenderers("edit", createEditToolDefinition(process.cwd()) as unknown as ToolRenderers),
+				createFakeTui(),
+				process.cwd(),
+			);
+			if (cue === "Failed") component.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
+			else component.markCancelled("aborted");
+			for (const width of [40, 80]) {
+				const box = new Box(1, 1, (text) => theme.bg(cue === "Failed" ? "toolErrorBg" : "toolPendingBg", text));
+				box.addChild(
+					new Text(`${theme.fg("toolTitle", theme.bold("edit"))} ${theme.fg("accent", "src/a.ts")}`, 0, 0),
+				);
+				const expected = ["", ...box.render(width)];
+				const header = expected[2]!.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
+				expected[2] = header + theme.fg(cue === "Failed" ? "error" : "warning", ` ${cue}`);
+				if (cue === "Failed") expected.push("", ...new Text(theme.fg("error", "no"), 1, 0).render(width));
+				expect(component.render(width)).toEqual(expected);
+			}
+		},
+	);
 
 	// Issue #8577: ignore conversions that finish after the image was replaced.
 	test("keeps the final tool image when a partial image conversion finishes late", async () => {

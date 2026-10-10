@@ -12,7 +12,7 @@ import type { Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../../extensions/types.ts";
 import type { EditToolDetails } from "../edit.ts";
 import { computeEditsDiff, type Edit, type EditDiffError, type EditDiffResult } from "../edit-diff.ts";
-import { renderToolPath, SectionedToolCallHeader, str } from "../render-utils.ts";
+import { renderToolPath, str } from "../render-utils.ts";
 
 type EditPreview = EditDiffResult | EditDiffError;
 export type EditRenderState = {
@@ -35,8 +35,6 @@ class EditCallRenderComponent extends Box {
 	previewPending = false;
 	settledError = false;
 	bodyText?: Text;
-	/** The call exposes one summary header row first; the Box then omits its top padding row. */
-	sectioned = false;
 	private renderedWidth = 0;
 
 	constructor() {
@@ -45,16 +43,14 @@ class EditCallRenderComponent extends Box {
 
 	override render(width: number): string[] {
 		this.renderedWidth = width;
-		const rows = super.render(width);
-		return this.sectioned ? rows.slice(1) : rows;
+		return super.render(width);
 	}
 
 	get headerRow(): number {
-		return this.sectioned ? 0 : 1;
+		return 1;
 	}
 
 	get bodyRow(): number {
-		if (this.sectioned) return 1;
 		const header = this.children[0];
 		return 1 + (header?.render(Math.max(0, this.renderedWidth - 2)).length ?? 0);
 	}
@@ -152,14 +148,11 @@ function buildEditCallComponent(
 	args: RenderableEditArgs | undefined,
 	theme: Theme,
 	cwd: string,
-	sectioned: boolean,
 ): EditCallRenderComponent {
 	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
 	component.bodyText = undefined;
-	component.sectioned = sectioned;
 	component.clear();
-	const header = new SectionedToolCallHeader("", 0, 0);
-	header.setSectionedText(formatEditCall(args, theme, cwd), sectioned);
+	const header = new Text(formatEditCall(args, theme, cwd), 0, 0);
 	component.addChild(header);
 
 	if (!component.preview) {
@@ -225,13 +218,7 @@ export const editRenderers: Pick<
 			});
 		}
 
-		return buildEditCallComponent(
-			component,
-			args as RenderableEditArgs | undefined,
-			theme,
-			context.cwd,
-			context.sectioned,
-		);
+		return buildEditCallComponent(component, args as RenderableEditArgs | undefined, theme, context.cwd);
 	},
 	renderResult(result, _options, theme, context) {
 		const callComponent = context.state.callComponent;
@@ -254,13 +241,7 @@ export const editRenderers: Pick<
 				changed = true;
 			}
 			if (changed) {
-				buildEditCallComponent(
-					callComponent,
-					context.args as RenderableEditArgs | undefined,
-					theme,
-					context.cwd,
-					context.sectioned,
-				);
+				buildEditCallComponent(callComponent, context.args as RenderableEditArgs | undefined, theme, context.cwd);
 			}
 		}
 

@@ -11,7 +11,7 @@ import { keyHint } from "../../../modes/interactive/components/keybinding-hints.
 import type { Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
 import type { FindToolDetails } from "../find.ts";
-import { getTextOutput, invalidArgText, SectionedToolCallHeader, shortenPath, str } from "../render-utils.ts";
+import { getTextOutput, invalidArgText, shortenPath, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "../truncate.ts";
 
 function formatFindCall(args: { pattern: string; path?: string; limit?: number } | undefined, theme: Theme): string {
@@ -67,12 +67,11 @@ export const findRenderers: Pick<
 	ToolDefinition<any, any>,
 	"renderCall" | "renderResult" | "getRenderCallHeaderRow" | "getRenderCallBodyRow"
 > = {
-	getRenderCallHeaderRow: (component) => (component instanceof SectionedToolCallHeader ? 0 : undefined),
-	getRenderCallBodyRow: (component) => (component instanceof SectionedToolCallHeader ? 1 : undefined),
+	getRenderCallHeaderRow: (component) => (component instanceof Text ? 0 : undefined),
+	getRenderCallBodyRow: (component) => (component instanceof Text ? 1 : undefined),
 	renderCall(args, theme, context) {
-		const header =
-			(context.lastComponent as SectionedToolCallHeader | undefined) ?? new SectionedToolCallHeader("", 0, 0);
-		header.setSectionedText(formatFindCall(args as any, theme), context.sectioned);
+		const header = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+		header.setText(formatFindCall(args as any, theme));
 		return header;
 	},
 	renderResult(result, options, theme, context) {
