@@ -595,8 +595,11 @@ export class ToolExecutionComponent extends Container {
 		const room = Math.max(0, width - 2);
 		const cue = this.reservedCue(room);
 		const text = truncateToWidth(this.firstCallRow(width) ?? this.formatToolTitle(), room - visibleWidth(cue), "…");
+		// A full reset in the text, such as the one before an ellipsis, also ends the background; open it again.
+		const background = this.shellBgFn?.("\0").split("\0")[0] ?? "";
+		const row = `${text}${cue}`.replaceAll("\x1b[0m", `\x1b[0m${background}`);
 		const shell = new Box(1, 0, this.shellBgFn);
-		shell.addChild({ render: () => [`${text}${cue}`], invalidate: () => {} });
+		shell.addChild({ render: () => [row], invalidate: () => {} });
 		return shell.render(width)[0];
 	}
 

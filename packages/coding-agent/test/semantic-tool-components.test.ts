@@ -2479,6 +2479,44 @@ describe("stable Tool Call fold", () => {
 describe("Tool Call summary text", () => {
 	beforeAll(() => initTheme("dark"));
 
+	/** The visible cells of [row] that SGR codes leave without a background color. */
+	function cellsWithoutBackground(row: string): number {
+		let background = false;
+		let bare = 0;
+		for (const part of row.replace(/\x1b\]777;[^\x07]*\x07/g, "").split(/(\x1b\[[0-9;]*m)/)) {
+			const sgr = /^\x1b\[([0-9;]*)m$/.exec(part);
+			if (!sgr) {
+				if (!background) bare += visibleWidth(part);
+				continue;
+			}
+			const codes = sgr[1] === "" ? ["0"] : sgr[1]!.split(";");
+			for (let index = 0; index < codes.length; index++) {
+				const code = codes[index];
+				if (code === "0" || code === "49") background = false;
+				else if (code === "48") {
+					background = true;
+					index += codes[index + 1] === "5" ? 2 : 4;
+				} else if (code === "38") index += codes[index + 1] === "5" ? 2 : 4;
+			}
+		}
+		return bare;
+	}
+
+	it("keeps the tool background across a collapsed row whose text ends with an ellipsis", () => {
+		const component = foldedBuiltIn(
+			"bash",
+			withBuiltInRenderers("bash", undefined)!,
+			{ command: `printf '${"TC_FOLD_OUTPUT ".repeat(8)}'` },
+			"out",
+		);
+		const row = component.render(40)[1]!;
+
+		expect({ ellipsis: stripAnsi(row).trimEnd().endsWith("…"), bare: cellsWithoutBackground(row) }).toEqual({
+			ellipsis: true,
+			bare: 0,
+		});
+	});
+
 	it("summarizes an opaque self call row that pads its text to the call width without an ellipsis", () => {
 		const component = savedCall({
 			renderShell: "self",
