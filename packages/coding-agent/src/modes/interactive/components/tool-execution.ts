@@ -135,6 +135,8 @@ export class ToolExecutionComponent extends Container {
 	private stockHeight = 0;
 	/** The last summarized render has rows below the collapsed row. Without them the call is not expandable. */
 	private openBody = false;
+	/** The call cannot open and shows its stock rows, so that a narrow summary does not cut its header: a plain range. */
+	private stockHeaderOnly = false;
 	/** The last summarized render opens to a stock header row that the summary repeats. */
 	private openHeader = false;
 	private decoratedSourceTexts: Text[] = [];
@@ -431,7 +433,9 @@ export class ToolExecutionComponent extends Container {
 		// The open Fold starts on the summary row, so the header does not move when it opens.
 		const rows = this.callSummary
 			? { header: 1, ...(this.openBody ? { body: 2 } : {}) }
-			: (this.locatedSemanticRows(width) ?? this.wholeCallSemanticRows(width));
+			: this.stockHeaderOnly
+				? { header: this.headerRowIndex() }
+				: (this.locatedSemanticRows(width) ?? this.wholeCallSemanticRows(width));
 		if (!rows || rows.header >= lines.length) return lines;
 		// Native hides a summary in an open Fold. A summary without a stock header stays as the header of the call.
 		const summarizes = this.callSummary && this.openHeader;
@@ -531,6 +535,7 @@ export class ToolExecutionComponent extends Container {
 	private renderStock(width: number): string[] {
 		const stock = this.renderStockRows(width);
 		this.callSummary = false;
+		this.stockHeaderOnly = false;
 		this.stockHeight = stock.length;
 		if (!this.rendersSemanticSections() || stock.length <= 1) return stock;
 		const layout = this.ownedLayout(width);
@@ -539,10 +544,16 @@ export class ToolExecutionComponent extends Container {
 		const openBody = open.rows.length > (open.header ? 1 : 0);
 		const summary = this.callSummaryRow(width, openBody);
 		if (summary === undefined) return stock;
+		// A call that cannot open keeps its complete stock header when the narrower summary frame would cut it. An outcome
+		// cue keeps priority: a failed or cancelled call stays identifiable in its summary at every width.
+		if (!openBody && summary.cut && this.outcomeCues().length === 0) {
+			this.stockHeaderOnly = true;
+			return stock;
+		}
 		this.callSummary = true;
 		this.openHeader = open.header;
 		this.openBody = openBody;
-		return this.openBody ? ["", summary, ...open.rows] : ["", summary];
+		return this.openBody ? ["", summary.row, ...open.rows] : ["", summary.row];
 	}
 
 	/**
@@ -591,7 +602,7 @@ export class ToolExecutionComponent extends Container {
 	 * A failed or cancelled call keeps room for its outcome cue: a first line that does not fit with it gets an ellipsis,
 	 * and its complete text follows in the body. A row that opens keeps free cells after its text for the host control.
 	 */
-	private callSummaryRow(width: number, opens: boolean): string | undefined {
+	private callSummaryRow(width: number, opens: boolean): { row: string; cut: boolean } | undefined {
 		if (!this.rendersSemanticSections()) return undefined;
 		const call = this.callPartComponent;
 		if (this.hasRendererDefinition() && !call) return undefined;
@@ -602,13 +613,14 @@ export class ToolExecutionComponent extends Container {
 		const cue = this.reservedCue(room);
 		const textRoom = room - visibleWidth(cue);
 		const first = this.firstCallRow(width) ?? this.formatToolTitle();
+		const cut = visibleWidth(first) > textRoom;
 		const text = truncateToWidth(keepPathFileName(first, textRoom) ?? first, textRoom, "…");
 		// A full reset in the text, such as the one before an ellipsis, also ends the background; open it again.
 		const background = this.shellBgFn?.("\0").split("\0")[0] ?? "";
 		const row = `${text}${cue}`.replaceAll("\x1b[0m", `\x1b[0m${background}`);
 		const shell = new Box(1, 0, this.shellBgFn);
 		shell.addChild({ render: () => [row], invalidate: () => {} });
-		return shell.render(width)[0];
+		return { row: shell.render(width)[0]!, cut };
 	}
 
 	/** The first row of the call part without its shell, or undefined when the call has no rows or no renderer. */
@@ -904,25 +916,29 @@ function findFirstText(component: Component | undefined): Text | undefined {
 /** A terminal escape sequence: SGR and other CSI controls, or an OSC control. */
 const ESCAPE_SEQUENCE = /\x1b\[[0-9;:?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/y;
 
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 /**
  * [line] fitted to [room] cells by removing the middle of its last path, so that the file name stays visible: the cut
- * ends right before the last "/" of the path and an ellipsis takes its place. Undefined when the line fits, has no path,
- * or its path is too short to absorb the cut; the caller then truncates the end as usual. The styles of the line stay.
+ * ends right before the last "/" of the path and an ellipsis takes its place. The cut counts terminal cells, so wide
+ * characters keep the line within [room]. Undefined when the line fits, has no path, or its path is too short to absorb
+ * the cut; the caller then truncates the end as usual. The styles of the line stay.
  */
 export function keepPathFileName(line: string, room: number): string | undefined {
 	const plain = stripAnsi(line);
 	const excess = visibleWidth(plain) - room;
 	if (excess <= 0) return undefined;
 	const path = [...plain.matchAll(/\S*\/\S+/g)].at(-1);
-	if (!path || path.index === undefined || visibleWidth(path[0]) !== path[0].length) return undefined;
-	const fileStart = path.index + path[0].lastIndexOf("/");
-	// The ellipsis takes one cell; at least one character of the path stays before it.
-	const cutLength = excess + 1;
-	const cutStart = fileStart - cutLength;
-	if (cutStart <= path.index) return undefined;
+	if (!path || path.index === undefined) return undefined;
+	const pathCell = visibleWidth(plain.slice(0, path.index));
+	const fileCell = visibleWidth(plain.slice(0, path.index + path[0].lastIndexOf("/")));
+	// The ellipsis takes one cell; at least one cell of the path stays before it.
+	const cutStart = fileCell - excess - 1;
+	if (cutStart <= pathCell) return undefined;
 	let result = "";
-	let visible = 0;
+	let cell = 0;
 	let index = 0;
+	let cutting = false;
 	while (index < line.length) {
 		ESCAPE_SEQUENCE.lastIndex = index;
 		const control = ESCAPE_SEQUENCE.exec(line);
@@ -931,11 +947,18 @@ export function keepPathFileName(line: string, room: number): string | undefined
 			index += control[0].length;
 			continue;
 		}
-		const char = String.fromCodePoint(line.codePointAt(index)!);
-		if (visible === cutStart) result += "…";
-		if (visible < cutStart || visible >= cutStart + cutLength) result += char;
-		visible += char.length;
-		index += char.length;
+		const next = line.indexOf("\x1b", index + 1);
+		const text = line.slice(index, next === -1 ? line.length : next);
+		for (const { segment } of GRAPHEMES.segment(text)) {
+			const end = cell + visibleWidth(segment);
+			// Every grapheme that overlaps the cut goes, so the line never exceeds [room].
+			const inCut = cell < fileCell && end > cutStart;
+			if (inCut && !cutting) result += "…";
+			if (!inCut) result += segment;
+			cutting = inCut;
+			cell = end;
+		}
+		index += text.length;
 	}
 	return result;
 }

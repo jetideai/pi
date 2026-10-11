@@ -1902,7 +1902,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		const wide = summary(200);
 		const again = summary(40);
 
-		expect(narrow.collapsed).toEqual(["", expect.stringMatching(/^edit .*…$/)]);
+		expect(narrow.collapsed).toEqual(["", expect.stringMatching(/^edit .*…\/Long\.kt$/)]);
 		expect(visibleWidth(narrow.row.replaceAll(controls.begin, ""))).toBeLessThanOrEqual(40);
 		expect(narrow.row).toContain("\x1b[");
 		expect(narrow.body).toBe(narrow.begin + 1);
@@ -2673,6 +2673,39 @@ describe("Tool Call summary path", () => {
 				? undefined
 				: { width: visibleWidth(plain), end: plain.slice(-"/F0_LONG.md".length), start: plain.slice(0, 12) },
 		).toEqual(expected);
+	});
+
+	it("cuts a path with wide characters by terminal cells and keeps its file name", () => {
+		const fitted = stripAnsi(keepPathFileName(`read src/${"项目目录/".repeat(8)}Report.md`, 38)!);
+
+		expect({ end: fitted.endsWith("/Report.md"), fits: visibleWidth(fitted) <= 38 }).toEqual({
+			end: true,
+			fits: true,
+		});
+	});
+
+	it("keeps the file name of a wide-character path in the collapsed summary of a read", () => {
+		const read = foldedBuiltIn(
+			"read",
+			withBuiltInRenderers("read", undefined)!,
+			{ path: `src/${"项目目录/".repeat(8)}Report.md` },
+			"file content",
+		);
+		read.setExpanded(true);
+
+		expect(stripAnsi(read.render(40)[1]!.replace(/\x1b\]777;[^\x07]*\x07/g, ""))).toContain("/Report.md");
+	});
+
+	it("keeps the complete header of a call that cannot open when the summary frame would cut it", () => {
+		const header = "abcdefghijklmnop.txt";
+		const call = savedCall({
+			renderShell: "self",
+			renderCall: () => new Text(header, 0, 0),
+			renderResult: () => ({ render: () => [], invalidate() {} }),
+		});
+		call.updateResult({ content: [], isError: false });
+
+		expect(call.render(20).map((row) => stripAnsi(row.replace(/\x1b\]777;[^\x07]*\x07/g, "")))).toContain(header);
 	});
 
 	it("keeps the styles of a styled path", () => {
