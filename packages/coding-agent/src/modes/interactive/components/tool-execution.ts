@@ -54,6 +54,7 @@ import { keyHint } from "./keybinding-hints.ts";
 import {
 	createMessageRenderSourcePointDecorator,
 	decorateMessageRenderV2,
+	LABEL_AFFORDANCE_COLUMNS,
 	type SourcePointRevisions,
 	selectMessageRenderBoundaryDecoratorsV3,
 	sourcePointPresentation,
@@ -533,12 +534,13 @@ export class ToolExecutionComponent extends Container {
 		if (!this.rendersSemanticSections() || stock.length <= 1) return stock;
 		const layout = this.ownedLayout(width);
 		if (!layout || layout.contentRows === 0) return stock;
-		const summary = this.callSummaryRow(width);
-		if (summary === undefined) return stock;
 		const open = this.openFoldRows(stock, layout);
+		const openBody = open.rows.length > (open.header ? 1 : 0);
+		const summary = this.callSummaryRow(width, openBody);
+		if (summary === undefined) return stock;
 		this.callSummary = true;
 		this.openHeader = open.header;
-		this.openBody = open.rows.length > (open.header ? 1 : 0);
+		this.openBody = openBody;
 		return this.openBody ? ["", summary, ...open.rows] : ["", summary];
 	}
 
@@ -586,13 +588,16 @@ export class ToolExecutionComponent extends Container {
 	 * The compact call row before the stock shell. Every call has the same frame: a one-cell indent on the tool background
 	 * over the full width, whatever its shell. Its text is the first call row, or the tool title when the call has no rows.
 	 * A failed or cancelled call keeps room for its outcome cue: a first line that does not fit with it gets an ellipsis,
-	 * and its complete text follows in the body.
+	 * and its complete text follows in the body. A row that opens keeps free cells after its text for the host control.
 	 */
-	private callSummaryRow(width: number): string | undefined {
+	private callSummaryRow(width: number, opens: boolean): string | undefined {
 		if (!this.rendersSemanticSections()) return undefined;
 		const call = this.callPartComponent;
 		if (this.hasRendererDefinition() && !call) return undefined;
-		const room = Math.max(0, width - 2);
+		const frame = Math.max(0, width - 2);
+		// At a narrow width the outcome cue keeps its room before the free cells of the host control.
+		const free = opens && this.reservedCue(frame - LABEL_AFFORDANCE_COLUMNS) === this.reservedCue(frame);
+		const room = frame - (free ? LABEL_AFFORDANCE_COLUMNS : 0);
 		const cue = this.reservedCue(room);
 		const text = truncateToWidth(this.firstCallRow(width) ?? this.formatToolTitle(), room - visibleWidth(cue), "…");
 		// A full reset in the text, such as the one before an ellipsis, also ends the background; open it again.

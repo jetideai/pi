@@ -6,6 +6,7 @@ import type {
 import { theme } from "../theme/theme.ts";
 import {
 	decorateMessageRenderV2,
+	LABEL_AFFORDANCE_COLUMNS,
 	type SourcePointRevisions,
 	selectMessageRenderBoundaryDecoratorsV3,
 } from "./message-render-boundaries.ts";
@@ -127,14 +128,17 @@ export class ToolGroupComponent extends Container {
 
 	/**
 	 * The header row: the action label, then the failed calls of the group, from the outcome of each call. A cancelled
-	 * call is no failure. The label gives way first, so a collapsed group shows its failures at every width.
+	 * call is no failure. The label gives way first, so a collapsed group shows its failures at every width. The row keeps
+	 * free cells after its text for the host control while its failures still fit after one label cell.
 	 */
-	private headerRow(width: number): string {
+	private headerRow(fullWidth: number): string {
 		const pad = " ".repeat(this.outputPad);
 		const label = `$ ${toolGroupLabel(this.members)}`;
 		const failed = this.memberComponents.filter((member) => member.outcome === "failed").length;
-		if (failed === 0) return truncateToWidth(`${pad}${theme.fg("muted", label)}`, width, "…");
 		const cue = ` · ${failed} failed`;
+		const free = failed === 0 || fullWidth - LABEL_AFFORDANCE_COLUMNS - visibleWidth(pad) - visibleWidth(cue) >= 1;
+		const width = Math.max(0, fullWidth - (free ? LABEL_AFFORDANCE_COLUMNS : 0));
+		if (failed === 0) return truncateToWidth(`${pad}${theme.fg("muted", label)}`, width, "…");
 		const room = width - visibleWidth(pad) - visibleWidth(cue);
 		if (room < 1) return truncateToWidth(theme.fg("error", `${failed} failed`), width, "…");
 		return `${pad}${theme.fg("muted", truncateToWidth(label, room, "…"))}${theme.fg("error", cue)}`;

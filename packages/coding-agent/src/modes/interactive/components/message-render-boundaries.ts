@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { PreWrapTextDecorator } from "@earendil-works/pi-tui";
+import { type PreWrapTextDecorator, visibleWidth } from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundariesV1,
 	MessageRenderBoundariesV2,
@@ -7,6 +7,7 @@ import type {
 	MessageRenderBoundaryDecoratorV1,
 	MessageRenderBoundaryDecoratorV2,
 	MessageRenderBoundarySelectorV3,
+	MessageRenderLabelV1,
 	MessageRenderRoleV1,
 	MessageRenderSourcePointDecoratorV1,
 	MessageRenderSourcePointV1,
@@ -150,6 +151,28 @@ export function selectMessageRenderBoundaryDecoratorsV3(
 	});
 }
 
+/** The free cells after a summary or group header label: one cell of space, then two cells for a host control. */
+export const LABEL_AFFORDANCE_COLUMNS = 3;
+
+/** Spaces and zero-column controls: the blank run before the first and after the last text cell of a row. */
+const BLANK_RUN = "(?: |\\x1b\\[[0-9;:]*m|\\x1b\\][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\))*";
+const LEADING_BLANK = new RegExp(`^${BLANK_RUN}`);
+const TRAILING_BLANK = new RegExp(`${BLANK_RUN}$`);
+
+/** The label of [row]: the cells of its visible text, and the string indexes around that text; none for a blank row. */
+function rowLabel(
+	lines: readonly string[],
+	row: number,
+): { label: MessageRenderLabelV1; startIndex: number; endIndex: number } | undefined {
+	const line = lines[row];
+	if (line === undefined) return undefined;
+	const startIndex = LEADING_BLANK.exec(line)?.[0].length ?? 0;
+	const endIndex = line.length - (TRAILING_BLANK.exec(line)?.[0].length ?? 0);
+	if (endIndex <= startIndex) return undefined;
+	const start = visibleWidth(line.slice(0, startIndex));
+	return { label: { row, start, end: start + visibleWidth(line.slice(startIndex, endIndex)) }, startIndex, endIndex };
+}
+
 export function decorateMessageRenderV2(
 	lines: string[],
 	bodyRow: number | undefined,
@@ -173,6 +196,12 @@ export function decorateMessageRenderV2(
 		bodyRow !== undefined && Number.isSafeInteger(bodyRow) && bodyRow > beginRow && bodyRow < lines.length
 			? bodyRow
 			: undefined;
+	const summarized = options.summaryRow === beginRow && foldableBodyRow === beginRow + 1;
+	// A host can open or close a block with a body: its begin row, and the header of an open summary, have labels.
+	const labels =
+		foldableBodyRow === undefined
+			? []
+			: [beginRow, ...(summarized ? [foldableBodyRow] : [])].flatMap((row) => rowLabel(lines, row) ?? []);
 	const context = Object.freeze({
 		entryId: options.entryId,
 		...(options.ownerEntryId ? { ownerEntryId: options.ownerEntryId } : {}),
@@ -183,11 +212,13 @@ export function decorateMessageRenderV2(
 		allocatedColumns: Object.freeze({ start: 0 as const, end: width }),
 		stockRows: Object.freeze({ start: 0 as const, end: lines.length }),
 		...(foldableBodyRow !== undefined ? { bodyRow: foldableBodyRow } : {}),
-		...(options.summaryRow === beginRow && foldableBodyRow === beginRow + 1 ? { summaryRow: beginRow } : {}),
+		...(summarized ? { summaryRow: beginRow } : {}),
+		...(labels.length > 0 ? { labels: Object.freeze(labels.map(({ label }) => Object.freeze(label))) } : {}),
 	});
 	const begins: string[] = [];
 	const bodies: string[] = [];
 	const ends: string[] = [];
+	const labelControls = labels.map(() => ({ begin: "", end: "" }));
 	for (const decorate of options.decorators) {
 		try {
 			const boundaries = decorate(context);
@@ -195,8 +226,20 @@ export function decorateMessageRenderV2(
 			if (boundaries.begin) begins.push(boundaries.begin);
 			if (boundaries.body) bodies.push(boundaries.body);
 			if (boundaries.end) ends.unshift(boundaries.end);
+			boundaries.labels?.slice(0, labels.length).forEach((controls, index) => {
+				if (!controls) return;
+				labelControls[index]!.begin += controls.begin;
+				labelControls[index]!.end = controls.end + labelControls[index]!.end;
+			});
 		} catch {}
 	}
+	// Labels first: their controls stay next to the text, inside the begin and body controls of the block.
+	labels.forEach(({ label, startIndex, endIndex }, index) => {
+		const { begin, end } = labelControls[index]!;
+		const line = lines[label.row]!;
+		lines[label.row] =
+			line.slice(0, startIndex) + begin + line.slice(startIndex, endIndex) + end + line.slice(endIndex);
+	});
 	if (beginRow >= 0 && beginRow < lines.length) lines[beginRow] = begins.join("") + lines[beginRow];
 	if (foldableBodyRow !== undefined) lines[foldableBodyRow] = bodies.join("") + lines[foldableBodyRow];
 	lines[lines.length - 1] += ends.join("");
@@ -251,10 +294,24 @@ function hasValidControl(control: unknown): control is string | undefined {
 	return control === undefined || (typeof control === "string" && stripAnsi(control).length === 0);
 }
 
+/** A zero-column control string. */
+function isControl(control: unknown): control is string {
+	return typeof control === "string" && stripAnsi(control).length === 0;
+}
+
 function hasValidBoundariesV2(boundaries: unknown): boundaries is MessageRenderBoundariesV2 {
 	if (boundaries === undefined || typeof boundaries !== "object" || boundaries === null) return false;
 	const candidate = boundaries as MessageRenderBoundariesV2;
-	return hasValidControl(candidate.begin) && hasValidControl(candidate.body) && hasValidControl(candidate.end);
+	return (
+		hasValidControl(candidate.begin) &&
+		hasValidControl(candidate.body) &&
+		hasValidControl(candidate.end) &&
+		(candidate.labels === undefined ||
+			(Array.isArray(candidate.labels) &&
+				candidate.labels.every(
+					(label) => label === undefined || (isControl(label?.begin) && isControl(label?.end)),
+				)))
+	);
 }
 
 function hasValidBoundaries(boundaries: unknown): boundaries is MessageRenderBoundariesV1 {

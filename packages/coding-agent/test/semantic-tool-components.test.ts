@@ -1105,7 +1105,13 @@ function unknownCall(id: string, selectors: MessageRenderBoundarySelectorV3[] = 
 }
 
 /** A completed built-in call with native folding and its presentation, with Pi tool output collapsed. */
-function foldedBuiltIn(name: string, renderers: ToolRenderers, args: object, output: string) {
+function foldedBuiltIn(
+	name: string,
+	renderers: ToolRenderers,
+	args: object,
+	output: string,
+	selectors: MessageRenderBoundarySelectorV3[] = [summaryAware],
+) {
 	const component = new ToolExecutionComponent(
 		name,
 		`call-${name}`,
@@ -1114,7 +1120,7 @@ function foldedBuiltIn(name: string, renderers: ToolRenderers, args: object, out
 			ownerEntryId: "assistant-a",
 			producerSessionId: "session-a",
 			renderScopeId: "scope-a",
-			semanticSelectorsV3: [summaryAware],
+			semanticSelectorsV3: selectors,
 			toolExecutionPresentationSelectorsV1: [admitCompact],
 		},
 		renderers,
@@ -2473,6 +2479,124 @@ describe("stable Tool Call fold", () => {
 			controls: [1, 0, 1],
 			rows: 2,
 		});
+	});
+});
+
+describe("Tool Call fold label", () => {
+	beforeAll(() => initTheme("dark"));
+
+	const labelControls = { begin: "\x1b]777;label-begin\x07", end: "\x1b]777;label-end\x07" };
+	/** The fold controls with label controls around every label, and each context it gets. */
+	const labeling = (contexts: MessageRenderBoundaryContextV1[]): MessageRenderBoundarySelectorV3[] => [
+		() => (context) => {
+			contexts.push(context);
+			return { ...controls, labels: context.labels?.map(() => labelControls) };
+		},
+	];
+	/** The cell column of [control] in [row]: the visible width of the text before it. */
+	const columnOf = (row: string, control: string) =>
+		visibleWidth(row.slice(0, row.indexOf(control)).replace(/\x1b\]777;[^\x07]*\x07/g, ""));
+	const builtIn = (name: string) => withBuiltInRenderers(name, undefined)!;
+	const bash = (command: string, output: string, contexts: MessageRenderBoundaryContextV1[]) =>
+		foldedBuiltIn("bash", builtIn("bash"), { command }, output, labeling(contexts));
+
+	it("gives an opening summary row a label that ends three free cells before the row end", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const rows = bash(`printf '${"x".repeat(80)}'`, "a.md", contexts).render(60);
+		const label = contexts.at(-1)!.labels![0]!;
+		const visible = stripAnsi(rows[label.row]!.replace(/\x1b\]777;[^\x07]*\x07/g, ""));
+
+		expect({
+			row: label.row,
+			start: label.start,
+			ellipsis: visible.slice(label.start, label.end).endsWith("…"),
+			free: visible.slice(label.end, label.end + 3),
+		}).toEqual({ row: 1, start: 1, ellipsis: true, free: "   " });
+	});
+
+	it("gives the header of an open summarized call the second label at the body row", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const rows = bash("ls", "a.md\nb.md", contexts).render(60);
+		const context = contexts.at(-1)!;
+		const header = context.labels![1]!;
+		const visible = stripAnsi(rows[header.row]!.replace(/\x1b\]777;[^\x07]*\x07/g, ""));
+
+		expect({
+			row: header.row,
+			text: visible.slice(header.start, header.end),
+			after: visible.slice(header.end).trim(),
+		}).toEqual({ row: context.bodyRow, text: "$ ls", after: "" });
+	});
+
+	it("places the label controls at the first and after the last text cell of the label", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const rows = bash("echo 你好", "a.md\nb.md", contexts).render(60);
+		const label = contexts.at(-1)!.labels![0]!;
+		const row = rows[label.row]!;
+
+		expect({ begin: columnOf(row, labelControls.begin), end: columnOf(row, labelControls.end) }).toEqual({
+			begin: label.start,
+			end: label.end,
+		});
+	});
+
+	it("counts the label end in terminal cells", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		bash("echo 你好", "a.md\nb.md", contexts).render(60);
+		const label = contexts.at(-1)!.labels![0]!;
+
+		expect(label.end - label.start).toBe(visibleWidth("$ echo 你好"));
+	});
+
+	it("gives no label to a call that cannot open", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		bash("true", "", contexts).render(60);
+
+		expect(contexts.at(-1)!.labels).toBeUndefined();
+	});
+
+	it("keeps the failures of a narrow group header before the free cells", () => {
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:assistant-a:call-a",
+			ownerEntryId: "assistant-a",
+			closed: true,
+			outputPad: 1,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: labeling([]),
+		});
+		const failed = unknownCall("call-a");
+		failed.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
+		group.addTool(failed, { toolName: "process", toolCallId: "call-a" });
+		group.addTool(unknownCall("call-b"), { toolName: "process", toolCallId: "call-b" });
+
+		expect(stripAnsi(group.render(9)[1]!.replace(/\x1b\]777;[^\x07]*\x07/g, ""))).toContain("1 failed");
+	});
+
+	it("gives a group header a label that ends three free cells before the row end", () => {
+		const contexts: MessageRenderBoundaryContextV1[] = [];
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:assistant-a:call-a",
+			ownerEntryId: "assistant-a",
+			closed: true,
+			outputPad: 1,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: labeling(contexts),
+		});
+		group.addTool(unknownCall("call-a"), { toolName: "process", toolCallId: "call-a" });
+		group.addTool(unknownCall("call-b"), { toolName: "process", toolCallId: "call-b" });
+		// "$ Used tools" fits 14 cells only without the free cells.
+		const rows = group.render(14);
+		const label = contexts.find((context) => context.role === "tool-group")!.labels![0]!;
+		const visible = stripAnsi(rows[label.row]!.replace(/\x1b\]777;[^\x07]*\x07/g, ""));
+
+		expect({
+			row: label.row,
+			start: label.start,
+			ellipsis: visible.slice(0, label.end).endsWith("…"),
+			free: label.end + 3 <= 14,
+		}).toEqual({ row: 1, start: 1, ellipsis: true, free: true });
 	});
 });
 

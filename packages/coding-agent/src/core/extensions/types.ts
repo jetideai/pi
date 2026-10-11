@@ -1468,6 +1468,25 @@ export interface MessageRenderBoundaryContextV1 {
 	 * The summary shows while the body is folded; the open body shows the header itself.
 	 */
 	readonly summaryRow?: number;
+	/**
+	 * The label of each header row of this render that a host can open or close: the begin row, and in an open summarized
+	 * fold the header at the body row. A label is the visible text of its row from its first to its last text cell. A
+	 * summary or group header row keeps three free cells after its label: one cell of space, then two cells for a host control.
+	 */
+	readonly labels?: readonly MessageRenderLabelV1[];
+}
+
+/** The visible text of one rendered row: cells [start, end) of the row, where end is after the last text cell. */
+export interface MessageRenderLabelV1 {
+	row: number;
+	start: number;
+	end: number;
+}
+
+/** Two zero-column controls around one label: [begin] before its first text cell and [end] after its last. */
+export interface MessageRenderLabelBoundariesV1 {
+	begin: string;
+	end: string;
 }
 
 /** Zero-column terminal controls to place around one built-in message render. */
@@ -1482,6 +1501,8 @@ export interface MessageRenderBoundariesV2 {
 	begin?: string;
 	body?: string;
 	end?: string;
+	/** The controls around each label of the context, in the same order; a missing entry places none. */
+	labels?: readonly (MessageRenderLabelBoundariesV1 | undefined)[];
 }
 
 /** Decorate one selected canonical render using its actual layout ranges. */
