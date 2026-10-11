@@ -2485,12 +2485,12 @@ describe("stable Tool Call fold", () => {
 describe("Tool Call fold label", () => {
 	beforeAll(() => initTheme("dark"));
 
-	const labelControls = { begin: "\x1b]777;label-begin\x07", end: "\x1b]777;label-end\x07" };
-	/** The fold controls with label controls around every label, and each context it gets. */
+	const labelControl = "\x1b]777;label-end\x07";
+	/** The fold controls with a label control after every label, and each context it gets. */
 	const labeling = (contexts: MessageRenderBoundaryContextV1[]): MessageRenderBoundarySelectorV3[] => [
 		() => (context) => {
 			contexts.push(context);
-			return { ...controls, labels: context.labels?.map(() => labelControls) };
+			return { ...controls, labels: context.labels?.map(() => labelControl) };
 		},
 	];
 	/** The cell column of [control] in [row]: the visible width of the text before it. */
@@ -2528,16 +2528,12 @@ describe("Tool Call fold label", () => {
 		}).toEqual({ row: context.bodyRow, text: "$ ls", after: "" });
 	});
 
-	it("places the label controls at the first and after the last text cell of the label", () => {
+	it("places the label control right after the last text cell of the label", () => {
 		const contexts: MessageRenderBoundaryContextV1[] = [];
 		const rows = bash("echo 你好", "a.md\nb.md", contexts).render(60);
 		const label = contexts.at(-1)!.labels![0]!;
-		const row = rows[label.row]!;
 
-		expect({ begin: columnOf(row, labelControls.begin), end: columnOf(row, labelControls.end) }).toEqual({
-			begin: label.start,
-			end: label.end,
-		});
+		expect(columnOf(rows[label.row]!, labelControl)).toBe(label.end);
 	});
 
 	it("counts the label end in terminal cells", () => {

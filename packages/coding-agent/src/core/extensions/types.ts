@@ -1483,12 +1483,6 @@ export interface MessageRenderLabelV1 {
 	end: number;
 }
 
-/** Two zero-column controls around one label: [begin] before its first text cell and [end] after its last. */
-export interface MessageRenderLabelBoundariesV1 {
-	begin: string;
-	end: string;
-}
-
 /** Zero-column terminal controls to place around one built-in message render. */
 export interface MessageRenderBoundariesV1 {
 	prefix?: string;
@@ -1501,8 +1495,11 @@ export interface MessageRenderBoundariesV2 {
 	begin?: string;
 	body?: string;
 	end?: string;
-	/** The controls around each label of the context, in the same order; a missing entry places none. */
-	labels?: readonly (MessageRenderLabelBoundariesV1 | undefined)[];
+	/**
+	 * A zero-column control right after the last text cell of each label of the context, in the same order; a missing
+	 * entry places none. A terminal location there is the exact end of the label.
+	 */
+	labels?: readonly (string | undefined)[];
 }
 
 /** Decorate one selected canonical render using its actual layout ranges. */

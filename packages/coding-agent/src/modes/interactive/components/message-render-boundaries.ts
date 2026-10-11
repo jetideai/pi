@@ -159,18 +159,18 @@ const BLANK_RUN = "(?: |\\x1b\\[[0-9;:]*m|\\x1b\\][^\\x07\\x1b]*(?:\\x07|\\x1b\\
 const LEADING_BLANK = new RegExp(`^${BLANK_RUN}`);
 const TRAILING_BLANK = new RegExp(`${BLANK_RUN}$`);
 
-/** The label of [row]: the cells of its visible text, and the string indexes around that text; none for a blank row. */
+/** The label of [row]: the cells of its visible text, and the string index after that text; none for a blank row. */
 function rowLabel(
 	lines: readonly string[],
 	row: number,
-): { label: MessageRenderLabelV1; startIndex: number; endIndex: number } | undefined {
+): { label: MessageRenderLabelV1; endIndex: number } | undefined {
 	const line = lines[row];
 	if (line === undefined) return undefined;
 	const startIndex = LEADING_BLANK.exec(line)?.[0].length ?? 0;
 	const endIndex = line.length - (TRAILING_BLANK.exec(line)?.[0].length ?? 0);
 	if (endIndex <= startIndex) return undefined;
 	const start = visibleWidth(line.slice(0, startIndex));
-	return { label: { row, start, end: start + visibleWidth(line.slice(startIndex, endIndex)) }, startIndex, endIndex };
+	return { label: { row, start, end: start + visibleWidth(line.slice(startIndex, endIndex)) }, endIndex };
 }
 
 export function decorateMessageRenderV2(
@@ -218,7 +218,7 @@ export function decorateMessageRenderV2(
 	const begins: string[] = [];
 	const bodies: string[] = [];
 	const ends: string[] = [];
-	const labelControls = labels.map(() => ({ begin: "", end: "" }));
+	const labelControls = labels.map(() => "");
 	for (const decorate of options.decorators) {
 		try {
 			const boundaries = decorate(context);
@@ -226,19 +226,15 @@ export function decorateMessageRenderV2(
 			if (boundaries.begin) begins.push(boundaries.begin);
 			if (boundaries.body) bodies.push(boundaries.body);
 			if (boundaries.end) ends.unshift(boundaries.end);
-			boundaries.labels?.slice(0, labels.length).forEach((controls, index) => {
-				if (!controls) return;
-				labelControls[index]!.begin += controls.begin;
-				labelControls[index]!.end = controls.end + labelControls[index]!.end;
+			boundaries.labels?.slice(0, labels.length).forEach((control, index) => {
+				if (control) labelControls[index] += control;
 			});
 		} catch {}
 	}
-	// Labels first: their controls stay next to the text, inside the begin and body controls of the block.
-	labels.forEach(({ label, startIndex, endIndex }, index) => {
-		const { begin, end } = labelControls[index]!;
+	// Labels first: their controls stay right after the text, inside the begin and body controls of the block.
+	labels.forEach(({ label, endIndex }, index) => {
 		const line = lines[label.row]!;
-		lines[label.row] =
-			line.slice(0, startIndex) + begin + line.slice(startIndex, endIndex) + end + line.slice(endIndex);
+		lines[label.row] = line.slice(0, endIndex) + labelControls[index] + line.slice(endIndex);
 	});
 	if (beginRow >= 0 && beginRow < lines.length) lines[beginRow] = begins.join("") + lines[beginRow];
 	if (foldableBodyRow !== undefined) lines[foldableBodyRow] = bodies.join("") + lines[foldableBodyRow];
@@ -308,9 +304,7 @@ function hasValidBoundariesV2(boundaries: unknown): boundaries is MessageRenderB
 		hasValidControl(candidate.end) &&
 		(candidate.labels === undefined ||
 			(Array.isArray(candidate.labels) &&
-				candidate.labels.every(
-					(label) => label === undefined || (isControl(label?.begin) && isControl(label?.end)),
-				)))
+				candidate.labels.every((label) => label === undefined || isControl(label))))
 	);
 }
 
