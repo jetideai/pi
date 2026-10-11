@@ -833,9 +833,9 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		const rows = boundaryRows(savedCall(renderers).render(80));
 
 		expect(rows.counts).toEqual([1, 1, 1]);
-		expect(rows.visible[rows.begin[0]!]).toBe("custom call");
+		expect(rows.visible[rows.begin[0]!]).toBe(" custom call");
 		expect(rows.visible[rows.body[0]!]).toBe("custom call");
-		expect(rows.visible).toEqual(["", "custom call", ...plainRows(renderers, 80).slice(1)]);
+		expect(rows.visible).toEqual(["", " custom call", ...plainRows(renderers, 80).slice(1)]);
 	});
 
 	it("gives a completed self-rendered call with an empty result a summary and stock body", () => {
@@ -848,7 +848,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		component.updateResult({ content: [], isError: false });
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", "custom call", "custom call"]);
+		expect(rows.visible).toEqual(["", " custom call", "custom call"]);
 		expect(rows.counts).toEqual([1, 1, 1]);
 		expect([rows.begin, rows.end]).toEqual([[1], [2]]);
 		expect(contexts.at(-1)?.bodyRow).toBe(2);
@@ -980,7 +980,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		for (const rows of [ready, settled]) {
 			expect(rows.counts).toEqual([1, 1, 1]);
-			expect(rows.visible[rows.begin[0]!]).toBe("stock header");
+			expect(rows.visible[rows.begin[0]!]).toBe(" stock header");
 			expect(rows.visible[rows.body[0]!]).toBe("stock header");
 		}
 	});
@@ -2110,10 +2110,10 @@ describe("Tool Call and Tool Group outcomes", () => {
 
 					expect({
 						cue: stripAnsi(header).includes("Failed") && header.includes(errorText),
-						// A stock shell also keeps its error background; a self-rendered call owns its own colors.
+						// Every collapsed call has the frame of a stock shell with its error background.
 						background: header.includes(background("toolErrorBg")),
 						outcome: component.outcome,
-					}).toEqual({ cue: true, background: toolDefinition === undefined, outcome: "failed" });
+					}).toEqual({ cue: true, background: true, outcome: "failed" });
 				},
 			);
 
@@ -2178,25 +2178,21 @@ describe("Tool Call and Tool Group outcomes", () => {
 				]);
 			});
 
-			// The compact cue needs two columns after one column of content. The padded stock shell uses two more columns, so
-			// it shows a cue from a width of five columns; a self-rendered call and the generic text show it from three.
-			it.each([3, 4, 5, 6, 7, 8, 9, 10, 12])(
+			// The compact cue needs two columns after one column of content. The frame of every collapsed call uses two more
+			// columns, so a call shows a cue from a width of five columns.
+			it.each([5, 6, 7, 8, 9, 10, 12])(
 				"keeps a failed and a cancelled call identifiable within every row at width %i",
 				(narrow) => {
 					const shells: (ToolDefinition | undefined)[] = [
 						undefined,
 						{ ...definition(), renderCall: () => new Text("stock header", 0, 0) } as ToolDefinition,
-						...(narrow >= 5
-							? [
-									{
-										...definition(),
-										renderShell: "default",
-										renderCall: () => new Text("stock header", 0, 0),
-										getRenderCallHeaderRow: undefined,
-										getRenderCallBodyRow: undefined,
-									} as ToolDefinition,
-								]
-							: []),
+						{
+							...definition(),
+							renderShell: "default",
+							renderCall: () => new Text("stock header", 0, 0),
+							getRenderCallHeaderRow: undefined,
+							getRenderCallBodyRow: undefined,
+						} as ToolDefinition,
 					];
 					const cues = shells.flatMap((shell) => {
 						const failed = call("call-narrow", shell);
@@ -2280,4 +2276,73 @@ describe("Tool Call and Tool Group outcomes", () => {
 			});
 		});
 	}
+});
+
+describe("Tool Call fold frame", () => {
+	beforeAll(() => initTheme("dark"));
+
+	/** The rendered row without the boundary and source point controls. */
+	const withoutControls = (row: string) => row.replace(/\x1b\]777;[^\x07]*\x07/g, "");
+	/** The opening sequence of a theme background, from the current theme. */
+	const background = (token: "toolSuccessBg" | "toolErrorBg") => theme.bg(token, "\0").split("\0")[0]!;
+	const builtIn = (name: string) => withBuiltInRenderers(name, undefined)!;
+	const editArgs = { path: "a.ts", edits: [{ oldText: "a", newText: "b" }] };
+	const failedEdit = () => {
+		const component = foldedBuiltIn("edit", editRenderersFor(), editArgs, "no");
+		component.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
+		return component;
+	};
+
+	it.each([
+		["read", () => foldedBuiltIn("read", builtIn("read"), { path: "a.md" }, "line 1\nline 2"), "toolSuccessBg"],
+		["bash", () => foldedBuiltIn("bash", builtIn("bash"), { command: "ls" }, "a.md"), "toolSuccessBg"],
+		["write", () => foldedBuiltIn("write", builtIn("write"), { path: "a.md", content: "note" }, ""), "toolSuccessBg"],
+		["edit", () => foldedBuiltIn("edit", editRenderersFor(), editArgs, "ok"), "toolSuccessBg"],
+		["find", () => foldedBuiltIn("find", builtIn("find"), { pattern: "*.ts" }, "a.ts"), "toolSuccessBg"],
+		["grep", () => foldedBuiltIn("grep", builtIn("grep"), { pattern: "x" }, "a.ts:1: x"), "toolSuccessBg"],
+		["ls", () => foldedBuiltIn("ls", builtIn("ls"), { path: "." }, "a.md"), "toolSuccessBg"],
+		[
+			"a self Text call",
+			() =>
+				savedCall({
+					renderShell: "self",
+					renderCall: () => new Text("custom call\ncustom arguments", 0, 0),
+					renderResult: () => new Text("custom result", 0, 0),
+				}),
+			"toolSuccessBg",
+		],
+		[
+			"a quiet self call",
+			() =>
+				savedCall({
+					renderShell: "self",
+					renderCall: () => ({ render: () => [], invalidate() {} }),
+					renderResult: () => new Text("hub reply", 0, 0),
+				}),
+			"toolSuccessBg",
+		],
+		[
+			"an opaque self call",
+			() =>
+				savedCall({
+					renderShell: "self",
+					renderCall: () => ({ render: () => ["opaque call row"], invalidate() {} }),
+					renderResult: () => new Text("opaque result", 0, 0),
+				}),
+			"toolSuccessBg",
+		],
+		["a tool without a definition", () => savedCall(undefined), "toolSuccessBg"],
+		["a failed edit", failedEdit, "toolErrorBg"],
+	] as const)(
+		"frames the collapsed row of %s with a one-cell indent and the full-width tool background",
+		(_name, create, token) => {
+			const row = withoutControls(create().render(60)[1]!);
+
+			expect({
+				background: row.startsWith(background(token)),
+				width: visibleWidth(row),
+				text: stripAnsi(row),
+			}).toEqual({ background: true, width: 60, text: expect.stringMatching(/^ \S/) });
+		},
+	);
 });

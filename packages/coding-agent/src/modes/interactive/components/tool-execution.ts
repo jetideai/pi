@@ -396,14 +396,13 @@ export class ToolExecutionComponent extends Container {
 	private withOutcomeCue(lines: string[], width: number): string[] {
 		if (this.outcomeCues().length === 0) return lines;
 		const cued = [...lines];
-		for (const header of [this.headerRowIndex(), ...(this.callSummary ? [1] : [])]) {
-			const line = lines[header];
-			if (line === undefined) continue;
-			// Use the stock cue position in canonical rows. The summary has its own cue space.
-			const content = line.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
-			const cue = this.outcomeCues().find((candidate) => visibleWidth(content) + visibleWidth(candidate) <= width);
-			if (cue) cued[header] = `${content}${cue}`;
-		}
+		// Use the stock cue position in canonical rows. The summary row has its cue already.
+		const header = this.headerRowIndex();
+		const line = lines[header];
+		if (line === undefined) return lines;
+		const content = line.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
+		const cue = this.outcomeCues().find((candidate) => visibleWidth(content) + visibleWidth(candidate) <= width);
+		if (cue) cued[header] = `${content}${cue}`;
 		return cued;
 	}
 
@@ -413,14 +412,6 @@ export class ToolExecutionComponent extends Container {
 		if (outcome === "failed") return [theme.fg("error", " Failed"), theme.fg("error", " ✗")];
 		if (outcome === "cancelled") return [theme.fg("warning", " Cancelled"), theme.fg("warning", " ⊘")];
 		return [];
-	}
-
-	/**
-	 * The columns that a header row of [room] columns keeps free for the outcome cue: the full cue where it leaves room
-	 * for content, else the compact cue, else none.
-	 */
-	private reservedCueWidth(room: number): number {
-		return visibleWidth(this.reservedCue(room));
 	}
 
 	/** The outcome cue that a header row of [room] columns keeps room for, or none. */
@@ -565,31 +556,33 @@ export class ToolExecutionComponent extends Container {
 		return lines;
 	}
 
-	/** The compact call row before the stock shell. Use the tool title only when the call has no rows. */
+	/**
+	 * The compact call row before the stock shell. Every call has the same frame: a one-cell indent on the tool background
+	 * over the full width, whatever its shell. Its text is the first call row, or the tool title when the call has no rows.
+	 * A failed or cancelled call keeps room for its outcome cue: a first line that does not fit with it gets an ellipsis,
+	 * and its complete text follows in the body.
+	 */
 	private callSummaryRow(width: number): string | undefined {
 		if (!this.rendersSemanticSections()) return undefined;
-		// A failed or cancelled call keeps room for its outcome cue: a first line that does not fit with it gets a summary,
-		// and its complete text follows in the body.
-		if (!this.hasRendererDefinition()) {
-			const summary = truncateToWidth(` ${this.formatToolTitle()}`, width - this.reservedCueWidth(width), "…");
-			return new Text(summary, 0, 0, this.shellBgFn).render(width)[0];
-		}
 		const call = this.callPartComponent;
-		if (!call) return undefined;
+		if (this.hasRendererDefinition() && !call) return undefined;
+		const room = Math.max(0, width - 2);
+		const cue = this.reservedCue(room);
+		const text = truncateToWidth(this.firstCallRow(width) ?? this.formatToolTitle(), room - visibleWidth(cue), "…");
+		const shell = new Box(1, 0, this.shellBgFn);
+		shell.addChild({ render: () => [`${text}${cue}`], invalidate: () => {} });
+		return shell.render(width)[0];
+	}
 
-		const self = this.getRenderShell() === "self";
-		const callWidth = this.callWidth(width);
-		const reserved = this.reservedCueWidth(callWidth);
+	/** The first row of the call part without its shell, or undefined when the call has no rows or no renderer. */
+	private firstCallRow(width: number): string | undefined {
+		const call = this.callPartComponent;
+		if (!this.hasRendererDefinition() || !call) return undefined;
 		const header =
 			(call instanceof Container || call instanceof Box) && this.getCallHeaderRowLocator() ? call.children[0] : call;
-		const text = header instanceof Text ? header : undefined;
-		const rendered = call.render(callWidth);
-		const firstRow = rendered.length === 0 ? undefined : text ? text.getText().split("\n", 1)[0] : rendered[0];
-		const summary = truncateToWidth(firstRow ?? this.formatToolTitle(), callWidth - reserved, "…");
-		if (summary === undefined || self) return summary;
-		const shell = new Box(1, 0, this.shellBgFn);
-		shell.addChild({ render: () => [summary], invalidate: () => {} });
-		return shell.render(width)[0];
+		const rendered = call.render(this.callWidth(width));
+		if (rendered.length === 0) return undefined;
+		return header instanceof Text ? header.getText().split("\n", 1)[0] : rendered[0];
 	}
 
 	/** The width of the call part: the padded shell takes one column on each side. */
