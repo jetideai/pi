@@ -145,7 +145,7 @@ describe("ToolExecutionComponent parity", () => {
 		for (const width of [24, 80]) expect(component.render(width)).toEqual(["", ...shell.render(width)]);
 	});
 
-	test("maps semantic padding and body mouse rows to the stock shell", () => {
+	test("maps the summary and the open Fold rows to the stock shell", () => {
 		const mouse = vi.fn(() => ({ handled: true as const }));
 		const component = new ToolExecutionComponent(
 			"process",
@@ -178,10 +178,11 @@ describe("ToolExecutionComponent parity", () => {
 			ctrl: false,
 			clickCount: 0,
 		});
-		expect(component.handleMouse(event(2))).toBeUndefined();
-		expect(component.handleMouse(event(3))).toMatchObject({ handled: true, target: { originY: 3 } });
+		// The open Fold shows the call header on the summary row and has no shell padding.
+		expect(component.handleMouse(event(1))).toBeUndefined();
+		expect(component.handleMouse(event(2))).toMatchObject({ handled: true, target: { originY: 2 } });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 0, height: 2 }));
-		expect(component.handleMouse(event(4))).toMatchObject({ handled: true, target: { originY: 3 } });
+		expect(component.handleMouse(event(3))).toMatchObject({ handled: true, target: { originY: 2 } });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 1, height: 2 }));
 	});
 

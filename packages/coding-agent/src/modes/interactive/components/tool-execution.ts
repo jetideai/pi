@@ -127,6 +127,14 @@ export class ToolExecutionComponent extends Container {
 	private shellBgFn?: (text: string) => string;
 	/** The last render put a summary row before the call rows. */
 	private callSummary = false;
+	/** The stock row that the open Fold shows first, on the screen row of the summary: the header, or the first content row. */
+	private openStart = 0;
+	/** The rows of the last render without the summary and the open Fold trimming. */
+	private stockHeight = 0;
+	/** The last summarized render has rows below the collapsed row. Without them the call is not expandable. */
+	private openBody = false;
+	/** The last summarized render opens to a stock header row that the summary repeats. */
+	private openHeader = false;
 	private decoratedSourceTexts: Text[] = [];
 
 	constructor(
@@ -362,14 +370,11 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * The header row of the stock rows that the last render gave, without another render: the first content row, or the
-	 * header row that the call renderer locates in its rendered component. The summary does not replace this row.
+	 * The header row of the stock rows without the summary, without another render: the first content row, or the
+	 * header row that the call renderer locates in its rendered component.
 	 */
 	private headerRowIndex(): number {
-		const offset =
-			this.hasRendererDefinition() && this.getRenderShell() === "self"
-				? 1 + (this.callSummary ? 1 : 0)
-				: this.contentStartRow();
+		const offset = this.contentStartRow();
 		const component = this.callRendererComponent;
 		const locator = this.getCallHeaderRowLocator();
 		if (component && locator) {
@@ -397,9 +402,9 @@ export class ToolExecutionComponent extends Container {
 		if (this.outcomeCues().length === 0) return lines;
 		const cued = [...lines];
 		// Use the stock cue position in canonical rows. The summary row has its cue already.
-		const header = this.headerRowIndex();
-		const line = lines[header];
-		if (line === undefined) return lines;
+		const header = this.callSummary ? (this.openHeader ? 2 : undefined) : this.headerRowIndex();
+		const line = header === undefined ? undefined : lines[header];
+		if (header === undefined || line === undefined) return lines;
 		const content = line.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
 		const cue = this.outcomeCues().find((candidate) => visibleWidth(content) + visibleWidth(candidate) <= width);
 		if (cue) cued[header] = `${content}${cue}`;
@@ -421,12 +426,13 @@ export class ToolExecutionComponent extends Container {
 
 	private decorateSemanticSections(lines: string[], width: number): string[] {
 		if (!this.rendersSemanticSections()) return lines;
-		// The summary is separate from the complete stock shell, including its top padding.
+		// The open Fold starts on the summary row, so the header does not move when it opens.
 		const rows = this.callSummary
-			? { header: 1, body: 2 }
+			? { header: 1, ...(this.openBody ? { body: 2 } : {}) }
 			: (this.locatedSemanticRows(width) ?? this.wholeCallSemanticRows(width));
 		if (!rows || rows.header >= lines.length) return lines;
-		const summarizes = this.callSummary;
+		// Native hides a summary in an open Fold. A summary without a stock header stays as the header of the call.
+		const summarizes = this.callSummary && this.openHeader;
 		// Without a body row the call is a plain range: the decorator context then has no foldable body.
 		return decorateMessageRenderV2(lines, rows.body, width, "tool", 0, {
 			entryId: this.toolCallId,
@@ -450,7 +456,7 @@ export class ToolExecutionComponent extends Container {
 			const bodyRow = bodyLocator(component);
 			if (headerRow === undefined || bodyRow === undefined || headerRow < 0 || bodyRow <= headerRow)
 				return undefined;
-			const offset = this.getRenderShell() === "self" ? 1 : this.contentStartRow();
+			const offset = this.contentStartRow();
 			const layout = this.ownedLayout(width);
 			const body = offset + bodyRow;
 			// A located body row after the content and before the first image is shell padding, not a body.
@@ -482,8 +488,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * The owned layout of the rendered lines: the first row of the call and result content, its rows, the rows of the
-	 * call part, and the first row of the first image after its spacer.
+	 * The owned layout of the stock rows without a summary: the first row of the call and result content, its rows, the
+	 * rows of the call part, and the first row of the first image after its spacer.
 	 */
 	private ownedLayout(
 		width: number,
@@ -497,22 +503,19 @@ export class ToolExecutionComponent extends Container {
 				const textLines = this.contentText.render(width).length;
 				contentRows = Math.max(0, textLines - 2);
 				callRows = new Text(this.formatToolTitle(), 1, 0).render(width).length;
-				shellLines = 2 + this.summaryRows(width) + contentRows + 1;
+				shellLines = 2 + contentRows + 1;
 			} else if (this.getRenderShell() === "self") {
 				const selfRows = this.selfRenderContainer.render(width).length;
 				contentRows = selfRows;
 				callRows = this.callPartComponent?.render(width).length ?? 0;
-				shellLines = contentRows > 0 ? 1 + this.summaryRows(width) + contentRows : 0;
+				shellLines = contentRows > 0 ? 1 + contentRows : 0;
 			} else {
 				const boxLines = this.contentBox.render(width).length;
 				contentRows = Math.max(0, boxLines - 2);
 				callRows = this.callPartComponent?.render(Math.max(0, width - 2)).length ?? 0;
-				shellLines = 2 + this.summaryRows(width) + contentRows + 1;
+				shellLines = 2 + contentRows + 1;
 			}
-			const contentStart =
-				this.hasRendererDefinition() && this.getRenderShell() === "self"
-					? 1 + this.summaryRows(width)
-					: this.contentStartRow();
+			const contentStart = this.contentStartRow();
 			const firstImageRow =
 				this.imageComponents.length > 0
 					? shellLines + (this.imageSpacers[0]?.render(width).length ?? 0)
@@ -524,34 +527,57 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private renderStock(width: number): string[] {
-		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
-			const contentLines = this.selfRenderContainer.render(width);
-			this.selfRenderHeight = contentLines.length;
-			if (contentLines.length === 0 && this.imageComponents.length === 0) return [];
-
-			const lines: string[] = [];
-			const summary = contentLines.length > 0 ? this.callSummaryRow(width) : undefined;
-			this.callSummary = summary !== undefined;
-			if (contentLines.length > 0) {
-				lines.push("");
-				if (summary !== undefined) lines.push(summary);
-				lines.push(...contentLines);
-			}
-			for (let i = 0; i < this.imageComponents.length; i++) {
-				const spacer = this.imageSpacers[i];
-				if (spacer) lines.push(...spacer.render(width));
-				const imageComponent = this.imageComponents[i];
-				if (imageComponent) lines.push(...imageComponent.render(width));
-			}
-			return lines;
-		}
-		const lines = super.render(width);
+		const stock = this.renderStockRows(width);
 		this.callSummary = false;
-		if (!this.rendersSemanticSections() || lines.length <= 1) return lines;
+		this.stockHeight = stock.length;
+		if (!this.rendersSemanticSections() || stock.length <= 1) return stock;
+		const layout = this.ownedLayout(width);
+		if (!layout || layout.contentRows === 0) return stock;
 		const summary = this.callSummaryRow(width);
-		if (summary !== undefined) {
-			lines.splice(1, 0, summary);
-			this.callSummary = true;
+		if (summary === undefined) return stock;
+		const open = this.openFoldRows(stock, layout);
+		this.callSummary = true;
+		this.openHeader = open.header;
+		this.openBody = open.rows.length > (open.header ? 1 : 0);
+		return this.openBody ? ["", summary, ...open.rows] : ["", summary];
+	}
+
+	/**
+	 * The rows that an open Fold shows on the screen row of the summary and below: the stock header, or the first content
+	 * row of a call without rows, then the content through its last visible row, then the images. The open Fold has no
+	 * shell padding, so its header does not move and one separator row follows its body.
+	 */
+	private openFoldRows(
+		stock: string[],
+		layout: { contentStart: number; contentRows: number; callRows: number; firstImageRow?: number },
+	): { rows: string[]; header: boolean } {
+		const header = layout.callRows > 0 || !this.hasRendererDefinition();
+		this.openStart = header ? this.headerRowIndex() : layout.contentStart;
+		const contentEnd = layout.contentStart + layout.contentRows;
+		let last = contentEnd - 1;
+		while (last >= this.openStart && stripTerminalSequences(stock[last] ?? "").trim() === "") last--;
+		const imageStart = layout.firstImageRow === undefined ? stock.length : this.imageRowsStart(stock, layout);
+		return { rows: [...stock.slice(this.openStart, last + 1), ...stock.slice(imageStart)], header };
+	}
+
+	/** The first stock row after the shell: the spacer of the first image. */
+	private imageRowsStart(stock: string[], layout: { contentStart: number; contentRows: number }): number {
+		const shellEnd = this.hasRendererDefinition() && this.getRenderShell() === "self" ? 0 : 1;
+		return Math.min(stock.length, layout.contentStart + layout.contentRows + shellEnd);
+	}
+
+	/** The stock rows of the call: the separator row, the shell and the images. */
+	private renderStockRows(width: number): string[] {
+		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") return super.render(width);
+		const contentLines = this.selfRenderContainer.render(width);
+		this.selfRenderHeight = contentLines.length;
+		if (contentLines.length === 0 && this.imageComponents.length === 0) return [];
+		const lines = contentLines.length > 0 ? ["", ...contentLines] : [];
+		for (let i = 0; i < this.imageComponents.length; i++) {
+			const spacer = this.imageSpacers[i];
+			if (spacer) lines.push(...spacer.render(width));
+			const imageComponent = this.imageComponents[i];
+			if (imageComponent) lines.push(...imageComponent.render(width));
 		}
 		return lines;
 	}
@@ -590,10 +616,6 @@ export class ToolExecutionComponent extends Container {
 		return this.getRenderShell() === "self" ? width : Math.max(0, width - 2);
 	}
 
-	private summaryRows(width: number): number {
-		return this.callSummaryRow(width) === undefined ? 0 : 1;
-	}
-
 	/** A native Fold can own active call rows. Other calls get semantic sections after completion. */
 	private rendersSemanticSections(): boolean {
 		return this.semanticDecoratorsV2.length > 0 && (this.foldOwnsBody || !this.isPartial);
@@ -612,24 +634,20 @@ export class ToolExecutionComponent extends Container {
 		return theme.fg("muted", this.executionStarted ? "Running…" : "Waiting to start…");
 	}
 
-	/** The first content row of the padded shell, after the Spacer and the top padding when it renders. */
+	/** The first content row of the stock rows: after the Spacer, and after the top padding of the padded shell. */
 	private contentStartRow(): number {
-		return 2 + (this.callSummary ? 1 : 0);
+		return this.hasRendererDefinition() && this.getRenderShell() === "self" ? 1 : 2;
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		// The summary row and the trimmed open Fold rows map back to the stock rows.
+		if (this.callSummary && event.y === 1) return undefined;
+		const y = this.callSummary && event.y > 1 ? event.y - 2 + this.openStart : event.y;
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
-			if (!this.callSummary || event.y < 1) return super.handleMouse(event);
-			if (event.y === 1) return undefined;
-			return super.handleMouse({ ...event, y: event.y - 1, height: event.height - 1 });
+			return super.handleMouse({ ...event, y, height: this.stockHeight });
 		}
-		const summaryRows = this.callSummary ? 1 : 0;
-		if (event.y <= summaryRows || event.y > this.selfRenderHeight + summaryRows) return undefined;
-		return this.selfRenderContainer.handleMouse({
-			...event,
-			y: event.y - 1 - summaryRows,
-			height: this.selfRenderHeight,
-		});
+		if (y < 1 || y > this.selfRenderHeight) return undefined;
+		return this.selfRenderContainer.handleMouse({ ...event, y: y - 1, height: this.selfRenderHeight });
 	}
 
 	/**

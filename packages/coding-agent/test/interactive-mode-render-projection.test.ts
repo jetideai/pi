@@ -934,7 +934,8 @@ describe("restored Tool Group composition and separators", () => {
 		const rendered = rows.join("\n");
 
 		expect(rendered.split(foldControls.begin)).toHaveLength(4);
-		expect(rendered.split(foldControls.body)).toHaveLength(4);
+		// The collapsed read shows no output, so its call has no body to open.
+		expect(rendered.split(foldControls.body)).toHaveLength(3);
 		expect(stripAnsi(rendered)).toContain("call-read output");
 	});
 
