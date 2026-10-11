@@ -48,6 +48,7 @@ export interface ToolRenderers {
 }
 
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { stripAnsi } from "../../../utils/ansi.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -599,7 +600,9 @@ export class ToolExecutionComponent extends Container {
 		const free = opens && this.reservedCue(frame - LABEL_AFFORDANCE_COLUMNS) === this.reservedCue(frame);
 		const room = frame - (free ? LABEL_AFFORDANCE_COLUMNS : 0);
 		const cue = this.reservedCue(room);
-		const text = truncateToWidth(this.firstCallRow(width) ?? this.formatToolTitle(), room - visibleWidth(cue), "…");
+		const textRoom = room - visibleWidth(cue);
+		const first = this.firstCallRow(width) ?? this.formatToolTitle();
+		const text = truncateToWidth(keepPathFileName(first, textRoom) ?? first, textRoom, "…");
 		// A full reset in the text, such as the one before an ellipsis, also ends the background; open it again.
 		const background = this.shellBgFn?.("\0").split("\0")[0] ?? "";
 		const row = `${text}${cue}`.replaceAll("\x1b[0m", `\x1b[0m${background}`);
@@ -896,4 +899,43 @@ function findFirstText(component: Component | undefined): Text | undefined {
 		if (text) return text;
 	}
 	return undefined;
+}
+
+/** A terminal escape sequence: SGR and other CSI controls, or an OSC control. */
+const ESCAPE_SEQUENCE = /\x1b\[[0-9;:?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/y;
+
+/**
+ * [line] fitted to [room] cells by removing the middle of its last path, so that the file name stays visible: the cut
+ * ends right before the last "/" of the path and an ellipsis takes its place. Undefined when the line fits, has no path,
+ * or its path is too short to absorb the cut; the caller then truncates the end as usual. The styles of the line stay.
+ */
+export function keepPathFileName(line: string, room: number): string | undefined {
+	const plain = stripAnsi(line);
+	const excess = visibleWidth(plain) - room;
+	if (excess <= 0) return undefined;
+	const path = [...plain.matchAll(/\S*\/\S+/g)].at(-1);
+	if (!path || path.index === undefined || visibleWidth(path[0]) !== path[0].length) return undefined;
+	const fileStart = path.index + path[0].lastIndexOf("/");
+	// The ellipsis takes one cell; at least one character of the path stays before it.
+	const cutLength = excess + 1;
+	const cutStart = fileStart - cutLength;
+	if (cutStart <= path.index) return undefined;
+	let result = "";
+	let visible = 0;
+	let index = 0;
+	while (index < line.length) {
+		ESCAPE_SEQUENCE.lastIndex = index;
+		const control = ESCAPE_SEQUENCE.exec(line);
+		if (control) {
+			result += control[0];
+			index += control[0].length;
+			continue;
+		}
+		const char = String.fromCodePoint(line.codePointAt(index)!);
+		if (visible === cutStart) result += "…";
+		if (visible < cutStart || visible >= cutStart + cutLength) result += char;
+		visible += char.length;
+		index += char.length;
+	}
+	return result;
 }

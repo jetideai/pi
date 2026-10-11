@@ -29,7 +29,7 @@ import {
 	SourcePointRevisions,
 } from "../src/modes/interactive/components/message-render-boundaries.ts";
 import type { ToolRenderers } from "../src/modes/interactive/components/tool-execution.ts";
-import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
+import { keepPathFileName, ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolGroupComponent } from "../src/modes/interactive/components/tool-group.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -1590,7 +1590,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(foldedRows(rows, () => false).join("")).toContain("long name output");
 	});
 
-	it("shows a collapsed built-in edit with a long path as one row that ends with an ellipsis", () => {
+	it("shows a collapsed built-in edit with a long path as one row that keeps its file name", () => {
 		const path = `../jetbrains-terminal_worktrees/semantic-resize-r0/src/uiTest/kotlin/${"segment/".repeat(4)}Long.kt`;
 		const component = foldedBuiltIn(
 			"edit",
@@ -1600,7 +1600,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		);
 		const rows = component.render(60);
 
-		expect(foldedRows(rows, () => true)).toEqual(["", expect.stringMatching(/^edit .*…$/)]);
+		expect(foldedRows(rows, () => true)).toEqual(["", expect.stringMatching(/^edit .*…\/Long\.kt$/)]);
 	});
 
 	it("keeps the complete long path of a built-in edit in its open Fold", () => {
@@ -1628,7 +1628,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(open.slice(0, 2)).toEqual(["", "edit"]);
 		expect(open.filter((row) => row.endsWith("…"))).toEqual([]);
 		expect(open.join("").split("Long.kt")).toHaveLength(2);
-		expect(foldedRows(component.render(60), () => true)).toEqual(["", expect.stringMatching(/^edit .*…$/)]);
+		expect(foldedRows(component.render(60), () => true)).toEqual(["", expect.stringMatching(/^edit .*…\/Long\.kt$/)]);
 	});
 
 	it("opens a call without a definition and a long first line to its complete call without the summary", () => {
@@ -1722,7 +1722,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		const rows = component.render(60);
 		const open = foldedRows(rows, () => false);
 
-		expect(foldedRows(rows, () => true)).toEqual(["", expect.stringMatching(/^edit src\/.*… Failed$/)]);
+		expect(foldedRows(rows, () => true)).toEqual(["", expect.stringMatching(/^edit src\/.*…\/Long\.kt Failed$/)]);
 		expect([open.filter((row) => row.startsWith("edit")).length, open.join("").split("Long.kt").length]).toEqual([
 			1, 2,
 		]);
@@ -2645,5 +2645,53 @@ describe("Tool Call summary text", () => {
 		});
 
 		expect(foldedRows(component.render(80), () => true)).toEqual(["", "opaque call row"]);
+	});
+});
+
+describe("Tool Call summary path", () => {
+	beforeAll(() => initTheme("dark"));
+
+	const longPath = "f0-long-read-root/semantic/presentation/fixtures/very/deep/terminal/F0_LONG.md";
+
+	it.each([
+		["a line that fits", "read a/b.md", 20, undefined],
+		["a long path", `read ${longPath}`, 40, { width: 40, end: "/F0_LONG.md", start: "read f0-long" }],
+		[
+			"a styled path",
+			`\x1b[1mread\x1b[0m \x1b[36m${longPath}\x1b[0m`,
+			40,
+			{ width: 40, end: "/F0_LONG.md", start: "read f0-long" },
+		],
+		["a line without a path", `printf '${"x".repeat(60)}'`, 30, undefined],
+		["a file name longer than the room", "cat a/b/very_long_file_name_that_does_not_fit.txt", 20, undefined],
+	] as const)("fits %s by removing the middle of its path", (_name, line, room, expected) => {
+		const fitted = keepPathFileName(line, room);
+		const plain = fitted === undefined ? undefined : stripAnsi(fitted);
+
+		expect(
+			plain === undefined
+				? undefined
+				: { width: visibleWidth(plain), end: plain.slice(-"/F0_LONG.md".length), start: plain.slice(0, 12) },
+		).toEqual(expected);
+	});
+
+	it("keeps the styles of a styled path", () => {
+		expect(keepPathFileName(`\x1b[1mread\x1b[0m \x1b[36m${longPath}\x1b[0m`, 40)).toContain("\x1b[36m");
+	});
+
+	it("keeps the file name in the collapsed summary of a long read", () => {
+		const read = foldedBuiltIn(
+			"read",
+			withBuiltInRenderers("read", createReadToolDefinition(process.cwd()) as unknown as ToolRenderers)!,
+			{ path: longPath },
+			"line 1\nline 2",
+		);
+		read.setExpanded(true);
+		const summary = stripAnsi(read.render(50)[1]!.replace(/\x1b\]777;[^\x07]*\x07/g, ""));
+
+		expect({ fileName: summary.includes("/F0_LONG.md"), ellipsis: summary.includes("…") }).toEqual({
+			fileName: true,
+			ellipsis: true,
+		});
 	});
 });
