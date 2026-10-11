@@ -2475,3 +2475,17 @@ describe("stable Tool Call fold", () => {
 		});
 	});
 });
+
+describe("Tool Call summary text", () => {
+	beforeAll(() => initTheme("dark"));
+
+	it("summarizes an opaque self call row that pads its text to the call width without an ellipsis", () => {
+		const component = savedCall({
+			renderShell: "self",
+			renderCall: () => ({ render: (width: number) => ["opaque call row".padEnd(width)], invalidate() {} }),
+			renderResult: () => new Text("opaque result", 0, 0),
+		});
+
+		expect(foldedRows(component.render(80), () => true)).toEqual(["", "opaque call row"]);
+	});
+});

@@ -608,7 +608,9 @@ export class ToolExecutionComponent extends Container {
 			(call instanceof Container || call instanceof Box) && this.getCallHeaderRowLocator() ? call.children[0] : call;
 		const rendered = call.render(this.callWidth(width));
 		if (rendered.length === 0) return undefined;
-		return header instanceof Text ? header.getText().split("\n", 1)[0] : rendered[0];
+		if (header instanceof Text) return header.getText().split("\n", 1)[0];
+		// A rendered row can pad its text to the width of the call; the summary has its own frame.
+		return rendered[0]?.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
 	}
 
 	/** The width of the call part: the padded shell takes one column on each side. */
