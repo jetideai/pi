@@ -2887,6 +2887,8 @@ describe("open card and quiet header details", () => {
 		["a basic background", "\x1b[41m title\x1b[49m", "\x1b[2m"],
 		["a background after a foreground", "\x1b[31;48;5;234m title\x1b[39;49m", "\x1b[31m"],
 		["a foreground after a background", "\x1b[48;5;234;31m title\x1b[49;39m", "\x1b[31m"],
+		["a colon background after a foreground", "\x1b[31;48:5:234m title\x1b[39;49m", "\x1b[31m"],
+		["a colon foreground before a background", "\x1b[38:5:196;41m title\x1b[39;49m", "\x1b[38:5:196m"],
 	])("keeps the colors but no background of a self-rendered open header with %s", (_name, call, color) => {
 		const header = savedCall({
 			renderShell: "self",

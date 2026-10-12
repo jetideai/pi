@@ -1050,11 +1050,17 @@ const LEADING_CELL = /^((?:\x1b\[[0-9;:]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))*) 
  * set a background is removed.
  */
 function withoutBackgroundParameters(control: string, params: string): string {
-	if (params === "" || params.includes(":")) return params.includes("48:") ? "" : control;
+	if (params === "") return control;
 	const codes = params.split(";");
 	const kept: string[] = [];
 	for (let index = 0; index < codes.length; index++) {
-		const code = Number(codes[index]);
+		// A colon group, such as 48:5:234, holds its color values itself.
+		const group = codes[index]!;
+		if (group.includes(":")) {
+			if (Number(group.split(":")[0]) !== 48) kept.push(group);
+			continue;
+		}
+		const code = Number(group);
 		if (code === 38 || code === 48 || code === 58) {
 			const mode = codes[index + 1];
 			const length = mode === "5" ? 3 : mode === "2" ? 5 : 1;
