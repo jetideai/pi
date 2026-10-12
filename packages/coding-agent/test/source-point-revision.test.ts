@@ -191,7 +191,23 @@ function harness(options: { bashTools?: boolean; singleTools?: boolean; toolOutp
 		expanded: boolean,
 	) => void;
 	const expandTools = (expanded: boolean) => setToolsExpanded.call(mode, expanded);
-	return { frame, rebuild, assistants, tools, expandTools };
+	const renderSemanticAssistantResponse = Reflect.get(
+		InteractiveMode.prototype,
+		"renderSemanticAssistantResponse",
+	) as (
+		this: typeof mode,
+		container: Container,
+		entryId: string,
+		message: AssistantMessage,
+		streaming: boolean,
+	) => unknown;
+	const live = new Container();
+	// The live response renders as the IDE path renders it: a new component for each delta.
+	const renderSemantic = (entryId: string, message: AssistantMessage, streaming: boolean) => {
+		if (!mode.chatContainer.children.includes(live)) mode.chatContainer.addChild(live);
+		renderSemanticAssistantResponse.call(mode, live, entryId, message, streaming);
+	};
+	return { frame, rebuild, assistants, tools, expandTools, renderSemantic };
 }
 
 function keyOf(component: AssistantMessageComponent): string {
@@ -270,6 +286,28 @@ describe("source point revisions", () => {
 		last.updateContent(withText(base, text), false);
 		const settled = await h.frame();
 		expect(settled.markers.filter((e) => e.key === keyOf(last)).every((e) => e.revision === 2)).toBe(true);
+	});
+
+	it("keeps the revision of a semantic streaming response for every delta and its settlement", async () => {
+		const h = harness();
+		await h.frame();
+		const base = lastMessage(h.assistants().at(-1)!);
+		const key = "assistant:semantic-live";
+		let text = "semantic stream";
+		const streamed: number[] = [];
+		for (let step = 0; step < 4; step++) {
+			text += `\n${"streamed words ".repeat(8)}`;
+			h.renderSemantic("semantic-live", { ...base, content: [{ type: "text", text }] }, true);
+			const { markers } = await h.frame();
+			streamed.push(...markers.filter((e) => e.key === key).map((e) => e.revision));
+		}
+
+		h.renderSemantic("semantic-live", { ...base, content: [{ type: "text", text }] }, false);
+		const settled = (await h.frame()).markers.filter((e) => e.key === key);
+
+		// A changed revision changes the first row of the response: above the viewport, each delta is a full replay.
+		expect(new Set(streamed)).toEqual(new Set([1]));
+		expect(settled.every((e) => e.revision === 1)).toBe(true);
 	});
 
 	it("keeps an unchanged key at its revision and continues a changed key after reconstruction", async () => {

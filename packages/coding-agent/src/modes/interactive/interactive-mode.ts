@@ -2665,23 +2665,24 @@ export class InteractiveMode {
 		let visualIndex = 0;
 		for (const atom of composition.atoms) {
 			if (atom.type === "visual") {
-				container.addChild(
-					new AssistantMessageComponent(
-						{ ...message, content: atom.content },
-						this.hideThinkingBlock,
-						this.getMarkdownThemeWithSettings(),
-						this.hiddenThinkingLabel,
-						this.outputPad,
-						this.getMarkdownTransformers(),
-						{
-							entryId,
-							decorators: this.getMessageRenderBoundaryDecoratorsV1(),
-							sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
-							sourcePointRevisions: this.sourcePointRevisions,
-							revisionKey: `${entryId}#${visualIndex++}`,
-						},
-					),
+				const visual = new AssistantMessageComponent(
+					undefined,
+					this.hideThinkingBlock,
+					this.getMarkdownThemeWithSettings(),
+					this.hiddenThinkingLabel,
+					this.outputPad,
+					this.getMarkdownTransformers(),
+					{
+						entryId,
+						decorators: this.getMessageRenderBoundaryDecoratorsV1(),
+						sourcePointDecorators: this.getMessageRenderSourcePointDecoratorsV1(),
+						sourcePointRevisions: this.sourcePointRevisions,
+						revisionKey: `${entryId}#${visualIndex++}`,
+					},
 				);
+				// A streaming response keeps its revision: a final render of each delta would change its first row.
+				visual.updateContent({ ...message, content: atom.content }, streaming);
+				container.addChild(visual);
 				continue;
 			}
 			const components = atom.calls.map((call) => this.createSemanticToolComponent(call, entryId));
