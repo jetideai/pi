@@ -1,6 +1,7 @@
 import {
 	type Component,
 	Container,
+	Image,
 	resetCapabilitiesCache,
 	setCapabilities,
 	Text,
@@ -93,6 +94,12 @@ function tool(
 const EDIT_POINT = "\x1b]777;point\x07";
 /** A valid one-pixel PNG. */
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+/** The size of [PNG] for an image that spans more than one row. */
+const IMAGE_SIZE = { widthPx: 40, heightPx: 40 };
+
+/** The start of the control that draws an image in each image protocol. */
+const IMAGE_PROTOCOL_PREFIX = { kitty: "\x1b_G", iterm2: "\x1b]1337;" } as const;
 const EDIT_SUCCESS = "Successfully replaced 1 block(s) in src/long.ts.";
 
 function editDiff(lines: number, name: string) {
@@ -980,6 +987,40 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 			resetCapabilitiesCache();
 		}
 	});
+
+	it.each(["kitty", "iterm2"] as const)(
+		"keeps every row of a %s image that a self-rendered result draws before its caption in the open card",
+		(protocol) => {
+			setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
+			try {
+				const image = () =>
+					new Image(PNG, "image/png", { fallbackColor: (text) => text }, { maxWidthCells: 4 }, IMAGE_SIZE);
+				const rows = savedCall({
+					renderShell: "self",
+					renderCall: () => new Text("custom call", 0, 0),
+					renderResult: () => {
+						const result = new Container();
+						result.addChild(image());
+						result.addChild(new Text("caption", 0, 0));
+						return result;
+					},
+				}).render(40);
+				const top = rows.findIndex((row) => /^\s*▁+\s*$/.test(stripAnsi(row)));
+				const caption = rows.findIndex((row) => stripAnsi(row).includes("caption"));
+				// A self-rendered card row is the stock row at the inner width, between the two border cells.
+				const imageRows = image().render(38);
+				const imageRow = imageRows.findIndex((row) => row.includes(IMAGE_PROTOCOL_PREFIX[protocol]));
+
+				expect({
+					rows: caption - top - 1,
+					imageRow: rows.findIndex((row) => row.includes(IMAGE_PROTOCOL_PREFIX[protocol])) - top - 1,
+				}).toEqual({ rows: imageRows.length, imageRow });
+				expect(imageRows.length).toBeGreaterThan(1);
+			} finally {
+				resetCapabilitiesCache();
+			}
+		},
+	);
 
 	it("uses the title summary when the call renderer draws no rows", () => {
 		const contexts: MessageRenderBoundaryContextV1[] = [];

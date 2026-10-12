@@ -5,6 +5,7 @@ import {
 	Container,
 	getCapabilities,
 	Image,
+	isImageLine,
 	MouseRegion,
 	Spacer,
 	stripTerminalSequences,
@@ -576,10 +577,10 @@ export class ToolExecutionComponent extends Container {
 		const open = this.openFoldRows(stock, layout);
 		this.stockHeight = stock.length;
 		const rows = header ? open.content.slice(1) : open.content;
-		const bodyStart = Math.max(
-			0,
-			rows.findIndex((row) => stripTerminalSequences(row).trim() !== ""),
-		);
+		// An image row has no text, and the empty rows before it can belong to the image, so a body that starts with an
+		// image keeps all of its rows.
+		const first = rows.findIndex((row) => isImageLine(row) || stripTerminalSequences(row).trim() !== "");
+		const bodyStart = first < 0 || isImageLine(rows[first]!) ? 0 : first;
 		const body = rows.slice(bodyStart);
 		// The header is the first stock row at the same width as the card, so the call text wraps once. Its title is faint
 		// at rest, like the summary; the host draws the header that the pointer is on at full contrast.
