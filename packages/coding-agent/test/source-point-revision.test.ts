@@ -304,10 +304,15 @@ describe("source point revisions", () => {
 
 		h.renderSemantic("semantic-live", { ...base, content: [{ type: "text", text }] }, false);
 		const settled = (await h.frame()).markers.filter((e) => e.key === key);
+		h.renderSemantic("semantic-live", { ...base, content: [{ type: "text", text: `${text}\nedited` }] }, false);
+		const edited = (await h.frame()).markers.filter((e) => e.key === key);
 
 		// A changed revision changes the first row of the response: above the viewport, each delta is a full replay.
 		expect(new Set(streamed)).toEqual(new Set([1]));
 		expect(settled.every((e) => e.revision === 1)).toBe(true);
+		// A later edit of the settled response is the next revision, so the settlement kept the first one.
+		expect(edited.length).toBeGreaterThan(0);
+		expect(new Set(edited.map((e) => e.revision))).toEqual(new Set([2]));
 	});
 
 	it("keeps an unchanged key at its revision and continues a changed key after reconstruction", async () => {
