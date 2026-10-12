@@ -300,17 +300,14 @@ const cardEdgeRow = (row: string) => /^\s*(?:▁+|▔+)\s*$/.test(row);
 
 /**
  * The visible rows that an open call shows after its summary: its header without a background, then its other stock rows
- * in a card frame. [stock] are the unpadded visible stock rows at the inner width of the card, separator row first. The
- * rows are trimmed at the end, so an edge row ends at its last edge cell.
+ * in a card between two side edges. [stock] are the unpadded visible stock rows at the inner width of the card, separator
+ * row first.
  */
 function openCard(stock: string[], width: number): string[] {
 	const [, header, ...rows] = stock;
 	const body = cardBody(rows);
 	const inner = width - 2;
-	const card =
-		body.length === 0
-			? []
-			: [` ${"▁".repeat(inner)}`, ...body.map((row) => `▕${row.padEnd(inner)}▏`), ` ${"▔".repeat(inner)}`];
+	const card = body.map((row) => `▕${row.padEnd(inner)}▏`);
 	return [header!.startsWith(" ") ? header! : ` ${header}`, ...card];
 }
 
@@ -322,7 +319,7 @@ function openCardParts(rows: string[], failed: boolean): { header: string; card:
 	const edge = theme.fg(failed ? "error" : "border", "▕");
 	return {
 		header: withoutOutcomeCue(stripAnsi(rows[1] ?? "").trim()),
-		card: rows.slice(3, -1).map((row) => row.slice(edge.length, -edge.length)),
+		card: rows.slice(2).map((row) => row.slice(edge.length, -edge.length)),
 	};
 }
 
@@ -1005,7 +1002,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 						return result;
 					},
 				}).render(40);
-				const top = rows.findIndex((row) => /^\s*▁+\s*$/.test(stripAnsi(row)));
+				const top = rows.findIndex((row) => stripAnsi(row).startsWith("▕")) - 1;
 				const caption = rows.findIndex((row) => stripAnsi(row).includes("caption"));
 				// A self-rendered card row is the stock row at the inner width, between the two border cells.
 				const imageRows = image().render(38);
@@ -1034,7 +1031,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		// A call without call rows opens to its card, without a header row.
 		expect(rows.visible).toEqual(["", " process", ...openCard(["", "", " custom result"], 80).slice(1)]);
 		expect(rows.counts).toEqual([1, 1, 1]);
-		expect([rows.begin, rows.end]).toEqual([[1], [4]]);
+		expect([rows.begin, rows.end]).toEqual([[1], [2]]);
 		expect(contexts.at(-1)?.bodyRow).toBe(2);
 		// The title has no stock row, so it stays as the header of the open Fold.
 		expect(contexts.at(-1)?.summaryRow).toBeUndefined();
@@ -1270,9 +1267,8 @@ function foldedRows(rows: string[], collapsed: (depth: number) => boolean): stri
 	});
 	return rows.flatMap((row, index) => {
 		if (hidden.has(index)) return [];
-		// The card frame of an open call is no content: its border rows drop, and a card row shows its inner text.
+		// The side edges of an open card are no content: a card row shows its inner text.
 		const visible = stripAnsi(row.replaceAll(EDIT_POINT, ""));
-		if (cardEdgeRow(visible)) return [];
 		const text = cardInner(visible).trim();
 		return [/\x1b\[48;/.test(row) && text === "" ? "<shaded blank>" : text];
 	});
@@ -2300,7 +2296,6 @@ describe("Tool Call and Tool Group outcomes", () => {
 					// The open header and the card wrap at the inner width of the card: the line can continue in the card.
 					const openText = rows
 						.map((row) => stripAnsi(row.replace(/\x1b\]777;[^\x07]*\x07/g, "")))
-						.filter((row) => !cardEdgeRow(row))
 						.map((row) => withoutOutcomeCue(cardInner(row).trim()))
 						.join("");
 					expect({
@@ -2609,7 +2604,7 @@ describe("stable Tool Call fold", () => {
 		});
 	});
 
-	it("separates an open call in a group from the next call by the bottom row of its card", () => {
+	it("places the card of an open call in a group directly below its header and above the next call", () => {
 		const group = new ToolGroupComponent({
 			groupId: "tool-group:assistant-a:call-a",
 			ownerEntryId: "assistant-a",
@@ -2622,13 +2617,22 @@ describe("stable Tool Call fold", () => {
 		group.addTool(unknownCall("call-a"), { toolName: "process", toolCallId: "call-a" });
 		group.addTool(unknownCall("call-b"), { toolName: "process", toolCallId: "call-b" });
 		const visible = boundaryRows(group.render(80)).visible;
-		const second = visible.findIndex((row) => row.startsWith("   ▔")) + 1;
+		const output = visible.findIndex((row) => row.includes("call-a output"));
+		let first = output;
+		while (visible[first - 1]?.startsWith("  ▕")) first--;
 
-		expect(visible.slice(second - 2, second + 1)).toEqual([
-			`  ▕ call-a output${" ".repeat(62)}▏`,
-			`   ${"▔".repeat(76)}`,
-			"   process",
-		]);
+		// Like the calls of a group, the card adds no rows: its side edges and background mark it.
+		expect({
+			aboveCard: visible[first - 1],
+			lastCardRow: visible[output],
+			belowCard: visible[output + 1],
+			edgeRows: visible.filter(cardEdgeRow),
+		}).toEqual({
+			aboveCard: "   process",
+			lastCardRow: `  ▕ call-a output${" ".repeat(62)}▏`,
+			belowCard: "   process",
+			edgeRows: [],
+		});
 	});
 
 	it.each([
@@ -2969,9 +2973,9 @@ describe("open card and quiet header details", () => {
 			renderCall: () => ({ render: () => ["title", "body"], invalidate() {} }),
 			renderResult: () => new Text("", 0, 0),
 		}).render(40);
-		const card = rows.filter((row) => /^\s*[▕▁▔]/.test(stripAnsi(row)));
+		const card = rows.filter((row) => /^\s*▕/.test(stripAnsi(row)));
 
-		expect(card.length).toBeGreaterThan(2);
+		expect(card.length).toBeGreaterThan(0);
 		expect(card.every((row) => visibleWidth(row) === 40)).toBe(true);
 	});
 });

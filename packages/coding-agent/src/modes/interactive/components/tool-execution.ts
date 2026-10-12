@@ -140,7 +140,7 @@ export class ToolExecutionComponent extends Container {
 	private openHeader = false;
 	/**
 	 * The rows of the last open card after the summary: the header row and the columns that it adds before the stock
-	 * text, whether a frame surrounds the body, the blank stock rows before the body, and the number of body rows. Images
+	 * text, whether side edges frame the body, the blank stock rows before the body, and the number of body rows. Images
 	 * follow the body.
 	 */
 	private openCard = { header: false, headerShift: 0, framed: false, bodyStart: 0, bodyRows: 0 };
@@ -591,19 +591,13 @@ export class ToolExecutionComponent extends Container {
 		const headerShift = shellCell ? 0 : 1;
 		const headerRow = header ? [` ${theme.faint(title)}`] : [];
 		const edge = (text: string) => theme.fg(this.outcome === "failed" ? "error" : "border", text);
-		const fill = Math.max(0, width - 2);
 		const cell = (row: string) => `${row}${" ".repeat(Math.max(0, inner - visibleWidth(row)))}`;
 		const framedBody = framed && body.length > 0;
 		this.openCard = { header, headerShift, framed: framedBody, bodyStart, bodyRows: body.length };
-		// Each border glyph is one eighth of its cell on the side of the body, so the background of the body rows touches
-		// the border. The corners stay empty. Images follow the card: a frame column next to a terminal image would move it.
-		const card = framedBody
-			? [
-					` ${edge(CARD_EDGE.top.repeat(fill))} `,
-					...body.map((row) => `${edge(CARD_EDGE.left)}${cell(row)}${edge(CARD_EDGE.right)}`),
-					` ${edge(CARD_EDGE.bottom.repeat(fill))} `,
-				]
-			: body;
+		// Like the calls of a group, the card adds no rows: the first body row follows the header, and the next row follows
+		// the last body row. Each side edge is one eighth of its cell on the side of the body, so the background of the body
+		// rows touches the edge. Images follow the card: a frame column next to a terminal image would move it.
+		const card = framedBody ? body.map((row) => `${edge(CARD_EDGE.left)}${cell(row)}${edge(CARD_EDGE.right)}`) : body;
 		return [...headerRow, ...card, ...open.images];
 	}
 
@@ -748,8 +742,8 @@ export class ToolExecutionComponent extends Container {
 			y = this.openStart;
 			local = { ...event, x: event.x - headerShift, width };
 		} else {
-			// The frame rows and the images that follow the body are no stock rows of a card row.
-			const row = event.y - 2 - headerRows - frame;
+			// The side edges and the images that follow the body are no stock rows of a card row.
+			const row = event.y - 2 - headerRows;
 			if (row < 0 || row >= bodyRows || event.x < frame || event.x >= event.width - frame) return undefined;
 			y = this.openStart + headerRows + bodyStart + row;
 			local = { ...event, x: event.x - frame, width };
@@ -1051,7 +1045,7 @@ export function keepPathFileName(line: string, room: number): string | undefined
 const CARD_FRAME_COLUMNS = 2;
 
 /** The border glyphs of the card: each one is the eighth of its cell that touches the body. */
-const CARD_EDGE = { top: "▁", left: "▕", right: "▏", bottom: "▔" } as const;
+const CARD_EDGE = { left: "▕", right: "▏" } as const;
 
 /** The zero-column controls before the first cell of a row, and that cell when it is a space. */
 const LEADING_CELL = /^((?:\x1b\[[0-9;:]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))*) /;

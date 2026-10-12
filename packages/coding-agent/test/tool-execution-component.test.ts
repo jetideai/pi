@@ -182,9 +182,8 @@ describe("ToolExecutionComponent parity", () => {
 		expect(component.handleMouse(event(1))).toBeUndefined();
 		expect(component.handleMouse(event(2))).toMatchObject({ handled: true, target: { originY: 2 } });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 0, height: 2 }));
-		// The top border of the card is no stock row.
-		expect(component.handleMouse(event(3))).toBeUndefined();
-		expect(component.handleMouse(event(4))).toMatchObject({ handled: true, target: { originY: 3 } });
+		// The card adds no row: its first row is the next stock row.
+		expect(component.handleMouse(event(3))).toMatchObject({ handled: true, target: { originY: 2 } });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 1, height: 2 }));
 	});
 
@@ -221,12 +220,12 @@ describe("ToolExecutionComponent parity", () => {
 		});
 
 		// Without a frame the body row follows the header directly, at the full width of the row.
-		expect(rows.some((row) => row.includes("▁"))).toBe(false);
+		expect(rows.some((row) => row.includes("▕"))).toBe(false);
 		expect(component.handleMouse(event(3))).toMatchObject({ handled: true });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 1, width: 1 }));
 	});
 
-	test("maps no frame row of an open card to a stock row", () => {
+	test("maps no side edge of an open card to a stock row", () => {
 		const mouse = vi.fn(() => ({ handled: true as const }));
 		const component = new ToolExecutionComponent(
 			"process",
@@ -257,14 +256,10 @@ describe("ToolExecutionComponent parity", () => {
 			ctrl: false,
 			clickCount: 0,
 		});
-		const bottom = rows.findIndex((row) => row.includes("▔"));
-		const rightBorder = { ...event(4), x: 39, screenX: 39 };
+		const leftEdge = { ...event(3), x: 0, screenX: 0 };
+		const rightEdge = { ...event(3), x: 39, screenX: 39 };
 
-		expect([
-			component.handleMouse(event(3)),
-			component.handleMouse(event(bottom)),
-			component.handleMouse(rightBorder),
-		]).toEqual([undefined, undefined, undefined]);
+		expect([component.handleMouse(leftEdge), component.handleMouse(rightEdge)]).toEqual([undefined, undefined]);
 		expect(mouse).not.toHaveBeenCalled();
 	});
 
@@ -306,9 +301,9 @@ describe("ToolExecutionComponent parity", () => {
 			clickCount: 0,
 		});
 
-		// The header is row 2 and the top border row 3: the first card row is the call row after the blank row.
-		expect(stripAnsi(rows[4]!).slice(1, -1).trim()).toBe("arguments");
-		expect(component.handleMouse(event(4))).toMatchObject({ handled: true });
+		// The header is row 2: the first card row is the call row after the blank row.
+		expect(stripAnsi(rows[3]!).slice(1, -1).trim()).toBe("arguments");
+		expect(component.handleMouse(event(3))).toMatchObject({ handled: true });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 2, height: 3 }));
 	});
 
