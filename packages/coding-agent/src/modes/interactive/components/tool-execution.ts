@@ -125,8 +125,6 @@ export class ToolExecutionComponent extends Container {
 	private readonly sourcePointRevisions?: SourcePointRevisions;
 	private sourcePointRevision = 1;
 	private presentation = "";
-	/** The background of the padded shell and of the generic Text of a tool without a definition. */
-	private shellBgFn?: (text: string) => string;
 	/** The last render put a summary row before the call rows. */
 	private callSummary = false;
 	/** The stock row that the open Fold shows first, on the screen row of the summary: the header, or the first content row. */
@@ -578,9 +576,12 @@ export class ToolExecutionComponent extends Container {
 		const body = header ? open.content.slice(1) : open.content;
 		// The header is the first stock row at the same width as the card, so the call text wraps once. Its title is faint
 		// at rest, like the summary; the host draws the header that the pointer is on at full contrast.
-		const stockHeader = open.content[0] ?? "";
-		const headerShift = stripTerminalSequences(stockHeader).startsWith(" ") ? 0 : 1;
-		const headerRow = header ? [` ${theme.faint(this.withoutShell(stockHeader).slice(1))}`] : [];
+		// The header starts after one free cell: the cell of the padded shell, or one added before a self-rendered header.
+		const plainHeader = this.withoutShell(open.content[0] ?? "");
+		const shellCell = LEADING_CELL.exec(plainHeader);
+		const title = shellCell ? `${shellCell[1]}${plainHeader.slice(shellCell[0].length)}` : plainHeader;
+		const headerShift = shellCell ? 0 : 1;
+		const headerRow = header ? [` ${theme.faint(title)}`] : [];
 		const edge = (text: string) => theme.fg(this.outcome === "failed" ? "error" : "border", text);
 		const fill = Math.max(0, width - 2);
 		const cell = (row: string) => `${row}${" ".repeat(Math.max(0, inner - visibleWidth(row)))}`;
@@ -714,13 +715,11 @@ export class ToolExecutionComponent extends Container {
 		return this.selfRenderContainer.handleMouse({ ...event, y: y - 1, height: this.selfRenderHeight });
 	}
 
-	/** A stock row without the tool background of the shell and without its trailing blank cells, after one free cell. */
+	/** A stock row without any background and without its trailing blank cells. */
 	private withoutShell(row: string): string {
-		const background = this.shellBgFn?.("\0").split("\0")[0];
-		const plain = (background ? row.replaceAll(background, "") : row)
-			.replaceAll("\x1b[49m", "")
+		return row
+			.replace(/\x1b\[(?:48;[0-9;:]*|49)m/g, "")
 			.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
-		return plain.startsWith(" ") ? plain : ` ${plain}`;
 	}
 
 	/**
@@ -742,7 +741,7 @@ export class ToolExecutionComponent extends Container {
 		} else {
 			// The frame rows and the images that follow the body are no stock rows of a card row.
 			const row = event.y - 2 - headerRows - frame;
-			if (row < 0 || row >= bodyRows || event.x < frame) return undefined;
+			if (row < 0 || row >= bodyRows || event.x < frame || event.x >= event.width - frame) return undefined;
 			y = this.openStart + headerRows + row;
 			local = { ...event, x: event.x - frame, width };
 		}
@@ -792,7 +791,6 @@ export class ToolExecutionComponent extends Container {
 			if (renderContainer instanceof Box) {
 				renderContainer.setBgFn(bgFn);
 			}
-			this.shellBgFn = bgFn;
 			renderContainer.clear();
 			this.fallbackResultText = undefined;
 
@@ -849,7 +847,6 @@ export class ToolExecutionComponent extends Container {
 			if (working) renderContainer.addChild(new Text(working, 0, 0));
 		} else {
 			this.contentText.setCustomBgFn(bgFn);
-			this.shellBgFn = bgFn;
 			const working = this.workingRow();
 			this.contentText.setText(working ? `${this.formatToolExecution()}\n${working}` : this.formatToolExecution());
 			hasContent = true;
@@ -1043,3 +1040,6 @@ export function keepPathFileName(line: string, room: number): string | undefined
 
 /** The two border columns of the card of an open call. */
 const CARD_FRAME_COLUMNS = 2;
+
+/** The zero-column controls before the first cell of a row, and that cell when it is a space. */
+const LEADING_CELL = /^((?:\x1b\[[0-9;:]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))*) /;

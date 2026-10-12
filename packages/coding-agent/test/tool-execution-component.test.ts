@@ -258,8 +258,13 @@ describe("ToolExecutionComponent parity", () => {
 			clickCount: 0,
 		});
 		const bottom = rows.findIndex((row) => row.includes("╰"));
+		const rightBorder = { ...event(4), x: 39, screenX: 39 };
 
-		expect([component.handleMouse(event(3)), component.handleMouse(event(bottom))]).toEqual([undefined, undefined]);
+		expect([
+			component.handleMouse(event(3)),
+			component.handleMouse(event(bottom)),
+			component.handleMouse(rightBorder),
+		]).toEqual([undefined, undefined, undefined]);
 		expect(mouse).not.toHaveBeenCalled();
 	});
 

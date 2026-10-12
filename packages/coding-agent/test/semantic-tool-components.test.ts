@@ -2873,6 +2873,16 @@ describe("open card and quiet header details", () => {
 		}).toEqual({ text: "$ printf out", faint: true, background: false });
 	});
 
+	it("starts a self-rendered header whose first cell is a styled space after one free cell", () => {
+		const rows = savedCall({
+			renderShell: "self",
+			renderCall: () => ({ render: () => ["\x1b[31m title\x1b[39m", "body"], invalidate() {} }),
+			renderResult: () => new Text("", 0, 0),
+		}).render(40);
+
+		expect(stripAnsi(rows[2]!.replace(/\x1b\]777;[^\x07]*\x07/g, ""))).toBe(" title");
+	});
+
 	it("pads the short rows of a self-rendered call to the inner width of its card", () => {
 		const rows = savedCall({
 			renderShell: "self",
