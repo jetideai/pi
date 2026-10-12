@@ -718,7 +718,7 @@ export class ToolExecutionComponent extends Container {
 	/** A stock row without any background and without its trailing blank cells. */
 	private withoutShell(row: string): string {
 		return row
-			.replace(/\x1b\[(?:48;[0-9;:]*|49)m/g, "")
+			.replace(/\x1b\[([0-9;:]*)m/g, (control, params: string) => withoutBackgroundParameters(control, params))
 			.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
 	}
 
@@ -1043,3 +1043,26 @@ const CARD_FRAME_COLUMNS = 2;
 
 /** The zero-column controls before the first cell of a row, and that cell when it is a space. */
 const LEADING_CELL = /^((?:\x1b\[[0-9;:]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))*) /;
+
+/**
+ * One SGR control without its background parameters: basic and bright backgrounds, the default background, and an
+ * extended background with its color values. Other parameters, such as a foreground color, stay. A control that only
+ * set a background is removed.
+ */
+function withoutBackgroundParameters(control: string, params: string): string {
+	if (params === "" || params.includes(":")) return params.includes("48:") ? "" : control;
+	const codes = params.split(";");
+	const kept: string[] = [];
+	for (let index = 0; index < codes.length; index++) {
+		const code = Number(codes[index]);
+		if (code === 38 || code === 48 || code === 58) {
+			const mode = codes[index + 1];
+			const length = mode === "5" ? 3 : mode === "2" ? 5 : 1;
+			if (code !== 48) kept.push(...codes.slice(index, index + length));
+			index += length - 1;
+		} else if (!((code >= 40 && code <= 47) || code === 49 || (code >= 100 && code <= 107))) {
+			kept.push(codes[index]!);
+		}
+	}
+	return kept.length === 0 ? "" : `\x1b[${kept.join(";")}m`;
+}

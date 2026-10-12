@@ -2883,6 +2883,30 @@ describe("open card and quiet header details", () => {
 		expect(stripAnsi(rows[2]!.replace(/\x1b\]777;[^\x07]*\x07/g, ""))).toBe(" title");
 	});
 
+	it.each([
+		["a basic background", "\x1b[41m title\x1b[49m", "\x1b[2m"],
+		["a background after a foreground", "\x1b[31;48;5;234m title\x1b[39;49m", "\x1b[31m"],
+		["a foreground after a background", "\x1b[48;5;234;31m title\x1b[49;39m", "\x1b[31m"],
+	])("keeps the colors but no background of a self-rendered open header with %s", (_name, call, color) => {
+		const header = savedCall({
+			renderShell: "self",
+			renderCall: () => ({ render: () => [call, "body"], invalidate() {} }),
+			renderResult: () => new Text("", 0, 0),
+		})
+			.render(40)[2]!
+			.replace(/\x1b\]777;[^\x07]*\x07/g, "");
+
+		expect({
+			background: /\x1b\[(?:[0-9;]*;)?(?:4[0-9]|10[0-7])(?:;[0-9;]*)?m/.test(header),
+			color: header.includes(color),
+			text: stripAnsi(header),
+		}).toEqual({
+			background: false,
+			color: true,
+			text: " title",
+		});
+	});
+
 	it("pads the short rows of a self-rendered call to the inner width of its card", () => {
 		const rows = savedCall({
 			renderShell: "self",
