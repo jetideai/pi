@@ -38,6 +38,24 @@ export function setThemeJsonValidator(validator: ThemeJsonValidator): void {
 	themeJsonValidator = validator;
 }
 
+/**
+ * Whether the parameters of one SGR control end bold or faint: a reset (empty or 0) or normal intensity (22). The
+ * parameters of an extended color (38, 48 or 58 with 5;n or 2;r;g;b) are color values, not commands.
+ */
+function endsIntensity(params: string): boolean {
+	const codes = params.split(";");
+	for (let index = 0; index < codes.length; index++) {
+		const code = codes[index];
+		if (code === "38" || code === "48" || code === "58") {
+			const mode = codes[index + 1];
+			index += mode === "5" ? 2 : mode === "2" ? 4 : 0;
+		} else if (code === "" || code === "0" || code === "22") {
+			return true;
+		}
+	}
+	return false;
+}
+
 export type ThemeColor =
 	| "accent"
 	| "border"
@@ -353,7 +371,9 @@ export class Theme {
 	 * end of bold text, also ends faint; faint starts again after it.
 	 */
 	faint(text: string): string {
-		const restored = text.replace(/\x1b\[(?:0|22)?m/g, (control) => `${control}\x1b[2m`);
+		const restored = text.replace(/\x1b\[([0-9;:]*)m/g, (control, params: string) =>
+			endsIntensity(params) ? `${control}\x1b[2m` : control,
+		);
 		return `\x1b[2m${restored}\x1b[22m`;
 	}
 

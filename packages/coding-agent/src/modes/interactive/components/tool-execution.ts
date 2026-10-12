@@ -139,6 +139,11 @@ export class ToolExecutionComponent extends Container {
 	private stockHeaderOnly = false;
 	/** The last summarized render opens to a stock header row that the summary repeats. */
 	private openHeader = false;
+	/**
+	 * The rows of the last open card after the summary: the header row and the columns that it adds before the stock
+	 * text, whether a frame surrounds the body, and the number of body rows. Images follow the body.
+	 */
+	private openCard = { header: false, headerShift: 0, framed: false, bodyRows: 0 };
 	private decoratedSourceTexts: Text[] = [];
 
 	constructor(
@@ -571,19 +576,24 @@ export class ToolExecutionComponent extends Container {
 		const open = this.openFoldRows(stock, layout);
 		this.stockHeight = stock.length;
 		const body = header ? open.content.slice(1) : open.content;
-		// The header is the first stock row at the same width as the card, so the call text wraps once.
-		const headerRow = header ? [this.withoutShell(open.content[0] ?? "")] : [];
+		// The header is the first stock row at the same width as the card, so the call text wraps once. Its title is faint
+		// at rest, like the summary; the host draws the header that the pointer is on at full contrast.
+		const stockHeader = open.content[0] ?? "";
+		const headerShift = stripTerminalSequences(stockHeader).startsWith(" ") ? 0 : 1;
+		const headerRow = header ? [` ${theme.faint(this.withoutShell(stockHeader).slice(1))}`] : [];
 		const edge = (text: string) => theme.fg(this.outcome === "failed" ? "error" : "border", text);
 		const fill = Math.max(0, width - 2);
+		const cell = (row: string) => `${row}${" ".repeat(Math.max(0, inner - visibleWidth(row)))}`;
+		const framedBody = framed && body.length > 0;
+		this.openCard = { header, headerShift, framed: framedBody, bodyRows: body.length };
 		// Images follow the card: a frame column next to a terminal image would move it.
-		const card =
-			body.length === 0 || !framed
-				? body
-				: [
-						edge(`╭${"─".repeat(fill)}╮`),
-						...body.map((row) => `${edge("│")}${row}${edge("│")}`),
-						edge(`╰${"─".repeat(fill)}╯`),
-					];
+		const card = framedBody
+			? [
+					edge(`╭${"─".repeat(fill)}╮`),
+					...body.map((row) => `${edge("│")}${cell(row)}${edge("│")}`),
+					edge(`╰${"─".repeat(fill)}╯`),
+				]
+			: body;
 		return [...headerRow, ...card, ...open.images];
 	}
 
@@ -718,19 +728,23 @@ export class ToolExecutionComponent extends Container {
 	 * the card.
 	 */
 	private handleOpenCardMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-		const headerRows = this.openHeader ? 1 : 0;
-		const width = Math.max(0, event.width - CARD_FRAME_COLUMNS);
+		const { header, headerShift, framed, bodyRows } = this.openCard;
+		const headerRows = header ? 1 : 0;
+		const frame = framed ? 1 : 0;
+		const width = Math.max(0, event.width - (framed ? CARD_FRAME_COLUMNS : 0));
 		let local: TuiMouseEvent;
 		let y: number;
-		if (this.openHeader && event.y === 2) {
-			// The header is the first stock row.
+		if (header && event.y === 2) {
+			// The header is the first stock row, after the cell that a self-rendered header gets.
+			if (event.x < headerShift) return undefined;
 			y = this.openStart;
-			local = { ...event, width };
+			local = { ...event, x: event.x - headerShift, width };
 		} else {
-			const row = event.y - 3 - headerRows;
-			if (row < 0 || event.y >= event.height - 1 || event.x < 1) return undefined;
+			// The frame rows and the images that follow the body are no stock rows of a card row.
+			const row = event.y - 2 - headerRows - frame;
+			if (row < 0 || row >= bodyRows || event.x < frame) return undefined;
 			y = this.openStart + headerRows + row;
-			local = { ...event, x: event.x - 1, width };
+			local = { ...event, x: event.x - frame, width };
 		}
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
 			return super.handleMouse({ ...local, y, height: this.stockHeight });

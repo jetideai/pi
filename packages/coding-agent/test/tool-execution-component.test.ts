@@ -188,6 +188,81 @@ describe("ToolExecutionComponent parity", () => {
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 1, height: 2 }));
 	});
 
+	test("maps the body rows of an open call without a card frame when the row has no room for it", () => {
+		const mouse = vi.fn(() => ({ handled: true as const }));
+		const component = new ToolExecutionComponent(
+			"process",
+			"mouse-narrow",
+			{},
+			{
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => ({ begin: "", body: "", end: "" })],
+			},
+			{ renderCall: () => ({ render: () => ["P", "a"], invalidate() {}, handleMouse: mouse }) },
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [], isError: false });
+		const rows = component.render(3);
+		const event = (y: number): TuiMouseEvent => ({
+			type: "move",
+			button: "none",
+			x: 1,
+			y,
+			screenX: 1,
+			screenY: y,
+			width: 3,
+			height: rows.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 0,
+		});
+
+		// Without a frame the body row follows the header directly, at the full width of the row.
+		expect(rows.some((row) => row.includes("╭"))).toBe(false);
+		expect(component.handleMouse(event(3))).toMatchObject({ handled: true });
+		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 1, width: 1 }));
+	});
+
+	test("maps no frame row of an open card to a stock row", () => {
+		const mouse = vi.fn(() => ({ handled: true as const }));
+		const component = new ToolExecutionComponent(
+			"process",
+			"mouse-frame",
+			{},
+			{
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => ({ begin: "", body: "", end: "" })],
+			},
+			{ renderCall: () => ({ render: () => ["Process: list", "arguments"], invalidate() {}, handleMouse: mouse }) },
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [], isError: false });
+		const rows = component.render(40);
+		const event = (y: number): TuiMouseEvent => ({
+			type: "move",
+			button: "none",
+			x: 2,
+			y,
+			screenX: 2,
+			screenY: y,
+			width: 40,
+			height: rows.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 0,
+		});
+		const bottom = rows.findIndex((row) => row.includes("╰"));
+
+		expect([component.handleMouse(event(3)), component.handleMouse(event(bottom))]).toEqual([undefined, undefined]);
+		expect(mouse).not.toHaveBeenCalled();
+	});
+
 	test("stacks custom call and result renderers like the old implementation", () => {
 		const toolDefinition: ToolDefinition = {
 			...createBaseToolDefinition(),

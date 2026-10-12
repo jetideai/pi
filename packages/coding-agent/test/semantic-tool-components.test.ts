@@ -306,9 +306,15 @@ function openCardParts(rows: string[], failed: boolean): { header: string; card:
 	};
 }
 
-/** The parts that the card of an open call shows of its unpadded stock rows at the inner width of the card. */
-function stockCardParts(stock: string[]): { header: string; card: string[] } {
-	return { header: withoutOutcomeCue(stripAnsi(stock[1] ?? "").trim()), card: stock.slice(2) };
+/**
+ * The parts that the card of an open call shows of its unpadded stock rows at the [inner] width of the card: a short row
+ * is padded to that width, so the right border of the card stays straight.
+ */
+function stockCardParts(stock: string[], inner: number): { header: string; card: string[] } {
+	return {
+		header: withoutOutcomeCue(stripAnsi(stock[1] ?? "").trim()),
+		card: stock.slice(2).map((row) => `${row}${" ".repeat(Math.max(0, inner - visibleWidth(row)))}`),
+	};
 }
 
 /** A header text without its outcome cue: the full or compact cue depends on the width of the row, not on the call. */
@@ -1415,7 +1421,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 				}
 				// The card rows hold the stock rows at the inner width of the card, byte for byte, between the frame cells.
 				expect(openCardParts(rows, folded.outcome === "failed")).toEqual(
-					stockCardParts(unpadded(stock.render(width - 2))),
+					stockCardParts(unpadded(stock.render(width - 2)), width - 2),
 				);
 			}
 		},
@@ -1470,7 +1476,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 							const rows = folded.render(width);
 							expect(rows[1]).toContain(summaryBegin);
 							expect(openCardParts(openStyledRows(rows), false)).toEqual(
-								stockCardParts(unpadded(stock.render(width - 2))),
+								stockCardParts(unpadded(stock.render(width - 2)), width - 2),
 							);
 						}
 						const text = foldedRows(folded.render(80), () => false).join("\n");
@@ -1543,7 +1549,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 				folded.setExpanded(expanded);
 				points.length = 0;
 				const rows = folded.render(80);
-				expect(openCardParts(openStyledRows(rows), false)).toEqual(stockCardParts(unpadded(stock.render(78))));
+				expect(openCardParts(openStyledRows(rows), false)).toEqual(stockCardParts(unpadded(stock.render(78)), 78));
 				const boundaries = boundaryRows(rows);
 				expect(boundaries.counts).toEqual([1, 1, 1]);
 				expect([boundaries.begin, boundaries.body, boundaries.end]).toEqual([[1], [2], [rows.length - 1]]);
@@ -1912,7 +1918,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 						canonical: open.split(header.label).length - 1,
 					}).toEqual({ summaryHiddenWhenOpen: true, canonical: 1 });
 					expect(openCardParts(openStyledRows(rows), outcome.cue === "Failed")).toEqual(
-						stockCardParts(unpadded(stock.render(header.width - 2))),
+						stockCardParts(unpadded(stock.render(header.width - 2)), header.width - 2),
 					);
 				});
 			}
@@ -1928,7 +1934,9 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 					expect(foldedRows(rows, () => true).join("")).toContain("Failed");
 					const stockRows = stock.render(width - 2);
 					expect(stockRows.join("")).not.toContain(summaryBegin);
-					expect(openCardParts(openStyledRows(rows), true)).toEqual(stockCardParts(unpadded(stockRows)));
+					expect(openCardParts(openStyledRows(rows), true)).toEqual(
+						stockCardParts(unpadded(stockRows), width - 2),
+					);
 				}
 			});
 		}
@@ -2403,6 +2411,14 @@ describe("Tool Call and Tool Group outcomes", () => {
 describe("theme faint text", () => {
 	beforeAll(() => initTheme("dark"));
 
+	it.each([
+		["a compound normal-intensity reset", "a\x1b[22;39mb", "\x1b[2ma\x1b[22;39m\x1b[2mb\x1b[22m"],
+		["a compound full reset", "a\x1b[0;31mb", "\x1b[2ma\x1b[0;31m\x1b[2mb\x1b[22m"],
+		["an RGB color whose values contain 0 and 22", "a\x1b[38;2;0;22;0mb", "\x1b[2ma\x1b[38;2;0;22;0mb\x1b[22m"],
+	])("keeps text faint after %s", (_name, text, faint) => {
+		expect(theme.faint(text)).toBe(faint);
+	});
+
 	it("keeps text faint after a reset and after the end of bold text inside it", () => {
 		expect(theme.faint("a\x1b[1mb\x1b[22mc\x1b[0md")).toBe("\x1b[2ma\x1b[1mb\x1b[22m\x1b[2mc\x1b[0m\x1b[2md\x1b[22m");
 	});
@@ -2816,5 +2832,56 @@ describe("Tool Call summary path", () => {
 			fileName: true,
 			ellipsis: true,
 		});
+	});
+});
+
+describe("open card and quiet header details", () => {
+	beforeAll(() => initTheme("dark"));
+
+	it("keeps the ellipsis of a truncated group label faint", () => {
+		const group = new ToolGroupComponent({
+			groupId: "tool-group:call-a",
+			closed: true,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [() => () => controls],
+		});
+		group.addTool(unknownCall("call-a"), { toolName: "read", toolCallId: "call-a" });
+		group.addTool(unknownCall("call-b"), { toolName: "bash", toolCallId: "call-b" });
+		const header = group.render(20)[1]!.replace(/\x1b\]777;[^\x07]*\x07/g, "");
+		const beforeEllipsis = header.slice(0, header.indexOf("…"));
+
+		expect({
+			ellipsis: stripAnsi(header).includes("…"),
+			faint: beforeEllipsis.lastIndexOf("\x1b[2m") > beforeEllipsis.lastIndexOf("\x1b[0m"),
+		}).toEqual({ ellipsis: true, faint: true });
+	});
+
+	it("draws the header of an open call faint at rest, without a background", () => {
+		const rows = foldedBuiltIn(
+			"bash",
+			withBuiltInRenderers("bash", undefined)!,
+			{ command: "printf out" },
+			"out",
+		).render(60);
+		const header = rows[2]!.replace(/\x1b\]777;[^\x07]*\x07/g, "");
+
+		expect({
+			text: stripAnsi(header).trim(),
+			faint: header.includes("\x1b[2m"),
+			background: header.includes("\x1b[48;"),
+		}).toEqual({ text: "$ printf out", faint: true, background: false });
+	});
+
+	it("pads the short rows of a self-rendered call to the inner width of its card", () => {
+		const rows = savedCall({
+			renderShell: "self",
+			renderCall: () => ({ render: () => ["title", "body"], invalidate() {} }),
+			renderResult: () => new Text("", 0, 0),
+		}).render(40);
+		const card = rows.filter((row) => /^\s*[│╭╰]/.test(stripAnsi(row)));
+
+		expect(card.length).toBeGreaterThan(2);
+		expect(card.every((row) => visibleWidth(row) === 40)).toBe(true);
 	});
 });

@@ -166,7 +166,9 @@ export class ToolGroupComponent extends Container {
 		const free = failed === 0 || fullWidth - LABEL_AFFORDANCE_COLUMNS - visibleWidth(pad) - visibleWidth(cue) >= 1;
 		const width = Math.max(0, fullWidth - (free ? LABEL_AFFORDANCE_COLUMNS : 0));
 		// The label is faint at rest: the host draws the header that the pointer is on at full contrast.
-		if (failed === 0) return truncateToWidth(`${pad}${theme.faint(label)}`, width, "…");
+		// Faint after truncation: the reset before an ellipsis would end faint inside the label.
+		if (failed === 0)
+			return `${pad}${theme.faint(truncateToWidth(label, Math.max(0, width - visibleWidth(pad)), "…"))}`;
 		const room = width - visibleWidth(pad) - visibleWidth(cue);
 		if (room < 1) return truncateToWidth(theme.fg("error", `${failed} failed`), width, "…");
 		return `${pad}${theme.faint(truncateToWidth(label, room, "…"))}${theme.fg("error", cue)}`;
