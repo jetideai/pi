@@ -241,10 +241,15 @@ function boundaryRows(rendered: string[]) {
 	};
 }
 
-/** The visible text of each rendered row that has a source point control. */
+/** The inner text of a card row of an open call, or the visible text of another row. */
+function cardInner(visible: string): string {
+	return /^\s*│(.*)│\s*$/.exec(visible)?.[1] ?? visible;
+}
+
+/** The visible text of each rendered row that has a source point control, inside the card of an open call. */
 function pointRows(rows: string[]) {
 	return rows.flatMap((row) =>
-		row.includes(EDIT_POINT) ? [stripAnsi(row.replaceAll(EDIT_POINT, "")).trimEnd()] : [],
+		row.includes(EDIT_POINT) ? [cardInner(stripAnsi(row.replaceAll(EDIT_POINT, ""))).trimEnd()] : [],
 	);
 }
 
@@ -275,6 +280,40 @@ function unpadded(rows: string[]): string[] {
 	if (first < 0) return rows.slice(0, 1);
 	const last = rows.length - 1 - [...rows].reverse().findIndex((row) => !blankRow(row));
 	return [rows[0]!, ...rows.slice(first, last + 1)];
+}
+
+/**
+ * The visible rows that an open call shows after its summary: its header without a background, then its other stock rows
+ * in a card frame. [stock] are the unpadded visible stock rows at the inner width of the card, separator row first.
+ */
+function openCard(stock: string[], width: number): string[] {
+	const [, header, ...body] = stock;
+	const inner = width - 2;
+	const frame = "─".repeat(inner);
+	const card = body.length === 0 ? [] : [`╭${frame}╮`, ...body.map((row) => `│${row.padEnd(inner)}│`), `╰${frame}╯`];
+	return [header!.startsWith(" ") ? header! : ` ${header}`, ...card];
+}
+
+/**
+ * The parts of the open rows of a call (summary and controls removed): the visible header text, and the raw rows inside
+ * its card frame. A frame cell is the border color of the outcome of the call.
+ */
+function openCardParts(rows: string[], failed: boolean): { header: string; card: string[] } {
+	const edge = theme.fg(failed ? "error" : "border", "│");
+	return {
+		header: withoutOutcomeCue(stripAnsi(rows[1] ?? "").trim()),
+		card: rows.slice(3, -1).map((row) => row.slice(edge.length, -edge.length)),
+	};
+}
+
+/** The parts that the card of an open call shows of its unpadded stock rows at the inner width of the card. */
+function stockCardParts(stock: string[]): { header: string; card: string[] } {
+	return { header: withoutOutcomeCue(stripAnsi(stock[1] ?? "").trim()), card: stock.slice(2) };
+}
+
+/** A header text without its outcome cue: the full or compact cue depends on the width of the row, not on the call. */
+function withoutOutcomeCue(header: string): string {
+	return header.replace(/ (?:Failed|Cancelled|✗|⊘)$/, "");
 }
 
 describe("semantic Tool Call and Tool Group presentation", () => {
@@ -656,14 +695,15 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(group.render(80)).toEqual(expected);
 	});
 
-	it("maps the group separator and header mouse rows to no child and the member rows to each child", () => {
+	it("maps the group separator, header and indent to no child and each indented member row to its child", () => {
 		const makeChild = (rows: string[]) => ({
 			render: vi.fn(() => rows),
 			invalidate: vi.fn(),
 			handleMouse: vi.fn(() => ({ handled: true as const })),
 		});
-		const first = makeChild(["first-0", "first-1"]);
-		const second = makeChild(["second-0"]);
+		// Each call renders its separator row first; the group shows its calls without it.
+		const first = makeChild(["", "first-0", "first-1"]);
+		const second = makeChild(["", "second-0"]);
 		const group = new ToolGroupComponent({
 			groupId: "tool-group:assistant-a:tool-a",
 			ownerEntryId: "assistant-a",
@@ -675,10 +715,10 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		group.addTool(first as unknown as ToolExecutionComponent, { toolName: "read", toolCallId: "tool-a" });
 		group.addTool(second as unknown as ToolExecutionComponent, { toolName: "bash", toolCallId: "tool-b" });
 		const rows = group.render(80);
-		const event = (y: number): TuiMouseEvent => ({
+		const event = (y: number, x = 2): TuiMouseEvent => ({
 			type: "click",
 			button: "left",
-			x: 0,
+			x,
 			y,
 			screenX: 0,
 			screenY: y,
@@ -690,12 +730,14 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 			clickCount: 1,
 		});
 
+		expect(rows.slice(2).map((row) => stripAnsi(row))).toEqual(["  first-0", "  first-1", "  second-0"]);
 		expect(group.handleMouse(event(0))).toBeUndefined();
 		expect(group.handleMouse(event(1))).toBeUndefined();
+		expect(group.handleMouse(event(2, 1))).toBeUndefined();
 		expect(group.handleMouse(event(2))).toMatchObject({ handled: true });
-		expect(first.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 2 }));
+		expect(first.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ x: 0, y: 1, width: 78, height: 3 }));
 		expect(group.handleMouse(event(4))).toMatchObject({ handled: true });
-		expect(second.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 1 }));
+		expect(second.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ x: 0, y: 1, width: 78, height: 2 }));
 	});
 
 	it("marks call source points inside a long bash command and keeps its result points", () => {
@@ -813,7 +855,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rows.visible[rows.begin[0]!]).toBe(" process");
 		expect(rows.body).toEqual([rows.begin[0]! + 1]);
 		expect(rows.end).toEqual([rows.visible.length - 1]);
-		expect(rows.visible).toEqual(["", " process", ...unpadded(plainRows(undefined, 80)).slice(1)]);
+		expect(rows.visible).toEqual(["", " process", ...openCard(unpadded(plainRows(undefined, 78)), 80)]);
 	});
 
 	it("gives a call without a call renderer its title as the header and its result as the body", () => {
@@ -823,7 +865,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		expect(rows.counts).toEqual([1, 1, 1]);
 		expect(rows.visible[rows.begin[0]!]).toBe(" process");
 		expect(rows.visible[rows.body[0]!]).toBe(" process");
-		expect(rows.visible).toEqual(["", " process", ...unpadded(plainRows(renderers, 80)).slice(1)]);
+		expect(rows.visible).toEqual(["", " process", ...openCard(unpadded(plainRows(renderers, 78)), 80)]);
 	});
 
 	it("keeps the whole-call range of a call whose renderer throws on its fallback title", () => {
@@ -849,8 +891,8 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 
 		expect(rows.counts).toEqual([1, 1, 1]);
 		expect(rows.visible[rows.begin[0]!]).toBe(" custom call");
-		expect(rows.visible[rows.body[0]!]).toBe("custom call");
-		expect(rows.visible).toEqual(["", " custom call", ...plainRows(renderers, 80).slice(1)]);
+		expect(rows.visible[rows.body[0]!]).toBe(" custom call");
+		expect(rows.visible).toEqual(["", " custom call", ...openCard(plainRows(renderers, 78), 80)]);
 	});
 
 	it("gives a completed self-rendered call with an empty result only its collapsed row", () => {
@@ -929,9 +971,10 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		);
 		const rows = boundaryRows(component.render(80));
 
-		expect(rows.visible).toEqual(["", " process", " custom result"]);
+		// A call without call rows opens to its card, without a header row.
+		expect(rows.visible).toEqual(["", " process", ...openCard(["", "", " custom result"], 80).slice(1)]);
 		expect(rows.counts).toEqual([1, 1, 1]);
-		expect([rows.begin, rows.end]).toEqual([[1], [2]]);
+		expect([rows.begin, rows.end]).toEqual([[1], [4]]);
 		expect(contexts.at(-1)?.bodyRow).toBe(2);
 		// The title has no stock row, so it stays as the header of the open Fold.
 		expect(contexts.at(-1)?.summaryRow).toBeUndefined();
@@ -997,7 +1040,7 @@ describe("semantic Tool Call and Tool Group presentation", () => {
 		for (const rows of [ready, settled]) {
 			expect(rows.counts).toEqual([1, 1, 1]);
 			expect(rows.visible[rows.begin[0]!]).toBe(" stock header");
-			expect(rows.visible[rows.body[0]!]).toBe("stock header");
+			expect(rows.visible[rows.body[0]!]).toBe(" stock header");
 		}
 	});
 
@@ -1167,7 +1210,10 @@ function foldedRows(rows: string[], collapsed: (depth: number) => boolean): stri
 	});
 	return rows.flatMap((row, index) => {
 		if (hidden.has(index)) return [];
-		const text = stripAnsi(row.replaceAll(EDIT_POINT, "")).trim();
+		// The card frame of an open call is no content: its border rows drop, and a card row shows its inner text.
+		const visible = stripAnsi(row.replaceAll(EDIT_POINT, ""));
+		if (/^\s*[╭╰]─*[╮╯]\s*$/.test(visible)) return [];
+		const text = cardInner(visible).trim();
 		return [/\x1b\[48;/.test(row) && text === "" ? "<shaded blank>" : text];
 	});
 }
@@ -1273,7 +1319,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(boundaryRows(rows).body).toEqual(hasResult ? [2] : []);
 	});
 
-	it("opens a long built-in header to the exact stock wrapping without padding", () => {
+	it("opens a long built-in header to the exact stock wrapping at the inner width of its card", () => {
 		const path = `src/${"segment/".repeat(12)}Long.kt`;
 		const stock = new ToolExecutionComponent(
 			"edit",
@@ -1288,7 +1334,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		const folded = foldedBuiltIn("edit", editRenderersFor(), { path, edits: [{ oldText: "a", newText: "b" }] }, "ok");
 		for (const width of [40, 200, 40]) {
 			expect(foldedRows(folded.render(width), () => false)).toEqual(
-				unpadded(foldedRows(stock.render(width), () => false)),
+				unpadded(foldedRows(stock.render(width - 2), () => false)),
 			);
 		}
 	});
@@ -1309,62 +1355,71 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		["short Edit diff", { path: "src/a.ts", edits: [{ oldText: "old", newText: "new" }] }, [], false, false],
 		["multi-hunk Edit diff", { path: "src/a.ts", edits: [{ oldText: "old", newText: "new" }] }, [], false, false],
 		["pi-processes container shape", {}, [{ type: "text", text: "process output" }], false, false],
-	] as const)("opens %s to byte-identical stock rows without padding", (name, args, content, isError, cancelled) => {
-		const isEdit = "path" in args;
-		const renderers: ToolRenderers = isEdit
-			? editRenderersFor()
-			: {
-					renderCall: () => {
-						if (name !== "pi-processes container shape")
-							return new Text("Process: list arguments that wrap at a narrow width", 0, 0);
-						const container = new Container();
-						container.addChild(new Text(theme.fg("toolTitle", "Process: start render checks"), 0, 0));
-						container.addChild(new Text(theme.fg("muted", "npm run check"), 0, 0));
-						return container;
-					},
-				};
-		const create = (folding: boolean) => {
-			const component = new ToolExecutionComponent(
-				isEdit ? "edit" : "process",
-				"styled-parity",
-				args,
-				folding
-					? { producerSessionId: "session-a", renderScopeId: "scope-a", semanticSelectorsV3: [summaryAware] }
-					: {},
-				renderers,
-				{ requestRender() {} } as unknown as TUI,
-				process.cwd(),
-			);
-			component.setExpanded(true);
-			if (cancelled) component.markCancelled("Operation aborted");
-			else
-				component.updateResult({
-					content: [...content],
-					isError,
-					details:
-						name === "short Edit diff"
-							? { diff: "-1 old\n+1 new" }
-							: name === "multi-hunk Edit diff"
-								? {
-										diff: " 1 context\n-2 old\n+2 new\n 3 context\n...\n 20 context\n-21 other\n+21 changed",
-									}
-								: undefined,
-				});
-			return component;
-		};
-		const stock = create(false);
-		const folded = create(true);
-		for (const width of [24, 40, 80, 200]) {
-			expect(foldedRows(folded.render(width), () => true)).toHaveLength(2);
-			const rendered = folded.render(width);
-			const rows = rendered
-				.filter((row) => !row.includes(summaryBegin))
-				.map((row) => Object.values(controls).reduce((text, control) => text.replaceAll(control, ""), row));
-			// A call whose stock rows are only its header has no body to open.
-			if (rendered.some((row) => row.includes(controls.body))) expect(rows).toEqual(unpadded(stock.render(width)));
-			else expect(unpadded(stock.render(width))).toHaveLength(2);
-		}
-	});
+	] as const)(
+		"opens %s to its header and byte-identical stock rows in its card",
+		(name, args, content, isError, cancelled) => {
+			const isEdit = "path" in args;
+			const renderers: ToolRenderers = isEdit
+				? editRenderersFor()
+				: {
+						renderCall: () => {
+							if (name !== "pi-processes container shape")
+								return new Text("Process: list arguments that wrap at a narrow width", 0, 0);
+							const container = new Container();
+							container.addChild(new Text(theme.fg("toolTitle", "Process: start render checks"), 0, 0));
+							container.addChild(new Text(theme.fg("muted", "npm run check"), 0, 0));
+							return container;
+						},
+					};
+			const create = (folding: boolean) => {
+				const component = new ToolExecutionComponent(
+					isEdit ? "edit" : "process",
+					"styled-parity",
+					args,
+					folding
+						? { producerSessionId: "session-a", renderScopeId: "scope-a", semanticSelectorsV3: [summaryAware] }
+						: {},
+					renderers,
+					{ requestRender() {} } as unknown as TUI,
+					process.cwd(),
+				);
+				component.setExpanded(true);
+				if (cancelled) component.markCancelled("Operation aborted");
+				else
+					component.updateResult({
+						content: [...content],
+						isError,
+						details:
+							name === "short Edit diff"
+								? { diff: "-1 old\n+1 new" }
+								: name === "multi-hunk Edit diff"
+									? {
+											diff: " 1 context\n-2 old\n+2 new\n 3 context\n...\n 20 context\n-21 other\n+21 changed",
+										}
+									: undefined,
+					});
+				return component;
+			};
+			const stock = create(false);
+			const folded = create(true);
+			for (const width of [24, 40, 80, 200]) {
+				expect(foldedRows(folded.render(width), () => true)).toHaveLength(2);
+				const rendered = folded.render(width);
+				const rows = rendered
+					.filter((row) => !row.includes(summaryBegin))
+					.map((row) => Object.values(controls).reduce((text, control) => text.replaceAll(control, ""), row));
+				// A call whose stock rows are only its header has no body to open.
+				if (!rendered.some((row) => row.includes(controls.body))) {
+					expect(unpadded(stock.render(width))).toHaveLength(2);
+					continue;
+				}
+				// The card rows hold the stock rows at the inner width of the card, byte for byte, between the frame cells.
+				expect(openCardParts(rows, folded.outcome === "failed")).toEqual(
+					stockCardParts(unpadded(stock.render(width - 2))),
+				);
+			}
+		},
+	);
 
 	describe("stock output expansion inside an open Tool Call", () => {
 		const openStyledRows = (rows: string[]) =>
@@ -1414,7 +1469,9 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 						for (const width of [24, 80, 160]) {
 							const rows = folded.render(width);
 							expect(rows[1]).toContain(summaryBegin);
-							expect(openStyledRows(rows)).toEqual(unpadded(stock.render(width)));
+							expect(openCardParts(openStyledRows(rows), false)).toEqual(
+								stockCardParts(unpadded(stock.render(width - 2))),
+							);
 						}
 						const text = foldedRows(folded.render(80), () => false).join("\n");
 						expect(text.includes("output-20")).toBe(expanded);
@@ -1486,7 +1543,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 				folded.setExpanded(expanded);
 				points.length = 0;
 				const rows = folded.render(80);
-				expect(openStyledRows(rows)).toEqual(unpadded(stock.render(80)));
+				expect(openCardParts(openStyledRows(rows), false)).toEqual(stockCardParts(unpadded(stock.render(78))));
 				const boundaries = boundaryRows(rows);
 				expect(boundaries.counts).toEqual([1, 1, 1]);
 				expect([boundaries.begin, boundaries.body, boundaries.end]).toEqual([[1], [2], [rows.length - 1]]);
@@ -1740,10 +1797,11 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		component.updateResult({ content: [{ type: "text", text: "no" }], isError: true });
 		const rows = component.render(width);
 
-		expect([
-			foldedRows(rows, () => true),
-			foldedRows(rows, () => false).filter((row) => row.startsWith("edit")),
-		]).toEqual([["", expect.stringMatching(/…/)], [`edit ${path}`]]);
+		// The open header wraps at the inner width of the card, like the rest of the call, so no text repeats or is lost.
+		expect([foldedRows(rows, () => true), foldedRows(rows, () => false).join(" ")]).toEqual([
+			["", expect.stringMatching(/…/)],
+			expect.stringMatching(new RegExp(`^ edit Failed ${path}`)),
+		]);
 	});
 
 	describe("keeps summary outcome cues without changing stock outcome rows", () => {
@@ -1837,7 +1895,10 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 					outcome.settle(component);
 					outcome.settle(stock);
 					const rows = component.render(header.width);
-					const open = foldedRows(rows, () => false).join("");
+					// The cue ends the header row, so it can sit between the two rows of a wrapped label.
+					const open = foldedRows(rows, () => false)
+						.map(withoutOutcomeCue)
+						.join("");
 					const stockRows = stock.render(header.width);
 					expect(stockRows.join("")).not.toContain(summaryBegin);
 					expect(foldedRows(rows, () => true)[1]?.endsWith(outcome.cue)).toBe(true);
@@ -1850,7 +1911,9 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 						summaryHiddenWhenOpen: !open.includes("…"),
 						canonical: open.split(header.label).length - 1,
 					}).toEqual({ summaryHiddenWhenOpen: true, canonical: 1 });
-					expect(openStyledRows(rows)).toEqual(unpadded(stockRows));
+					expect(openCardParts(openStyledRows(rows), outcome.cue === "Failed")).toEqual(
+						stockCardParts(unpadded(stock.render(header.width - 2))),
+					);
 				});
 			}
 		}
@@ -1863,9 +1926,9 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 				for (const width of [120, header.width, 120]) {
 					const rows = component.render(width);
 					expect(foldedRows(rows, () => true).join("")).toContain("Failed");
-					const stockRows = stock.render(width);
+					const stockRows = stock.render(width - 2);
 					expect(stockRows.join("")).not.toContain(summaryBegin);
-					expect(openStyledRows(rows)).toEqual(unpadded(stockRows));
+					expect(openCardParts(openStyledRows(rows), true)).toEqual(stockCardParts(unpadded(stockRows)));
 				}
 			});
 		}
@@ -2067,7 +2130,7 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		expect(boundaryRows(group.render(80)).counts).toEqual([3, 3, 3]);
 	});
 
-	it("shows an expanded Tool Group with collapsed children as its header and one separator before each child", () => {
+	it("shows an expanded Tool Group with collapsed children as its header and its children right below it", () => {
 		const group = new ToolGroupComponent({
 			groupId: "tool-group:assistant-a:call-a",
 			ownerEntryId: "assistant-a",
@@ -2080,14 +2143,10 @@ describe("collapsed Tool Call and Tool Group layout", () => {
 		group.addTool(unknownCall("call-a"), { toolName: "process", toolCallId: "call-a" });
 		group.addTool(unknownCall("call-b"), { toolName: "process", toolCallId: "call-b" });
 
-		expect(foldedRows(group.render(80), (depth) => depth > 0)).toEqual([
-			"",
-			"$ Used tools",
-			"",
-			"process",
-			"",
-			"process",
-		]);
+		// The calls of an open group follow its header without separator rows, indented under it.
+		const rows = group.render(80);
+		expect(foldedRows(rows, (depth) => depth > 0)).toEqual(["", "$ Used tools", "process", "process"]);
+		expect(boundaryRows(rows).visible[2]).toBe("   process");
 	});
 });
 
@@ -2130,10 +2189,10 @@ describe("Tool Call and Tool Group outcomes", () => {
 
 					expect({
 						cue: stripAnsi(header).includes("Failed") && header.includes(errorText),
-						// Every collapsed call has the frame of a stock shell with its error background.
-						background: header.includes(background("toolErrorBg")),
+						// A collapsed call has no background; only its cue has the error color.
+						background: header.includes("\x1b[48;"),
 						outcome: component.outcome,
-					}).toEqual({ cue: true, background: true, outcome: "failed" });
+					}).toEqual({ cue: true, background: false, outcome: "failed" });
 				},
 			);
 
@@ -2176,9 +2235,15 @@ describe("Tool Call and Tool Group outcomes", () => {
 					const rows = component.render(width);
 					const firstLine = stripAnsi(callText.split("\n")[0]!);
 
+					// The open header and the card wrap at the inner width of the card: the line can continue in the card.
+					const openText = rows
+						.map((row) => stripAnsi(row.replace(/\x1b\]777;[^\x07]*\x07/g, "")))
+						.filter((row) => !/^\s*[╭╰]─*[╮╯]\s*$/.test(row))
+						.map((row) => withoutOutcomeCue(cardInner(row).trim()))
+						.join("");
 					expect({
 						cue: stripAnsi(headerRow(rows)).includes("Failed"),
-						kept: stripAnsi(rows.join("\n")).includes(firstLine),
+						kept: openText.includes(firstLine),
 						widths: rows.every((row) => visibleWidth(row) <= width),
 					}).toEqual({ cue: true, kept: true, widths: true });
 				},
@@ -2294,8 +2359,53 @@ describe("Tool Call and Tool Group outcomes", () => {
 					false,
 				]);
 			});
+
+			it("shows a faint group label and its failed count in the error color without faint", () => {
+				const group = new ToolGroupComponent({
+					groupId: "tool-group:call-a",
+					closed: true,
+					producerSessionId: "session-a",
+					renderScopeId: "scope-a",
+					semanticSelectorsV3: [() => () => controls],
+				});
+				const failed = call("call-a");
+				failed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true });
+				const done = call("call-b");
+				done.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
+				group.addTool(failed, { toolName: "bash", toolCallId: "call-a" });
+				group.addTool(done, { toolName: "bash", toolCallId: "call-b" });
+				const header = headerRow(group.render(80));
+				const cue = header.slice(header.lastIndexOf("\x1b[22m"));
+
+				expect({
+					label: header.includes(theme.faint("$ Ran commands")),
+					cue: cue.includes(theme.fg("error", " · 1 failed")) && !cue.includes("\x1b[2m"),
+				}).toEqual({ label: true, cue: true });
+			});
+
+			it("frames the card of an open failed call in the error color and a successful call in the border color", () => {
+				const failed = call("call-a");
+				failed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true });
+				const done = call("call-b");
+				done.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
+				const corner = (component: ToolExecutionComponent) =>
+					component.render(40).find((row) => stripAnsi(row).startsWith("╭"));
+
+				expect([corner(failed)?.startsWith(theme.fg("error", "╭").slice(0, -5)), corner(done)]).toEqual([
+					true,
+					expect.stringContaining(theme.fg("border", "╭").slice(0, -5)),
+				]);
+			});
 		});
 	}
+});
+
+describe("theme faint text", () => {
+	beforeAll(() => initTheme("dark"));
+
+	it("keeps text faint after a reset and after the end of bold text inside it", () => {
+		expect(theme.faint("a\x1b[1mb\x1b[22mc\x1b[0md")).toBe("\x1b[2ma\x1b[1mb\x1b[22m\x1b[2mc\x1b[0m\x1b[2md\x1b[22m");
+	});
 });
 
 describe("Tool Call fold frame", () => {
@@ -2303,8 +2413,6 @@ describe("Tool Call fold frame", () => {
 
 	/** The rendered row without the boundary and source point controls. */
 	const withoutControls = (row: string) => row.replace(/\x1b\]777;[^\x07]*\x07/g, "");
-	/** The opening sequence of a theme background, from the current theme. */
-	const background = (token: "toolSuccessBg" | "toolErrorBg") => theme.bg(token, "\0").split("\0")[0]!;
 	const builtIn = (name: string) => withBuiltInRenderers(name, undefined)!;
 	const editArgs = { path: "a.ts", edits: [{ oldText: "a", newText: "b" }] };
 	const failedEdit = () => {
@@ -2314,13 +2422,13 @@ describe("Tool Call fold frame", () => {
 	};
 
 	it.each([
-		["read", () => foldedBuiltIn("read", builtIn("read"), { path: "a.md" }, "line 1\nline 2"), "toolSuccessBg"],
-		["bash", () => foldedBuiltIn("bash", builtIn("bash"), { command: "ls" }, "a.md"), "toolSuccessBg"],
-		["write", () => foldedBuiltIn("write", builtIn("write"), { path: "a.md", content: "note" }, ""), "toolSuccessBg"],
-		["edit", () => foldedBuiltIn("edit", editRenderersFor(), editArgs, "ok"), "toolSuccessBg"],
-		["find", () => foldedBuiltIn("find", builtIn("find"), { pattern: "*.ts" }, "a.ts"), "toolSuccessBg"],
-		["grep", () => foldedBuiltIn("grep", builtIn("grep"), { pattern: "x" }, "a.ts:1: x"), "toolSuccessBg"],
-		["ls", () => foldedBuiltIn("ls", builtIn("ls"), { path: "." }, "a.md"), "toolSuccessBg"],
+		["read", () => foldedBuiltIn("read", builtIn("read"), { path: "a.md" }, "line 1\nline 2")],
+		["bash", () => foldedBuiltIn("bash", builtIn("bash"), { command: "ls" }, "a.md")],
+		["write", () => foldedBuiltIn("write", builtIn("write"), { path: "a.md", content: "note" }, "")],
+		["edit", () => foldedBuiltIn("edit", editRenderersFor(), editArgs, "ok")],
+		["find", () => foldedBuiltIn("find", builtIn("find"), { pattern: "*.ts" }, "a.ts")],
+		["grep", () => foldedBuiltIn("grep", builtIn("grep"), { pattern: "x" }, "a.ts:1: x")],
+		["ls", () => foldedBuiltIn("ls", builtIn("ls"), { path: "." }, "a.md")],
 		[
 			"a self Text call",
 			() =>
@@ -2329,7 +2437,6 @@ describe("Tool Call fold frame", () => {
 					renderCall: () => new Text("custom call\ncustom arguments", 0, 0),
 					renderResult: () => new Text("custom result", 0, 0),
 				}),
-			"toolSuccessBg",
 		],
 		[
 			"a quiet self call",
@@ -2339,7 +2446,6 @@ describe("Tool Call fold frame", () => {
 					renderCall: () => ({ render: () => [], invalidate() {} }),
 					renderResult: () => new Text("hub reply", 0, 0),
 				}),
-			"toolSuccessBg",
 		],
 		[
 			"an opaque self call",
@@ -2349,20 +2455,20 @@ describe("Tool Call fold frame", () => {
 					renderCall: () => ({ render: () => ["opaque call row"], invalidate() {} }),
 					renderResult: () => new Text("opaque result", 0, 0),
 				}),
-			"toolSuccessBg",
 		],
-		["a tool without a definition", () => savedCall(undefined), "toolSuccessBg"],
-		["a failed edit", failedEdit, "toolErrorBg"],
+		["a tool without a definition", () => savedCall(undefined)],
+		["a failed edit", failedEdit],
 	] as const)(
-		"frames the collapsed row of %s with a one-cell indent and the full-width tool background",
-		(_name, create, token) => {
+		"shows the collapsed row of %s with a one-cell indent, a faint title and no background",
+		(_name, create) => {
 			const row = withoutControls(create().render(60)[1]!);
 
 			expect({
-				background: row.startsWith(background(token)),
-				width: visibleWidth(row),
+				background: row.includes("\x1b[48;"),
+				faint: row.includes("\x1b[2m"),
+				fits: visibleWidth(row) <= 60,
 				text: stripAnsi(row),
-			}).toEqual({ background: true, width: 60, text: expect.stringMatching(/^ \S/) });
+			}).toEqual({ background: false, faint: true, fits: true, text: expect.stringMatching(/^ \S/) });
 		},
 	);
 });
@@ -2433,7 +2539,7 @@ describe("stable Tool Call fold", () => {
 		});
 	});
 
-	it("separates the body of an open call from the next call by exactly one row", () => {
+	it("separates an open call in a group from the next call by the bottom row of its card", () => {
 		const group = new ToolGroupComponent({
 			groupId: "tool-group:assistant-a:call-a",
 			ownerEntryId: "assistant-a",
@@ -2445,10 +2551,14 @@ describe("stable Tool Call fold", () => {
 		});
 		group.addTool(unknownCall("call-a"), { toolName: "process", toolCallId: "call-a" });
 		group.addTool(unknownCall("call-b"), { toolName: "process", toolCallId: "call-b" });
-		const open = foldedRows(group.render(80), () => false);
-		const second = open.lastIndexOf("process");
+		const visible = boundaryRows(group.render(80)).visible;
+		const second = visible.findIndex((row) => row.startsWith("  ╰")) + 1;
 
-		expect(open.slice(second - 2, second + 1)).toEqual(["call-a output", "", "process"]);
+		expect(visible.slice(second - 2, second + 1)).toEqual([
+			`  │ call-a output${" ".repeat(62)}│`,
+			`  ╰${"─".repeat(76)}╯`,
+			"   process",
+		]);
 	});
 
 	it.each([
@@ -2510,8 +2620,9 @@ describe("Tool Call fold label", () => {
 			row: label.row,
 			start: label.start,
 			ellipsis: visible.slice(label.start, label.end).endsWith("…"),
-			free: visible.slice(label.end, label.end + 3),
-		}).toEqual({ row: 1, start: 1, ellipsis: true, free: "   " });
+			// The row has no background, so the free cells after the label are cells without text.
+			free: visible.slice(label.end).trim() === "" && label.end <= 60 - 3,
+		}).toEqual({ row: 1, start: 1, ellipsis: true, free: true });
 	});
 
 	it("gives the header of an open summarized call the second label at the body row", () => {
@@ -2599,42 +2710,21 @@ describe("Tool Call fold label", () => {
 describe("Tool Call summary text", () => {
 	beforeAll(() => initTheme("dark"));
 
-	/** The visible cells of [row] that SGR codes leave without a background color. */
-	function cellsWithoutBackground(row: string): number {
-		let background = false;
-		let bare = 0;
-		for (const part of row.replace(/\x1b\]777;[^\x07]*\x07/g, "").split(/(\x1b\[[0-9;]*m)/)) {
-			const sgr = /^\x1b\[([0-9;]*)m$/.exec(part);
-			if (!sgr) {
-				if (!background) bare += visibleWidth(part);
-				continue;
-			}
-			const codes = sgr[1] === "" ? ["0"] : sgr[1]!.split(";");
-			for (let index = 0; index < codes.length; index++) {
-				const code = codes[index];
-				if (code === "0" || code === "49") background = false;
-				else if (code === "48") {
-					background = true;
-					index += codes[index + 1] === "5" ? 2 : 4;
-				} else if (code === "38") index += codes[index + 1] === "5" ? 2 : 4;
-			}
-		}
-		return bare;
-	}
-
-	it("keeps the tool background across a collapsed row whose text ends with an ellipsis", () => {
+	it("keeps the title faint across a collapsed row whose text ends with an ellipsis", () => {
 		const component = foldedBuiltIn(
 			"bash",
 			withBuiltInRenderers("bash", undefined)!,
 			{ command: `printf '${"TC_FOLD_OUTPUT ".repeat(8)}'` },
 			"out",
 		);
-		const row = component.render(40)[1]!;
+		const row = component.render(40)[1]!.replace(/\x1b\]777;[^\x07]*\x07/g, "");
+		// A reset or a normal-intensity control inside the title, such as the one before the ellipsis, starts faint again.
+		const title = row.slice(0, row.lastIndexOf("\x1b[22m"));
 
-		expect({ ellipsis: stripAnsi(row).trimEnd().endsWith("…"), bare: cellsWithoutBackground(row) }).toEqual({
-			ellipsis: true,
-			bare: 0,
-		});
+		expect({
+			ellipsis: stripAnsi(row).trimEnd().endsWith("…"),
+			unfaint: /\x1b\[(?:0|22)?m(?!\x1b\[2m)/.test(title),
+		}).toEqual({ ellipsis: true, unfaint: false });
 	});
 
 	it("summarizes an opaque self call row that pads its text to the call width without an ellipsis", () => {

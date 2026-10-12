@@ -1,4 +1,11 @@
-import { Container, type TuiMouseEvent, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Container,
+	dispatchMouseEvent,
+	type TuiMouseEvent,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type {
 	MessageRenderBoundaryDecoratorV2,
 	MessageRenderBoundarySelectorV3,
@@ -37,6 +44,8 @@ export class ToolGroupComponent extends Container {
 	private readonly members: ToolGroupMemberV1[] = [];
 	private readonly memberComponents: ToolExecutionComponent[] = [];
 	private readonly sourcePointRevisions?: SourcePointRevisions;
+	/** The member rows of the last framed render, each without its separator row, for the mouse. */
+	private memberLayout?: { width: number; members: Array<{ component: Component; height: number }> };
 
 	constructor(options: ToolGroupOptions) {
 		super();
@@ -113,10 +122,11 @@ export class ToolGroupComponent extends Container {
 						this.closed,
 					) ?? 1)
 				: 1;
-		const body = super.render(width);
-		if (!this.framed) return body;
+		if (!this.framed) return super.render(width);
 		const header = this.headerRow(width);
-		// The group owns one separator row before its header; each member renders its own before its call.
+		// The group owns one separator row before its header. Its calls follow without separator rows, indented under the
+		// header, so the group reads as one block.
+		const body = this.renderMembers(width);
 		return decorateMessageRenderV2(["", header, ...body], 2, width, "tool-group", this.outputPad, {
 			beginRow: 1,
 			entryId: this.groupId,
@@ -124,6 +134,23 @@ export class ToolGroupComponent extends Container {
 			decorators: this.semanticDecoratorsV2,
 			sourcePointRevision: revision,
 		});
+	}
+
+	/** The rows of the members at the member indent, each without its leading separator row. */
+	private renderMembers(width: number): string[] {
+		const memberWidth = Math.max(0, width - MEMBER_INDENT);
+		const indent = " ".repeat(Math.min(MEMBER_INDENT, width));
+		const rows: string[] = [];
+		const members: Array<{ component: Component; height: number }> = [];
+		for (const component of this.memberComponents) {
+			const rendered = component.render(memberWidth);
+			// A member renders one separator row before its call; a hidden member renders no rows.
+			const own = rendered.length > 0 ? rendered.slice(1) : rendered;
+			members.push({ component, height: own.length });
+			for (const row of own) rows.push(row.length > 0 ? `${indent}${row}` : row);
+		}
+		this.memberLayout = { width, members };
+		return rows;
 	}
 
 	/**
@@ -138,18 +165,38 @@ export class ToolGroupComponent extends Container {
 		const cue = ` · ${failed} failed`;
 		const free = failed === 0 || fullWidth - LABEL_AFFORDANCE_COLUMNS - visibleWidth(pad) - visibleWidth(cue) >= 1;
 		const width = Math.max(0, fullWidth - (free ? LABEL_AFFORDANCE_COLUMNS : 0));
-		if (failed === 0) return truncateToWidth(`${pad}${theme.fg("muted", label)}`, width, "…");
+		// The label is faint at rest: the host draws the header that the pointer is on at full contrast.
+		if (failed === 0) return truncateToWidth(`${pad}${theme.faint(label)}`, width, "…");
 		const room = width - visibleWidth(pad) - visibleWidth(cue);
 		if (room < 1) return truncateToWidth(theme.fg("error", `${failed} failed`), width, "…");
-		return `${pad}${theme.fg("muted", truncateToWidth(label, room, "…"))}${theme.fg("error", cue)}`;
+		return `${pad}${theme.faint(truncateToWidth(label, room, "…"))}${theme.fg("error", cue)}`;
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
 		if (!this.framed) return super.handleMouse(event);
-		if (event.y < 2) return undefined;
-		return super.handleMouse({ ...event, y: event.y - 2, height: event.height - 2 });
+		if (event.y < 2 || event.x < MEMBER_INDENT) return undefined;
+		if (this.memberLayout?.width !== event.width) this.renderMembers(event.width);
+		const layout = this.memberLayout?.members ?? [];
+		let y = event.y - 2;
+		for (const { component, height } of layout) {
+			if (y < height) {
+				// The member sees its own rows: its separator row first, then its call, without the indent.
+				return dispatchMouseEvent(component, {
+					...event,
+					x: event.x - MEMBER_INDENT,
+					y: y + 1,
+					width: Math.max(0, event.width - MEMBER_INDENT),
+					height: height + 1,
+				});
+			}
+			y -= height;
+		}
+		return undefined;
 	}
 }
+
+/** The columns between the group header and the rows of its calls. */
+const MEMBER_INDENT = 2;
 
 const TOOL_GROUP_ACTIONS: Readonly<Record<string, string>> = {
 	bash: "Ran commands",

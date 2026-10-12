@@ -1655,7 +1655,8 @@ describe("live Tool Group runs across responses", () => {
 		"forms a group with its first call %s and draws later partial output without a full redraw",
 		async (_name, lines, formation) => {
 			const run = liveAgentRun(true);
-			const terminal = new VirtualTerminal(80, 8);
+			// The screen holds the whole open first call, its header and its card, while it is on the screen.
+			const terminal = new VirtualTerminal(80, 14);
 			const tui = new TuiMainScreen(terminal);
 			Object.assign(run.mode, { ui: tui });
 			tui.addChild(run.chatContainer);

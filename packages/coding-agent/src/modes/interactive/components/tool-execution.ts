@@ -553,7 +553,38 @@ export class ToolExecutionComponent extends Container {
 		this.callSummary = true;
 		this.openHeader = open.header;
 		this.openBody = openBody;
-		return this.openBody ? ["", summary.row, ...open.rows] : ["", summary.row];
+		return this.openBody ? ["", summary.row, ...this.openCardRows(width, open.header)] : ["", summary.row];
+	}
+
+	/**
+	 * The rows that an open Fold shows below the summary: the call header without a background, then the rest of the
+	 * call and its result in a card. The card has a border and the tool background of the call: an error border and
+	 * background for a failed call. The stock rows render at the inner width of the card.
+	 */
+	private openCardRows(width: number, header: boolean): string[] {
+		// A stock shell needs two columns, so a row that has no room for the frame and two inner columns has no card.
+		const framed = width >= CARD_FRAME_COLUMNS + 2;
+		const inner = framed ? width - CARD_FRAME_COLUMNS : width;
+		const stock = this.renderStockRows(inner);
+		const layout = this.ownedLayout(inner);
+		if (!layout) return [];
+		const open = this.openFoldRows(stock, layout);
+		this.stockHeight = stock.length;
+		const body = header ? open.content.slice(1) : open.content;
+		// The header is the first stock row at the same width as the card, so the call text wraps once.
+		const headerRow = header ? [this.withoutShell(open.content[0] ?? "")] : [];
+		const edge = (text: string) => theme.fg(this.outcome === "failed" ? "error" : "border", text);
+		const fill = Math.max(0, width - 2);
+		// Images follow the card: a frame column next to a terminal image would move it.
+		const card =
+			body.length === 0 || !framed
+				? body
+				: [
+						edge(`╭${"─".repeat(fill)}╮`),
+						...body.map((row) => `${edge("│")}${row}${edge("│")}`),
+						edge(`╰${"─".repeat(fill)}╯`),
+					];
+		return [...headerRow, ...card, ...open.images];
 	}
 
 	/**
@@ -564,14 +595,16 @@ export class ToolExecutionComponent extends Container {
 	private openFoldRows(
 		stock: string[],
 		layout: { contentStart: number; contentRows: number; callRows: number; firstImageRow?: number },
-	): { rows: string[]; header: boolean } {
+	): { rows: string[]; header: boolean; content: string[]; images: string[] } {
 		const header = layout.callRows > 0 || !this.hasRendererDefinition();
 		this.openStart = header ? this.headerRowIndex() : layout.contentStart;
 		const contentEnd = layout.contentStart + layout.contentRows;
 		let last = contentEnd - 1;
 		while (last >= this.openStart && stripTerminalSequences(stock[last] ?? "").trim() === "") last--;
 		const imageStart = layout.firstImageRow === undefined ? stock.length : this.imageRowsStart(stock, layout);
-		return { rows: [...stock.slice(this.openStart, last + 1), ...stock.slice(imageStart)], header };
+		const content = stock.slice(this.openStart, last + 1);
+		const images = stock.slice(imageStart);
+		return { rows: [...content, ...images], header, content, images };
 	}
 
 	/** The first stock row after the shell: the spacer of the first image. */
@@ -615,12 +648,9 @@ export class ToolExecutionComponent extends Container {
 		const first = this.firstCallRow(width) ?? this.formatToolTitle();
 		const cut = visibleWidth(first) > textRoom;
 		const text = truncateToWidth(keepPathFileName(first, textRoom) ?? first, textRoom, "…");
-		// A full reset in the text, such as the one before an ellipsis, also ends the background; open it again.
-		const background = this.shellBgFn?.("\0").split("\0")[0] ?? "";
-		const row = `${text}${cue}`.replaceAll("\x1b[0m", `\x1b[0m${background}`);
-		const shell = new Box(1, 0, this.shellBgFn);
-		shell.addChild({ render: () => [row], invalidate: () => {} });
-		return { row: shell.render(width)[0]!, cut };
+		// No background: the title is faint at rest, and the host draws the row that the pointer is on at full contrast.
+		// The outcome cue keeps its color.
+		return { row: ` ${theme.faint(text)}${cue}`, cut };
 	}
 
 	/** The first row of the call part without its shell, or undefined when the call has no rows or no renderer. */
@@ -665,14 +695,48 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-		// The summary row and the trimmed open Fold rows map back to the stock rows.
-		if (this.callSummary && event.y === 1) return undefined;
-		const y = this.callSummary && event.y > 1 ? event.y - 2 + this.openStart : event.y;
+		if (this.callSummary) return this.handleOpenCardMouse(event);
+		const y = event.y;
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
 			return super.handleMouse({ ...event, y, height: this.stockHeight });
 		}
 		if (y < 1 || y > this.selfRenderHeight) return undefined;
 		return this.selfRenderContainer.handleMouse({ ...event, y: y - 1, height: this.selfRenderHeight });
+	}
+
+	/** A stock row without the tool background of the shell and without its trailing blank cells, after one free cell. */
+	private withoutShell(row: string): string {
+		const background = this.shellBgFn?.("\0").split("\0")[0];
+		const plain = (background ? row.replaceAll(background, "") : row)
+			.replaceAll("\x1b[49m", "")
+			.replace(/(?: |\x1b\[[0-9;]*m)+$/, (tail) => tail.replaceAll(" ", ""));
+		return plain.startsWith(" ") ? plain : ` ${plain}`;
+	}
+
+	/**
+	 * The summary, the header and the card frame are no stock rows. A card row maps to its stock row at the inner width of
+	 * the card.
+	 */
+	private handleOpenCardMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		const headerRows = this.openHeader ? 1 : 0;
+		const width = Math.max(0, event.width - CARD_FRAME_COLUMNS);
+		let local: TuiMouseEvent;
+		let y: number;
+		if (this.openHeader && event.y === 2) {
+			// The header is the first stock row.
+			y = this.openStart;
+			local = { ...event, width };
+		} else {
+			const row = event.y - 3 - headerRows;
+			if (row < 0 || event.y >= event.height - 1 || event.x < 1) return undefined;
+			y = this.openStart + headerRows + row;
+			local = { ...event, x: event.x - 1, width };
+		}
+		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
+			return super.handleMouse({ ...local, y, height: this.stockHeight });
+		}
+		if (y < 1 || y > this.selfRenderHeight) return undefined;
+		return this.selfRenderContainer.handleMouse({ ...local, y: y - 1, height: this.selfRenderHeight });
 	}
 
 	/**
@@ -962,3 +1026,6 @@ export function keepPathFileName(line: string, room: number): string | undefined
 	}
 	return result;
 }
+
+/** The two border columns of the card of an open call. */
+const CARD_FRAME_COLUMNS = 2;

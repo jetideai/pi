@@ -178,11 +178,13 @@ describe("ToolExecutionComponent parity", () => {
 			ctrl: false,
 			clickCount: 0,
 		});
-		// The open Fold shows the call header on the summary row and has no shell padding.
+		// The open Fold shows the call header below the hidden summary, then the other call rows in a card.
 		expect(component.handleMouse(event(1))).toBeUndefined();
 		expect(component.handleMouse(event(2))).toMatchObject({ handled: true, target: { originY: 2 } });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 0, height: 2 }));
-		expect(component.handleMouse(event(3))).toMatchObject({ handled: true, target: { originY: 2 } });
+		// The top border of the card is no stock row.
+		expect(component.handleMouse(event(3))).toBeUndefined();
+		expect(component.handleMouse(event(4))).toMatchObject({ handled: true, target: { originY: 3 } });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 1, height: 2 }));
 	});
 

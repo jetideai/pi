@@ -348,6 +348,15 @@ export class Theme {
 		return chalk.inverse(text);
 	}
 
+	/**
+	 * De-emphasized text in its own colors (SGR faint). A reset or a normal-intensity control inside [text], such as the
+	 * end of bold text, also ends faint; faint starts again after it.
+	 */
+	faint(text: string): string {
+		const restored = text.replace(/\x1b\[(?:0|22)?m/g, (control) => `${control}\x1b[2m`);
+		return `\x1b[2m${restored}\x1b[22m`;
+	}
+
 	strikethrough(text: string): string {
 		return chalk.strikethrough(text);
 	}
