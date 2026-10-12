@@ -139,9 +139,10 @@ export class ToolExecutionComponent extends Container {
 	private openHeader = false;
 	/**
 	 * The rows of the last open card after the summary: the header row and the columns that it adds before the stock
-	 * text, whether a frame surrounds the body, and the number of body rows. Images follow the body.
+	 * text, whether a frame surrounds the body, the blank stock rows before the body, and the number of body rows. Images
+	 * follow the body.
 	 */
-	private openCard = { header: false, headerShift: 0, framed: false, bodyRows: 0 };
+	private openCard = { header: false, headerShift: 0, framed: false, bodyStart: 0, bodyRows: 0 };
 	private decoratedSourceTexts: Text[] = [];
 
 	constructor(
@@ -562,7 +563,8 @@ export class ToolExecutionComponent extends Container {
 	/**
 	 * The rows that an open Fold shows below the summary: the call header without a background, then the rest of the
 	 * call and its result in a card. The card has a border and the tool background of the call: an error border and
-	 * background for a failed call. The stock rows render at the inner width of the card.
+	 * background for a failed call. The stock rows render at the inner width of the card. The card starts at the first
+	 * row that has text, and the background of the rows fills the card up to the border.
 	 */
 	private openCardRows(width: number, header: boolean): string[] {
 		// A stock shell needs two columns, so a row that has no room for the frame and two inner columns has no card.
@@ -573,7 +575,12 @@ export class ToolExecutionComponent extends Container {
 		if (!layout) return [];
 		const open = this.openFoldRows(stock, layout);
 		this.stockHeight = stock.length;
-		const body = header ? open.content.slice(1) : open.content;
+		const rows = header ? open.content.slice(1) : open.content;
+		const bodyStart = Math.max(
+			0,
+			rows.findIndex((row) => stripTerminalSequences(row).trim() !== ""),
+		);
+		const body = rows.slice(bodyStart);
 		// The header is the first stock row at the same width as the card, so the call text wraps once. Its title is faint
 		// at rest, like the summary; the host draws the header that the pointer is on at full contrast.
 		// The header starts after one free cell: the cell of the padded shell, or one added before a self-rendered header.
@@ -586,13 +593,14 @@ export class ToolExecutionComponent extends Container {
 		const fill = Math.max(0, width - 2);
 		const cell = (row: string) => `${row}${" ".repeat(Math.max(0, inner - visibleWidth(row)))}`;
 		const framedBody = framed && body.length > 0;
-		this.openCard = { header, headerShift, framed: framedBody, bodyRows: body.length };
-		// Images follow the card: a frame column next to a terminal image would move it.
+		this.openCard = { header, headerShift, framed: framedBody, bodyStart, bodyRows: body.length };
+		// Each border glyph is one eighth of its cell on the side of the body, so the background of the body rows touches
+		// the border. The corners stay empty. Images follow the card: a frame column next to a terminal image would move it.
 		const card = framedBody
 			? [
-					edge(`╭${"─".repeat(fill)}╮`),
-					...body.map((row) => `${edge("│")}${cell(row)}${edge("│")}`),
-					edge(`╰${"─".repeat(fill)}╯`),
+					` ${edge(CARD_EDGE.top.repeat(fill))} `,
+					...body.map((row) => `${edge(CARD_EDGE.left)}${cell(row)}${edge(CARD_EDGE.right)}`),
+					` ${edge(CARD_EDGE.bottom.repeat(fill))} `,
 				]
 			: body;
 		return [...headerRow, ...card, ...open.images];
@@ -727,7 +735,7 @@ export class ToolExecutionComponent extends Container {
 	 * the card.
 	 */
 	private handleOpenCardMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-		const { header, headerShift, framed, bodyRows } = this.openCard;
+		const { header, headerShift, framed, bodyStart, bodyRows } = this.openCard;
 		const headerRows = header ? 1 : 0;
 		const frame = framed ? 1 : 0;
 		const width = Math.max(0, event.width - (framed ? CARD_FRAME_COLUMNS : 0));
@@ -742,7 +750,7 @@ export class ToolExecutionComponent extends Container {
 			// The frame rows and the images that follow the body are no stock rows of a card row.
 			const row = event.y - 2 - headerRows - frame;
 			if (row < 0 || row >= bodyRows || event.x < frame || event.x >= event.width - frame) return undefined;
-			y = this.openStart + headerRows + row;
+			y = this.openStart + headerRows + bodyStart + row;
 			local = { ...event, x: event.x - frame, width };
 		}
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") {
@@ -1040,6 +1048,9 @@ export function keepPathFileName(line: string, room: number): string | undefined
 
 /** The two border columns of the card of an open call. */
 const CARD_FRAME_COLUMNS = 2;
+
+/** The border glyphs of the card: each one is the eighth of its cell that touches the body. */
+const CARD_EDGE = { top: "▁", left: "▕", right: "▏", bottom: "▔" } as const;
 
 /** The zero-column controls before the first cell of a row, and that cell when it is a space. */
 const LEADING_CELL = /^((?:\x1b\[[0-9;:]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))*) /;

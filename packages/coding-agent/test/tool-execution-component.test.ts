@@ -221,7 +221,7 @@ describe("ToolExecutionComponent parity", () => {
 		});
 
 		// Without a frame the body row follows the header directly, at the full width of the row.
-		expect(rows.some((row) => row.includes("╭"))).toBe(false);
+		expect(rows.some((row) => row.includes("▁"))).toBe(false);
 		expect(component.handleMouse(event(3))).toMatchObject({ handled: true });
 		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 1, width: 1 }));
 	});
@@ -257,7 +257,7 @@ describe("ToolExecutionComponent parity", () => {
 			ctrl: false,
 			clickCount: 0,
 		});
-		const bottom = rows.findIndex((row) => row.includes("╰"));
+		const bottom = rows.findIndex((row) => row.includes("▔"));
 		const rightBorder = { ...event(4), x: 39, screenX: 39 };
 
 		expect([
@@ -266,6 +266,50 @@ describe("ToolExecutionComponent parity", () => {
 			component.handleMouse(rightBorder),
 		]).toEqual([undefined, undefined, undefined]);
 		expect(mouse).not.toHaveBeenCalled();
+	});
+
+	test("starts the card of an open call at its first row that has text and maps that row to its stock row", () => {
+		const mouse = vi.fn(() => ({ handled: true as const }));
+		const component = new ToolExecutionComponent(
+			"process",
+			"mouse-blank-first",
+			{},
+			{
+				producerSessionId: "session-a",
+				renderScopeId: "scope-a",
+				semanticSelectorsV3: [() => () => ({ begin: "", body: "", end: "" })],
+			},
+			{
+				renderCall: () => ({
+					render: () => ["Process: list", "", "arguments"],
+					invalidate() {},
+					handleMouse: mouse,
+				}),
+			},
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [], isError: false });
+		const rows = component.render(40);
+		const event = (y: number): TuiMouseEvent => ({
+			type: "move",
+			button: "none",
+			x: 2,
+			y,
+			screenX: 2,
+			screenY: y,
+			width: 40,
+			height: rows.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 0,
+		});
+
+		// The header is row 2 and the top border row 3: the first card row is the call row after the blank row.
+		expect(stripAnsi(rows[4]!).slice(1, -1).trim()).toBe("arguments");
+		expect(component.handleMouse(event(4))).toMatchObject({ handled: true });
+		expect(mouse).toHaveBeenLastCalledWith(expect.objectContaining({ y: 2, height: 3 }));
 	});
 
 	test("stacks custom call and result renderers like the old implementation", () => {
