@@ -860,6 +860,136 @@ export default function (pi) {
 	});
 });
 
+describe("InteractiveMode custom message with an initiator", () => {
+	beforeAll(() => initTheme("dark"));
+
+	const origin = { namespace: "agent-hub", agentId: "agent-a", registrationGeneration: 5, displayName: "Lead agent" };
+	const customMessage = (initiator?: typeof origin): CustomMessage => ({
+		role: "custom",
+		customType: "hub",
+		content: "Check the build",
+		display: true,
+		timestamp: 1,
+		...(initiator ? { initiator } : {}),
+	});
+	const answer = assistant([{ type: "text", text: "Answer" }], "stop");
+
+	function withRenderer(harness: ReturnType<typeof modeHarness>) {
+		Object.assign(harness.mode, {
+			session: {
+				...harness.mode.session,
+				extensionRunner: { getMessageRenderer: () => () => new Text("hub box", 0, 0) },
+			},
+		});
+		return harness;
+	}
+
+	async function liveTurn(sessionManager: SessionManager, message: CustomMessage, customId: string, answerId: string) {
+		const harness = withRenderer(modeHarness(sessionManager));
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof harness.mode,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		await handleEvent.call(harness.mode, { type: "message_start", message, entryId: customId });
+		await handleEvent.call(harness.mode, {
+			type: "message_start",
+			message: assistant([], "pending"),
+			entryId: answerId,
+		});
+		await handleEvent.call(harness.mode, { type: "message_end", message: answer, entryId: answerId });
+		await handleEvent.call(harness.mode, { type: "agent_end", messages: [], willRetry: false });
+		sessionManager.appendSemanticTurnSettlements(null);
+		await handleEvent.call(harness.mode, { type: "agent_settled" });
+		return harness;
+	}
+
+	function restore(sessionManager: SessionManager) {
+		const harness = withRenderer(modeHarness(sessionManager));
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof harness.mode,
+			entries: ReturnType<SessionManager["getBranch"]>,
+		) => void;
+		renderSessionEntries.call(harness.mode, sessionManager.buildTranscriptEntries());
+		return harness;
+	}
+
+	it("projects the live custom message as the initiating entry of a completed turn", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const customId = sessionManager.appendCustomMessageEntry(
+			"hub",
+			"Check the build",
+			true,
+			undefined,
+			undefined,
+			origin,
+		);
+		const answerId = sessionManager.appendMessage(answer);
+
+		const { projections } = await liveTurn(sessionManager, customMessage(origin), customId, answerId);
+
+		expect(projections.at(-1)?.members[0]).toEqual({
+			entryId: customId,
+			blockId: customId,
+			role: "user",
+			preview: "Check the build",
+			completedTurn: {
+				assistantEntryId: answerId,
+				userPreview: "Check the build",
+				assistantPreview: "Answer",
+				initiator: origin,
+			},
+		});
+	});
+
+	it("restores the same initiating custom entry as the live path", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const customId = sessionManager.appendCustomMessageEntry(
+			"hub",
+			"Check the build",
+			true,
+			undefined,
+			undefined,
+			origin,
+		);
+		const answerId = sessionManager.appendMessage(answer);
+		const live = await liveTurn(sessionManager, customMessage(origin), customId, answerId);
+
+		const restored = restore(sessionManager);
+
+		expect(restored.projections.at(-1)?.members).toEqual(live.projections.at(-1)?.members);
+	});
+
+	it("gives the initiating custom entry user boundaries around the extension rendering", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const customId = sessionManager.appendCustomMessageEntry(
+			"hub",
+			"Check the build",
+			true,
+			undefined,
+			undefined,
+			origin,
+		);
+		sessionManager.appendMessage(answer);
+
+		const { chatContainer, messageDecorator } = restore(sessionManager);
+
+		expect(stripAnsi(chatContainer.render(80).join("\n"))).toContain("hub box");
+		expect(messageDecorator).toHaveBeenCalledWith(expect.objectContaining({ entryId: customId, role: "user" }));
+	});
+
+	it("keeps a custom message without an initiator out of the turn projection", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const customId = sessionManager.appendCustomMessageEntry("hub", "Check the build", true);
+		const answerId = sessionManager.appendMessage(answer);
+
+		const { projections } = await liveTurn(sessionManager, customMessage(), customId, answerId);
+
+		expect(
+			projections.flatMap((projection) => projection.members.filter((member) => member.role === "user")),
+		).toEqual([]);
+	});
+});
+
 const foldControls = { begin: "\x1b]777;begin\x07", body: "\x1b]777;body\x07", end: "\x1b]777;end\x07" };
 
 function savedToolResult(toolCallId: string, toolName: string, text: string): ToolResultMessage {

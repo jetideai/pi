@@ -116,7 +116,7 @@ import {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
+import { createCompactionSummaryMessage, createCustomMessage, isTurnInitiatingMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -455,7 +455,7 @@ function sessionEntryRenderItems(entries: readonly SessionEntry[]): RenderSessio
 		if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {
 			return [...messages, { type: "compaction_cost", kind: entry.type, usage: entry.usage }];
 		}
-		if (entry.type === "message") {
+		if (entry.type === "message" || (entry.type === "custom_message" && messages.some(isTurnInitiatingMessage))) {
 			return messages.map((message) => ({ message, entryId: entry.id }));
 		}
 		return messages;
@@ -2743,6 +2743,7 @@ export class InteractiveMode {
 				readMessage: (entryId) => {
 					if (finalized?.entryId === entryId) return finalized.message;
 					const entry = this.sessionManager.getEntry(entryId);
+					if (entry?.type === "custom_message") return sessionEntryToContextMessages(entry)[0];
 					return entry?.type === "message" ? entry.message : undefined;
 				},
 			});
@@ -4298,15 +4299,7 @@ export class InteractiveMode {
 				break;
 
 			case "message_start":
-				if (event.message.role === "custom") {
-					if (this.liveRun) {
-						this.setLiveRunItem(event.message.display ? { type: "boundary" } : { type: "transparent" });
-					}
-					if (this.liveRunMounted()) {
-						this.addMessageToChat(event.message);
-						this.ui.requestRender();
-					}
-				} else if (event.message.role === "user") {
+				if (isTurnInitiatingMessage(event.message)) {
 					const member = { entryId: event.entryId, blockId: event.entryId, role: "user" as const };
 					const finalized = { entryId: event.entryId, message: event.message };
 					if (this.liveRun) {
@@ -4319,6 +4312,14 @@ export class InteractiveMode {
 					if (this.liveRunMounted()) this.addMessageToChat(event.message, { entryId: event.entryId });
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
+				} else if (event.message.role === "custom") {
+					if (this.liveRun) {
+						this.setLiveRunItem(event.message.display ? { type: "boundary" } : { type: "transparent" });
+					}
+					if (this.liveRunMounted()) {
+						this.addMessageToChat(event.message);
+						this.ui.requestRender();
+					}
 				} else if (event.message.role === "toolResult") {
 					if (this.liveRun) this.setLiveRunItem({ type: "transparent" });
 				} else if (event.message.role === "assistant") {
@@ -4848,6 +4849,9 @@ export class InteractiveMode {
 						renderer,
 						this.getMarkdownThemeWithSettings(),
 						this.outputPad,
+						options?.entryId && isTurnInitiatingMessage(message)
+							? { entryId: options.entryId, decorators: this.getMessageRenderBoundaryDecoratorsV1() }
+							: undefined,
 					);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
@@ -4988,12 +4992,11 @@ export class InteractiveMode {
 			const members: MessageRenderProjectionMemberV1[] = [];
 			for (const [index, item] of items.entries()) {
 				if (!isRenderMessageItem(item)) continue;
-				const itemMembers: MessageRenderProjectionMemberV1[] =
-					item.message.role === "user"
-						? [{ entryId: item.entryId, blockId: item.entryId, role: "user" }]
-						: item.message.role === "assistant"
-							? compositions[index]!.members
-							: [];
+				const itemMembers: MessageRenderProjectionMemberV1[] = isTurnInitiatingMessage(item.message)
+					? [{ entryId: item.entryId, blockId: item.entryId, role: "user" }]
+					: item.message.role === "assistant"
+						? compositions[index]!.members
+						: [];
 				const loaded = !window || (index >= window.start && index < window.end);
 				const section = window ? sections?.[index] : undefined;
 				members.push(
@@ -5211,7 +5214,10 @@ export class InteractiveMode {
 				: this.selectTranscript(request);
 		const present = (end: { entryId: string; role: "user" | "assistant" }) =>
 			transcript.items.some(
-				(item) => isRenderMessageItem(item) && item.entryId === end.entryId && item.message.role === end.role,
+				(item) =>
+					isRenderMessageItem(item) &&
+					item.entryId === end.entryId &&
+					(isTurnInitiatingMessage(item.message) ? "user" : item.message.role) === end.role,
 			);
 		if (!present(request) || (through && !present(through)) || !transcript.window) return { status: "missing" };
 		this.chatContainer.clear();

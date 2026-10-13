@@ -4,6 +4,7 @@ import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@ear
 import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import { decorateMessageRender, type MessageRenderBoundaryOptionsV1 } from "./message-render-boundaries.ts";
 
 /**
  * Component that renders a custom message entry from extensions.
@@ -17,14 +18,17 @@ export class CustomMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private _expanded = false;
 	private outputPad: number;
+	private renderBoundaryOptions?: MessageRenderBoundaryOptionsV1;
 
 	constructor(
 		message: CustomMessage<unknown>,
 		customRenderer?: MessageRenderer,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
+		renderBoundaryOptions?: MessageRenderBoundaryOptionsV1,
 	) {
 		super();
+		this.renderBoundaryOptions = renderBoundaryOptions;
 		this.message = message;
 		this.customRenderer = customRenderer;
 		this.markdownTheme = markdownTheme;
@@ -50,6 +54,17 @@ export class CustomMessageComponent extends Container {
 			this.outputPad = outputPad;
 			this.rebuild();
 		}
+	}
+
+	override render(width: number): string[] {
+		return decorateMessageRender(
+			super.render(width),
+			width,
+			"user",
+			"final",
+			this.outputPad,
+			this.renderBoundaryOptions,
+		);
 	}
 
 	override invalidate(): void {

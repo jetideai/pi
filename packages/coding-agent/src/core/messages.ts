@@ -25,11 +25,13 @@ export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
 
 export const EXTERNAL_AGENT_ORIGIN_NAMESPACE_MAX_BYTES = 128;
 export const EXTERNAL_AGENT_ORIGIN_ID_MAX_BYTES = 1024;
+export const EXTERNAL_AGENT_ORIGIN_DISPLAY_NAME_MAX_CHARS = 128;
 
 export interface ExternalAgentOriginV1 {
 	readonly namespace: string;
 	readonly agentId: string;
 	readonly registrationGeneration: number;
+	readonly displayName?: string;
 }
 
 export function copyExternalAgentOriginV1(value: unknown): Readonly<ExternalAgentOriginV1> | undefined {
@@ -48,10 +50,20 @@ export function copyExternalAgentOriginV1(value: unknown): Readonly<ExternalAgen
 	) {
 		return undefined;
 	}
+	const displayName = typeof candidate.displayName === "string" ? candidate.displayName.trim() : undefined;
+	if (
+		candidate.displayName !== undefined &&
+		(displayName === undefined ||
+			displayName.length === 0 ||
+			[...displayName].length > EXTERNAL_AGENT_ORIGIN_DISPLAY_NAME_MAX_CHARS)
+	) {
+		return undefined;
+	}
 	return Object.freeze({
 		namespace: candidate.namespace,
 		agentId: candidate.agentId,
 		registrationGeneration: candidate.registrationGeneration,
+		...(displayName === undefined ? {} : { displayName }),
 	});
 }
 
@@ -98,6 +110,8 @@ export interface CustomMessage<T = unknown> {
 	display: boolean;
 	details?: T;
 	timestamp: number;
+	/** The external agent whose message starts a turn, exactly like the initiator of a user message. */
+	initiator?: Readonly<ExternalAgentOriginV1>;
 }
 
 export interface BranchSummaryMessage {
@@ -122,6 +136,10 @@ declare module "@earendil-works/pi-ai" {
 
 // Extend CustomAgentMessages via declaration merging
 declare module "@earendil-works/pi-agent-core" {
+	// biome-ignore lint/correctness/noUnusedVariables: a merged interface must repeat the type parameters of its base.
+	interface CustomMessage<T = unknown> {
+		initiator?: Readonly<ExternalAgentOriginV1>;
+	}
 	interface CustomAgentMessages {
 		bashExecution: BashExecutionMessage;
 		custom: CustomMessage;
@@ -180,7 +198,9 @@ export function createCustomMessage(
 	display: boolean,
 	details: unknown | undefined,
 	timestamp: string,
+	initiator?: unknown,
 ): CustomMessage {
+	const origin = copyExternalAgentOriginV1(initiator);
 	return {
 		role: "custom",
 		customType,
@@ -188,7 +208,17 @@ export function createCustomMessage(
 		display,
 		details,
 		timestamp: new Date(timestamp).getTime(),
+		...(origin ? { initiator: origin } : {}),
 	};
+}
+
+/** A user message or a custom message with an initiator: the entry that starts a semantic turn. */
+export function isTurnInitiatingMessage(
+	message: AgentMessage | undefined,
+): message is
+	| Extract<AgentMessage, { role: "user" }>
+	| (CustomMessage & { initiator: Readonly<ExternalAgentOriginV1> }) {
+	return message?.role === "user" || (message?.role === "custom" && message.initiator !== undefined);
 }
 
 /**

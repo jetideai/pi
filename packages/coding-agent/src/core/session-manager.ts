@@ -34,9 +34,11 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
+	copyExternalAgentOriginV1,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
+	type ExternalAgentOriginV1,
 	isTerminalAssistantMessage,
 } from "./messages.ts";
 export const CURRENT_SESSION_VERSION = 3;
@@ -169,6 +171,8 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	content: string | (TextContent | ImageContent)[];
 	details?: T;
 	display: boolean;
+	/** The external agent whose message starts a turn with this entry. */
+	initiator?: Readonly<ExternalAgentOriginV1>;
 }
 
 /** Content that an append-only context edit may replace without changing message metadata. */
@@ -440,6 +444,12 @@ function getSessionContextSettings(path: SessionEntry[]): Pick<SessionContext, "
 	return { thinkingLevel, model };
 }
 
+/** A user message entry, or a custom message entry with a valid initiator. */
+function isTurnInitiatingEntry(entry: SessionEntry): boolean {
+	if (entry.type === "message") return entry.message.role === "user";
+	return entry.type === "custom_message" && copyExternalAgentOriginV1(entry.initiator) !== undefined;
+}
+
 /**
  * Project one selected session entry into LLM/runtime messages.
  * Plain custom entries are display/state entries and do not participate in context.
@@ -460,7 +470,14 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	}
 	if (entry.type === "custom_message") {
 		return [
-			createCustomMessage(entry.customType, entry.content ?? [], entry.display, entry.details, entry.timestamp),
+			createCustomMessage(
+				entry.customType,
+				entry.content ?? [],
+				entry.display,
+				entry.details,
+				entry.timestamp,
+				entry.initiator,
+			),
 		];
 	}
 	if (entry.type === "branch_summary" && entry.summary) {
@@ -1382,12 +1399,11 @@ export class SessionManager {
 			if (userEntryId && assistantEntryId) candidates.push({ userEntryId, assistantEntryId });
 		};
 		for (const entry of branch.slice(runBaseIndex + 1)) {
-			if (entry.type !== "message") continue;
-			if (entry.message.role === "user") {
+			if (isTurnInitiatingEntry(entry)) {
 				collect();
 				userEntryId = entry.id;
 				assistantEntryId = undefined;
-			} else if (userEntryId && isTerminalAssistantMessage(entry.message)) {
+			} else if (userEntryId && entry.type === "message" && isTerminalAssistantMessage(entry.message)) {
 				assistantEntryId = entry.id;
 			}
 		}
@@ -1415,9 +1431,7 @@ export class SessionManager {
 		const positions = new Map(branch.map((entry, index) => [entry.id, index]));
 		const userCountBefore = [0];
 		for (const entry of branch) {
-			userCountBefore.push(
-				userCountBefore.at(-1)! + (entry.type === "message" && entry.message.role === "user" ? 1 : 0),
-			);
+			userCountBefore.push(userCountBefore.at(-1)! + (isTurnInitiatingEntry(entry) ? 1 : 0));
 		}
 		const settlements: Readonly<SemanticTurnSettlementV1>[] = [];
 		for (const entry of branch) {
@@ -1440,8 +1454,8 @@ export class SessionManager {
 			const user = branch[userPosition];
 			const assistant = branch[assistantPosition];
 			if (
-				user?.type !== "message" ||
-				user.message.role !== "user" ||
+				!user ||
+				!isTurnInitiatingEntry(user) ||
 				assistant?.type !== "message" ||
 				!isTerminalAssistantMessage(assistant.message) ||
 				userCountBefore[assistantPosition]! - userCountBefore[userPosition + 1]! > 0
@@ -1492,6 +1506,7 @@ export class SessionManager {
 	 * @param content Message content (string or TextContent/ImageContent array)
 	 * @param display Whether to show in TUI (true = styled display, false = hidden)
 	 * @param details Optional extension-specific metadata (not sent to LLM)
+	 * @param initiator Optional external agent whose message starts a turn with this entry (not sent to LLM)
 	 * @returns Entry id
 	 */
 	appendCustomMessageEntry<T = unknown>(
@@ -1500,6 +1515,7 @@ export class SessionManager {
 		display: boolean,
 		details?: T,
 		entryId?: string,
+		initiator?: Readonly<ExternalAgentOriginV1>,
 	): string {
 		const entry: CustomMessageEntry<T> = {
 			type: "custom_message",
@@ -1507,6 +1523,7 @@ export class SessionManager {
 			content,
 			display,
 			details,
+			...(initiator ? { initiator } : {}),
 			id: this._consumeReservedEntryId(entryId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),

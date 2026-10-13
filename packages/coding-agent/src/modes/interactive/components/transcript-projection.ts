@@ -10,6 +10,7 @@ import {
 	copyExternalAgentOriginV1,
 	type ExternalAgentOriginV1,
 	isTerminalAssistantMessage,
+	isTurnInitiatingMessage,
 } from "../../../core/messages.ts";
 import type { SemanticTurnSettlementV1 } from "../../../core/session-manager.ts";
 
@@ -123,7 +124,7 @@ function attachCompletedTurns(
 			const message = readMessage(member.entryId);
 			userPreview = userMessagePreview(message);
 			if (userPreview !== undefined) completedMembers[index] = { ...member, preview: userPreview };
-			initiator = message?.role === "user" ? copyExternalAgentOriginV1(message.initiator) : undefined;
+			initiator = isTurnInitiatingMessage(message) ? copyExternalAgentOriginV1(message.initiator) : undefined;
 			terminalAssistants = [];
 			continue;
 		}
@@ -137,7 +138,7 @@ function attachCompletedTurns(
 }
 
 function userMessagePreview(message: AgentMessage | undefined): string | undefined {
-	if (message?.role !== "user") return undefined;
+	if (!isTurnInitiatingMessage(message)) return undefined;
 	const text =
 		typeof message.content === "string"
 			? message.content

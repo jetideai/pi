@@ -979,6 +979,7 @@ export class AgentSession {
 					event.message.display,
 					event.message.details,
 					entryId,
+					event.message.initiator,
 				);
 			} else if (
 				event.message.role === "system" ||
@@ -2072,11 +2073,17 @@ export class AgentSession {
 	 * @param message Custom message with customType, content, display, details
 	 * @param options.triggerTurn If true and not streaming, triggers a new LLM turn
 	 * @param options.deliverAs Delivery mode: "steer", "followUp", or "nextTurn"
+	 * @param options.initiator External agent whose message starts a turn with this custom message
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			initiator?: ExternalAgentOriginV1;
+		},
 	): Promise<void> {
+		const initiator = options?.initiator === undefined ? undefined : requireExternalAgentOriginV1(options.initiator);
 		const appMessage = {
 			role: "custom" as const,
 			customType: message.customType,
@@ -2085,6 +2092,7 @@ export class AgentSession {
 			display: message.display,
 			details: message.details,
 			timestamp: Date.now(),
+			...(initiator ? { initiator } : {}),
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
@@ -2120,6 +2128,7 @@ export class AgentSession {
 				appMessage.display,
 				appMessage.details,
 				entryId,
+				appMessage.initiator,
 			);
 			this._refreshFinalizedContext();
 			this._emit({ type: "message_start", message: appMessage, entryId });

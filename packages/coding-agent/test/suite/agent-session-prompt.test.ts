@@ -404,6 +404,61 @@ describe("AgentSession prompt characterization", () => {
 		});
 	});
 
+	it("sendCustomMessage stores a defensive copy of an initiator on the exact custom entry that starts the turn", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const initiator: ExternalAgentOriginV1 = {
+			namespace: "agent-hub",
+			agentId: "agent-a",
+			registrationGeneration: 4,
+			displayName: "Lead agent",
+		};
+
+		harness.setResponses([fauxAssistantMessage("response")]);
+
+		const sent = harness.session.sendCustomMessage(
+			{ customType: "hub", content: "from extension", display: true },
+			{ triggerTurn: true, initiator },
+		);
+		(initiator as { agentId: string }).agentId = "mutated";
+		await sent;
+
+		const expected = {
+			namespace: "agent-hub",
+			agentId: "agent-a",
+			registrationGeneration: 4,
+			displayName: "Lead agent",
+		};
+		expect(harness.session.messages.map((message) => message.role)).toEqual(["system", "custom", "assistant"]);
+		expect(harness.session.messages[1]).toMatchObject({ role: "custom", initiator: expected });
+		const settlement = harness.sessionManager.getSemanticTurnSettlements();
+		expect(settlement).toHaveLength(1);
+		expect(harness.sessionManager.getEntry(settlement[0]!.userEntryId)).toMatchObject({
+			type: "custom_message",
+			customType: "hub",
+			initiator: expected,
+		});
+	});
+
+	it("sendCustomMessage rejects a malformed initiator before session mutation", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const entryCount = harness.sessionManager.getEntries().length;
+
+		await expect(
+			harness.session.sendCustomMessage(
+				{ customType: "hub", content: "rejected", display: true },
+				{
+					triggerTurn: true,
+					initiator: { namespace: "agent-hub", agentId: "agent-a", registrationGeneration: 0 },
+				},
+			),
+		).rejects.toThrow("Invalid external agent initiator");
+
+		expect(harness.session.messages).toEqual([]);
+		expect(harness.sessionManager.getEntries()).toHaveLength(entryCount);
+	});
+
 	it("does not backfill an unmarked legacy turn after a new prompt settles", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

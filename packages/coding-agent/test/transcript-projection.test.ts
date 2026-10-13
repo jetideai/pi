@@ -403,6 +403,48 @@ describe("completed transcript projection", () => {
 		});
 	});
 
+	it("completes a turn whose initiating entry is a custom message with an initiator", () => {
+		const origin = { ...externalInitiator, displayName: "Lead agent" };
+		const messages = new Map<string, AgentMessage>([
+			[
+				"custom-a",
+				{
+					role: "custom",
+					customType: "hub",
+					content: [{ type: "text", text: "Check the build" }],
+					display: true,
+					timestamp: 1,
+					initiator: origin,
+				},
+			],
+			["assistant-a", assistant],
+		]);
+		const projection = buildMessageRenderProjection({
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			members: [
+				{ entryId: "custom-a", blockId: "custom-a", role: "user" },
+				{ entryId: "assistant-a", blockId: "assistant-a", role: "assistant" },
+			],
+			mode: "replace",
+			settledTurns: [{ userEntryId: "custom-a", assistantEntryId: "assistant-a" }],
+			readMessage: (entryId) => messages.get(entryId),
+		});
+
+		expect(projection.members[0]).toEqual({
+			entryId: "custom-a",
+			blockId: "custom-a",
+			role: "user",
+			preview: "Check the build",
+			completedTurn: {
+				assistantEntryId: "assistant-a",
+				userPreview: "Check the build",
+				assistantPreview: "Answer",
+				initiator: origin,
+			},
+		});
+	});
+
 	it("isolates observers without changing publication order", () => {
 		const projection = buildMessageRenderProjection({
 			producerSessionId: "session-a",

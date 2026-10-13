@@ -445,7 +445,11 @@ export interface ExtensionCommandContext extends ExtensionContext {
 export interface ReplacedSessionContext extends ExtensionCommandContext {
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			initiator?: ExternalAgentOriginV1;
+		},
 	): Promise<void>;
 
 	sendUserMessage(
@@ -1637,7 +1641,8 @@ export type MessageRenderProjectionMemberV1 = (
 
 export interface MessageRenderFinalizedEntryV1 {
 	entryId: string;
-	message: Extract<AgentMessage, { role: "user" | "assistant" }>;
+	/** A custom message is final here only when its initiator makes it the start of a turn. */
+	message: Extract<AgentMessage, { role: "user" | "assistant" }> | CustomMessage;
 }
 
 export interface MessageRenderProjectionV1 {
@@ -1869,10 +1874,14 @@ export interface ExtensionAPI {
 	// Actions
 	// =========================================================================
 
-	/** Send a custom message to the session. */
+	/** Send a custom message to the session. With an initiator, the message starts its turn like a user message. */
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			initiator?: ExternalAgentOriginV1;
+		},
 	): void;
 
 	/**
@@ -2147,7 +2156,11 @@ type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+	options?: {
+		triggerTurn?: boolean;
+		deliverAs?: "steer" | "followUp" | "nextTurn";
+		initiator?: ExternalAgentOriginV1;
+	},
 ) => void;
 
 export type SendUserMessageHandler = (
