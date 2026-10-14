@@ -341,6 +341,13 @@ export {
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.ts";
 export {
+	listSessionMetadata,
+	type SessionMetadata,
+	type SessionMetadataList,
+	type SessionMetadataListOptions,
+	SessionMetadataUnstableError,
+} from "./core/session-metadata.ts";
+export {
 	type CacheWarmingMode,
 	type CompactionModelOverride,
 	type CompactionSettings,

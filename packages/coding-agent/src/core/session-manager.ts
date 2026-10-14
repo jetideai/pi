@@ -672,7 +672,7 @@ class SessionHeaderScanLimitError extends Error {
 	}
 }
 
-function parseSessionEntryLine(line: string): FileEntry | null {
+export function parseSessionEntryLine(line: string): FileEntry | null {
 	if (!line.trim()) return null;
 	try {
 		return JSON.parse(line) as FileEntry;
@@ -826,11 +826,11 @@ export function findMostRecentSession(sessionDir: string, cwd?: string): string 
 	}
 }
 
-function isMessageWithContent(message: AgentMessage): message is Message {
+export function isMessageWithContent(message: AgentMessage): message is Message {
 	return typeof (message as Message).role === "string" && "content" in message;
 }
 
-function extractTextContent(message: Message): string {
+export function extractTextContent(message: Message): string {
 	const content = message.content;
 	if (typeof content === "string") {
 		return content;
@@ -841,7 +841,7 @@ function extractTextContent(message: Message): string {
 		.join(" ");
 }
 
-function getMessageActivityTime(entry: SessionMessageEntry): number | undefined {
+export function getMessageActivityTime(entry: SessionMessageEntry): number | undefined {
 	const message = entry.message;
 	if (!isMessageWithContent(message)) return undefined;
 	if (message.role !== "user" && message.role !== "assistant") return undefined;
@@ -957,7 +957,7 @@ interface SessionFileCandidate {
 	stats?: Stats;
 }
 
-async function mapWithConcurrency<T, R>(
+export async function mapWithConcurrency<T, R>(
 	items: T[],
 	limit: number,
 	map: (item: T, index: number) => Promise<R>,
