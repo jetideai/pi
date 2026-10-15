@@ -366,9 +366,13 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
-	override render(width: number): string[] {
+	override render(width: number, separatorAfterBody = false): string[] {
 		if (this.hideComponent) return [];
-		return this.decorateSemanticSections(this.withOutcomeCue(this.renderStock(width), width), width);
+		return this.decorateSemanticSections(
+			this.withOutcomeCue(this.renderStock(width), width),
+			width,
+			separatorAfterBody,
+		);
 	}
 
 	/** The outcome of the call: active until its result settles; a call that never ran is cancelled, not failed. */
@@ -433,7 +437,7 @@ export class ToolExecutionComponent extends Container {
 		return this.outcomeCues().find((candidate) => visibleWidth(candidate) < room) ?? "";
 	}
 
-	private decorateSemanticSections(lines: string[], width: number): string[] {
+	private decorateSemanticSections(lines: string[], width: number, separatorAfterBody: boolean): string[] {
 		if (!this.rendersSemanticSections()) return lines;
 		// The open Fold starts on the summary row, so the header does not move when it opens.
 		const rows = this.callSummary
@@ -445,7 +449,9 @@ export class ToolExecutionComponent extends Container {
 		// Native hides a summary in an open Fold. A summary without a stock header stays as the header of the call.
 		const summarizes = this.callSummary && this.openHeader;
 		// Without a body row the call is a plain range: the decorator context then has no foldable body.
-		return decorateMessageRenderV2(lines, rows.body, width, "tool", 0, {
+		// Keep the group separator inside the body so a collapsed call hides it.
+		const separated = separatorAfterBody && rows.body !== undefined ? [...lines, ""] : lines;
+		return decorateMessageRenderV2(separated, rows.body, width, "tool", 0, {
 			entryId: this.toolCallId,
 			...(this.ownerEntryId ? { ownerEntryId: this.ownerEntryId } : {}),
 			beginRow: rows.header,
@@ -594,9 +600,8 @@ export class ToolExecutionComponent extends Container {
 		const cell = (row: string) => `${row}${" ".repeat(Math.max(0, inner - visibleWidth(row)))}`;
 		const framedBody = framed && body.length > 0;
 		this.openCard = { header, headerShift, framed: framedBody, bodyStart, bodyRows: body.length };
-		// Like the calls of a group, the card adds no rows: the first body row follows the header, and the next row follows
-		// the last body row. Each side edge is one eighth of its cell on the side of the body, so the background of the body
-		// rows touches the edge. Images follow the card: a frame column next to a terminal image would move it.
+		// The card adds no edge rows. Each side edge is one eighth of its cell, so the background touches the edge.
+		// Images follow the card: a frame column next to a terminal image would move it.
 		const card = framedBody ? body.map((row) => `${edge(CARD_EDGE.left)}${cell(row)}${edge(CARD_EDGE.right)}`) : body;
 		return [...headerRow, ...card, ...open.images];
 	}

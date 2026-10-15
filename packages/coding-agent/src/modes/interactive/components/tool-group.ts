@@ -124,8 +124,7 @@ export class ToolGroupComponent extends Container {
 				: 1;
 		if (!this.framed) return super.render(width);
 		const header = this.headerRow(width);
-		// The group owns one separator row before its header. Its calls follow without separator rows, indented under the
-		// header, so the group reads as one block.
+		// The group owns one separator row before its header. Its call headers have no leading separator rows.
 		const body = this.renderMembers(width);
 		return decorateMessageRenderV2(["", header, ...body], 2, width, "tool-group", this.outputPad, {
 			beginRow: 1,
@@ -142,8 +141,8 @@ export class ToolGroupComponent extends Container {
 		const indent = " ".repeat(Math.min(MEMBER_INDENT, width));
 		const rows: string[] = [];
 		const members: Array<{ component: Component; height: number }> = [];
-		for (const component of this.memberComponents) {
-			const rendered = component.render(memberWidth);
+		for (const [index, component] of this.memberComponents.entries()) {
+			const rendered = component.render(memberWidth, index < this.memberComponents.length - 1);
 			// A member renders one separator row before its call; a hidden member renders no rows.
 			const own = rendered.length > 0 ? rendered.slice(1) : rendered;
 			members.push({ component, height: own.length });

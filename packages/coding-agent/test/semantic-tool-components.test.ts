@@ -2545,6 +2545,19 @@ describe("stable Tool Call fold", () => {
 	const editArgs = { path: `src/${"segment/".repeat(12)}Long.kt`, edits: [{ oldText: "a", newText: "b" }] };
 	const blank = (row: string) => row === "" || row === "<shaded blank>";
 	const firstWord = (row: string) => row.split(" ", 1)[0];
+	const groupedCalls = (...ids: string[]) => {
+		const group = new ToolGroupComponent({
+			groupId: `tool-group:assistant-a:${ids[0]}`,
+			ownerEntryId: "assistant-a",
+			closed: true,
+			outputPad: 1,
+			producerSessionId: "session-a",
+			renderScopeId: "scope-a",
+			semanticSelectorsV3: [summaryAware],
+		});
+		for (const id of ids) group.addTool(unknownCall(id), { toolName: "process", toolCallId: id });
+		return group;
+	};
 
 	const withBody = [
 		[
@@ -2604,35 +2617,56 @@ describe("stable Tool Call fold", () => {
 		});
 	});
 
-	it("places the card of an open call in a group directly below its header and above the next call", () => {
-		const group = new ToolGroupComponent({
-			groupId: "tool-group:assistant-a:call-a",
-			ownerEntryId: "assistant-a",
-			closed: true,
-			outputPad: 1,
-			producerSessionId: "session-a",
-			renderScopeId: "scope-a",
-			semanticSelectorsV3: [summaryAware],
-		});
-		group.addTool(unknownCall("call-a"), { toolName: "process", toolCallId: "call-a" });
-		group.addTool(unknownCall("call-b"), { toolName: "process", toolCallId: "call-b" });
+	it("places the card of an open call directly below its header with one empty row before the next call", () => {
+		const group = groupedCalls("call-a", "call-b");
 		const visible = boundaryRows(group.render(80)).visible;
 		const output = visible.findIndex((row) => row.includes("call-a output"));
 		let first = output;
 		while (visible[first - 1]?.startsWith("  ▕")) first--;
 
-		// Like the calls of a group, the card adds no rows: its side edges and background mark it.
 		expect({
 			aboveCard: visible[first - 1],
 			lastCardRow: visible[output],
-			belowCard: visible[output + 1],
+			afterCard: visible.slice(output + 1, output + 3),
 			edgeRows: visible.filter(cardEdgeRow),
 		}).toEqual({
 			aboveCard: "   process",
 			lastCardRow: `  ▕ call-a output${" ".repeat(62)}▏`,
-			belowCard: "   process",
+			afterCard: ["", "   process"],
 			edgeRows: [],
 		});
+	});
+
+	it("keeps the last open call of a group without an empty row after its card", () => {
+		const group = groupedCalls("call-a", "call-b");
+
+		const visible = boundaryRows(group.render(80)).visible;
+		const output = visible.findIndex((row) => row.includes("call-b output"));
+
+		expect(visible.slice(output)).toEqual([`  ▕ call-b output${" ".repeat(62)}▏`]);
+	});
+
+	it("hides the separators of collapsed calls in the same three-call group", () => {
+		const group = groupedCalls("call-a", "call-b", "call-c");
+		const rows = group.render(80);
+		const open = foldedRows(rows, () => false);
+
+		expect({
+			middleToLast: open.slice(open.indexOf("call-b output")),
+			collapsed: foldedRows(rows, (depth) => depth > 0),
+		}).toEqual({
+			middleToLast: ["call-b output", "", "process", "{", '"action": "list"', "}", "call-c output"],
+			collapsed: ["", "$ Used tools", "process", "process", "process"],
+		});
+	});
+
+	it("does not retain a group separator when its member renders alone", () => {
+		const component = unknownCall("call-a");
+		const standalone = component.render(80);
+
+		component.render(78, true);
+
+		expect(component.render(80)).toEqual(standalone);
 	});
 
 	it.each([
